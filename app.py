@@ -1,8 +1,16 @@
 from datetime import date
 
+import numpy as np
+import pandas as pd
 import streamlit as st
 
-from xauusd_sesiones import SESIONES, TICKER, calcular_tabla, descargar, nombre_csv
+from xauusd_sesiones import (
+    TICKER,
+    calcular_tabla,
+    descargar,
+    estadisticas_objetivo,
+    nombre_csv,
+)
 
 st.set_page_config(
     page_title="XAU/USD - Calculadora de Sesiones",
@@ -27,6 +35,17 @@ fecha_inicio = st.sidebar.date_input(
 )
 fecha_fin = st.sidebar.date_input(
     "Fecha de fin", value=date(2026, 10, 24), format="DD/MM/YYYY"
+)
+
+
+objetivo = st.sidebar.number_input(
+    "Objetivo en dólares ($)",
+    min_value=0.0,
+    value=10.0,
+    step=0.5,
+    format="%.2f",
+    help="Se cuenta cuántas veces el rango High-Low de las 2 primeras horas"
+    " alcanzó o superó este valor.",
 )
 
 
@@ -62,8 +81,27 @@ if st.sidebar.button("Calcular Movimientos", type="primary"):
     resumen.index = ["Promedio", "Mediana", "Máximo"]
     st.dataframe(resumen)
 
+    st.subheader(f"Objetivo de ${objetivo:,.2f}")
+    st.caption(
+        "Días en que el rango High-Low de las 2 primeras horas alcanzó o"
+        " superó el objetivo."
+    )
+    stats = estadisticas_objetivo(tabla, objetivo)
+    st.dataframe(stats.style.format({"% de veces": "{:.1f}%"}, na_rep="-"))
+
     st.subheader("Detalle diario")
-    st.dataframe(tabla)
+    st.caption("En verde, los días en que se alcanzó el objetivo.")
+
+    def resaltar(data: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame(
+            np.where(data >= objetivo, "background-color: #2e7d3255", ""),
+            index=data.index,
+            columns=data.columns,
+        )
+
+    st.dataframe(
+        tabla.style.apply(resaltar, axis=None).format("{:.2f}", na_rep="-")
+    )
 
     st.download_button(
         label="📥 Descargar resultados en CSV",

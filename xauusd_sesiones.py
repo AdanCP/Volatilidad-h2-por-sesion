@@ -71,6 +71,21 @@ def calcular_tabla(df: pd.DataFrame, inicio: date, fin: date) -> pd.DataFrame:
     return tabla.dropna(how="all")
 
 
+def estadisticas_objetivo(tabla: pd.DataFrame, objetivo: float) -> pd.DataFrame:
+    """Por sesión: cuántas veces el rango alcanzó o superó el objetivo ($)."""
+    filas = {}
+    for columna in tabla.columns:
+        medidas = tabla[columna].dropna()
+        total = len(medidas)
+        alcanzo = int((medidas >= objetivo).sum())
+        filas[columna] = {
+            "Sesiones medidas": total,
+            "Veces que alcanzó": alcanzo,
+            "% de veces": round(alcanzo / total * 100, 1) if total else None,
+        }
+    return pd.DataFrame.from_dict(filas, orient="index")
+
+
 def nombre_csv(inicio: date, fin: date) -> str:
     return f"xauusd_{inicio:%d%m%Y}_a_{fin:%d%m%Y}.csv"
 
@@ -81,6 +96,24 @@ def _pedir_fecha(texto: str) -> date:
             return datetime.strptime(input(texto), "%d/%m/%Y").date()
         except ValueError:
             print("[X] Formato inválido. Usá DD/MM/AAAA (ej. 23/09/2026).")
+
+
+def _pedir_objetivo():
+    while True:
+        texto = (
+            input("\nObjetivo en dólares (Enter para omitir): ")
+            .strip()
+            .replace(",", ".")
+        )
+        if not texto:
+            return None
+        try:
+            valor = float(texto)
+            if valor > 0:
+                return valor
+        except ValueError:
+            pass
+        print("[X] Ingresá un número mayor a 0 (ej. 12.5).")
 
 
 def main() -> None:
@@ -117,6 +150,11 @@ def main() -> None:
     print("RESUMEN")
     print("------------------------------------------")
     print(tabla.agg(["mean", "median", "max"]).round(2).to_string())
+
+    objetivo = _pedir_objetivo()
+    if objetivo is not None:
+        print(f"\nOBJETIVO DE ${objetivo:.2f} (rango >= objetivo)")
+        print(estadisticas_objetivo(tabla, objetivo).to_string())
 
     archivo = nombre_csv(inicio, fin)
     tabla.to_csv(archivo)
