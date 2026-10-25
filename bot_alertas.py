@@ -15,6 +15,7 @@ Variables de entorno necesarias para enviar mensajes (TextMeBot):
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -165,6 +166,13 @@ def armar_mensaje(c: Cruce) -> str:
     return "\n".join(lineas)
 
 
+def _limpiar_respuesta(texto: str, largo: int = 500) -> str:
+    """Deja legible la respuesta HTML de TextMeBot (una sola línea)."""
+    texto = texto.replace("<br>", " | ")
+    texto = re.sub(r"<[^>]+>", "", texto)
+    return " ".join(texto.split())[:largo]
+
+
 def enviar_whatsapp(texto: str) -> bool:
     """Envía el mensaje con la API de TextMeBot."""
     telefono = "".join(
@@ -183,7 +191,7 @@ def enviar_whatsapp(texto: str) -> bool:
     except requests.RequestException as e:
         print(f"Error de red al enviar: {e}")
         return False
-    respuesta = r.text.strip().replace("\n", " ")[:150]
+    respuesta = _limpiar_respuesta(r.text)
     print(f"TextMeBot respondió {r.status_code}: {respuesta}")
     malo = any(
         p in respuesta.lower()
