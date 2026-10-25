@@ -6,9 +6,10 @@ Uso:
   python bot_alertas.py --una-vez     Revisa una vez y avisa si hay cruce nuevo.
   python bot_alertas.py --loop        Revisa cada 15 minutos sin parar.
 
-Variables de entorno necesarias para enviar mensajes:
-  WHATSAPP_PHONE    tu número con código de país, sin + ni espacios
-  CALLMEBOT_APIKEY  la clave que te da CallMeBot
+Variables de entorno necesarias para enviar mensajes (TextMeBot):
+  WHATSAPP_PHONE    número destino con código de país, sin + ni espacios
+                    (Argentina celular: 549 + código de área + número)
+  TEXTMEBOT_APIKEY  la apikey de tu cuenta en https://textmebot.com
 """
 
 import argparse
@@ -42,6 +43,7 @@ LOOKBACK_BARRAS = 8
 #   False -> al revés (COMPRA con la SMA50 por encima, VENTA por debajo)
 IDEAL_COMPRA_SMA_DEBAJO = True
 
+TEXTMEBOT_URL = "https://api.textmebot.com/send.php"
 TZ_MENSAJE = "America/Argentina/Buenos_Aires"
 ARCHIVO_ESTADO = Path(__file__).with_name("estado_alertas.json")
 # -----------------------------------------------------------------------------
@@ -164,23 +166,29 @@ def armar_mensaje(c: Cruce) -> str:
 
 
 def enviar_whatsapp(texto: str) -> bool:
-    telefono = os.environ.get("WHATSAPP_PHONE")
-    apikey = os.environ.get("CALLMEBOT_APIKEY")
+    """Envía el mensaje con la API de TextMeBot."""
+    telefono = "".join(
+        ch for ch in os.environ.get("WHATSAPP_PHONE", "") if ch.isdigit()
+    )
+    apikey = os.environ.get("TEXTMEBOT_APIKEY", "").strip()
     if not telefono or not apikey:
-        print("Faltan WHATSAPP_PHONE y/o CALLMEBOT_APIKEY.")
+        print("Faltan WHATSAPP_PHONE y/o TEXTMEBOT_APIKEY.")
         return False
     try:
         r = requests.get(
-            "https://api.callmebot.com/whatsapp.php",
-            params={"phone": telefono, "text": texto, "apikey": apikey},
+            TEXTMEBOT_URL,
+            params={"recipient": telefono, "apikey": apikey, "text": texto},
             timeout=30,
         )
     except requests.RequestException as e:
         print(f"Error de red al enviar: {e}")
         return False
     respuesta = r.text.strip().replace("\n", " ")[:150]
-    print(f"CallMeBot respondió {r.status_code}: {respuesta}")
-    malo = any(p in respuesta.lower() for p in ("error", "invalid"))
+    print(f"TextMeBot respondió {r.status_code}: {respuesta}")
+    malo = any(
+        p in respuesta.lower()
+        for p in ("error", "invalid", "fail", "incorrect", "expired")
+    )
     return r.status_code == 200 and not malo
 
 

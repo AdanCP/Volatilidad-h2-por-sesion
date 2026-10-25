@@ -1,22 +1,22 @@
-# Guardar en el repositorio como: .github/workflows/alertas.yml
-name: Alertas EMA GC=F
+name: Bot Mane (cruce EMA13/34)
 
 on:
   schedule:
-    # Cada 15 min, domingo a viernes (el oro no opera el sábado).
-    # Minutos corridos (3,18,33,48) para evitar la hora pico de GitHub. Hora UTC.
-    - cron: "3,18,33,48 * * * 0-5"
-  workflow_dispatch: # permite lanzarlo a mano desde la pestaña Actions
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
 
 permissions:
-  contents: write # para guardar estado_alertas.json
+  contents: write
 
 concurrency:
-  group: alertas-ema
+  group: alertas
   cancel-in-progress: false
 
 jobs:
   revisar:
+    # Interruptor que maneja la app: variable de repositorio BOT_ACTIVO.
+    # Si no existe o vale "true", el bot corre; con "false" el job se omite.
+    if: ${{ vars.BOT_ACTIVO != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -30,15 +30,20 @@ jobs:
 
       - run: pip install -r requirements-bot.txt
 
-      - name: Revisar cruces y avisar por WhatsApp
+      - name: Revisar cruces
         env:
           WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
-          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          TEXTMEBOT_APIKEY: ${{ secrets.TEXTMEBOT_APIKEY }}
         run: python bot_alertas.py --una-vez
 
-      - name: Guardar estado (evita avisos repetidos)
+      - name: Guardar estado
         run: |
-          git config user.name "alertas-bot"
-          git config user.email "alertas-bot@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add estado_alertas.json
-          git diff --staged --quiet || (git commit -m "Actualiza estado de alertas" && git push)
+          if git diff --cached --quiet; then
+            echo "Sin cambios en el estado"
+          else
+            git commit -m "Actualiza estado del bot"
+            git push
+          fi

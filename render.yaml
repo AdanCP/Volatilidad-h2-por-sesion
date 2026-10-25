@@ -10,9 +10,13 @@ services:
     buildFilter:
       ignoredPaths:
         - estado_alertas.json
-        - bot_alertas.py
         - requirements-bot.txt
         - .github/**
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.3
+      # Para activar/desactivar el Bot Mane desde la app (se cargan a mano en Render)
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
