@@ -1,0 +1,9 @@
+LISTADO VOLATILIDAD 2H SESION/
+├── app.py                    (la app Streamlit)
+├── xauusd_sesiones.py        (lógica de sesiones)
+├── bot_alertas.py            (NUEVO: el bot)
+├── requirements.txt          (para Render)
+├── requirements-bot.txt      (NUEVO: para el bot)
+├── render.yaml               (actualizado)
+├── estado_alertas.json       (lo crea el bot solo)
+└── .github/workflows/alertas.yml   

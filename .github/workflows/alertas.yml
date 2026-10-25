@@ -1,0 +1,44 @@
+# Guardar en el repositorio como: .github/workflows/alertas.yml
+name: Alertas EMA GC=F
+
+on:
+  schedule:
+    # Cada 15 min, domingo a viernes (el oro no opera el sábado).
+    # Minutos corridos (3,18,33,48) para evitar la hora pico de GitHub. Hora UTC.
+    - cron: "3,18,33,48 * * * 0-5"
+  workflow_dispatch: # permite lanzarlo a mano desde la pestaña Actions
+
+permissions:
+  contents: write # para guardar estado_alertas.json
+
+concurrency:
+  group: alertas-ema
+  cancel-in-progress: false
+
+jobs:
+  revisar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-bot.txt
+
+      - run: pip install -r requirements-bot.txt
+
+      - name: Revisar cruces y avisar por WhatsApp
+        env:
+          WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+        run: python bot_alertas.py --una-vez
+
+      - name: Guardar estado (evita avisos repetidos)
+        run: |
+          git config user.name "alertas-bot"
+          git config user.email "alertas-bot@users.noreply.github.com"
+          git add estado_alertas.json
+          git diff --staged --quiet || (git commit -m "Actualiza estado de alertas" && git push)

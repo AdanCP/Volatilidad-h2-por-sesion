@@ -6,6 +6,13 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     healthCheckPath: /_stcore/health
+    # Los cambios solo en estos archivos (bot y su estado) no redesplegan la app
+    buildFilter:
+      ignoredPaths:
+        - estado_alertas.json
+        - bot_alertas.py
+        - requirements-bot.txt
+        - .github/**
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.3
