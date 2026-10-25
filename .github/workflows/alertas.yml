@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      enviar_prueba:
+        description: "Mandar un WhatsApp de prueba (verifica los secrets)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -29,6 +34,13 @@ jobs:
           cache-dependency-path: requirements-bot.txt
 
       - run: pip install -r requirements-bot.txt
+
+      - name: Mensaje de prueba
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enviar_prueba }}
+        env:
+          WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+          TEXTMEBOT_APIKEY: ${{ secrets.TEXTMEBOT_APIKEY }}
+        run: python bot_alertas.py --test
 
       - name: Revisar cruces
         env:
