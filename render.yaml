@@ -11,11 +11,11 @@ services:
       ignoredPaths:
         - estado_alertas.json
         - requirements-bot.txt
+        - app_backtest.py
         - .github/**
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.3
-      # Para activar/desactivar el Bot Mane desde la app (se cargan a mano en Render)
       - key: GITHUB_TOKEN
         sync: false
       - key: GITHUB_REPO
