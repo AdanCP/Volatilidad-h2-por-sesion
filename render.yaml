@@ -20,3 +20,14 @@ services:
         sync: false
       - key: GITHUB_REPO
         sync: false
+
+  - type: web
+    name: backtester-ema
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app_backtest.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3

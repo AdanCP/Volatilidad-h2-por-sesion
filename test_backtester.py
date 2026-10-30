@@ -1,4 +1,5 @@
 """Tests de la etapa (a). Ejecutar:  python test_backtester.py   (o: pytest)"""
+from datetime import timezone
 import os
 import sys
 import tempfile
@@ -262,7 +263,8 @@ def _rates(tiempos, spread=10):
 def test_union_de_tramos_sin_repetidas_y_tramos_vacios():
     t = np.arange(0, 100) * 3600
     def fetch(ini, fin):
-        a, b = int(ini.timestamp()), int(fin.timestamp())
+        from datetime import timezone  # arriba del archivo, con los otros imports
+        a, b = (int(x.replace(tzinfo=timezone.utc).timestamp()) for x in (ini, fin))
         if b <= 24 * 3600:
             return None                                   # primer tramo: antes del inicio del historial
         sel = t[(t >= a) & (t <= b)]                      # bordes inclusivos -> repetidas
