@@ -1,5 +1,4 @@
 """Tests de la etapa (a). Ejecutar:  python test_backtester.py   (o: pytest)"""
-from datetime import timezone
 import os
 import sys
 import tempfile
@@ -263,8 +262,7 @@ def _rates(tiempos, spread=10):
 def test_union_de_tramos_sin_repetidas_y_tramos_vacios():
     t = np.arange(0, 100) * 3600
     def fetch(ini, fin):
-        from datetime import timezone  # arriba del archivo, con los otros imports
-        a, b = (int(x.replace(tzinfo=timezone.utc).timestamp()) for x in (ini, fin))
+        a, b = int(ini.timestamp()), int(fin.timestamp())
         if b <= 24 * 3600:
             return None                                   # primer tramo: antes del inicio del historial
         sel = t[(t >= a) & (t <= b)]                      # bordes inclusivos -> repetidas
@@ -326,6 +324,29 @@ def test_evaluar_y_ablacion_humo():
     assert "Cruce solo" in ab.index and "+ SMA" in ab.index and omit == ["Sesion"] and c.n == 1 + len(ab)
     ab2, omit2 = met.ablacion(df, eng.Config(servidor_offset_horas=2), azar_veces=5)
     assert omit2 == [] and "Todos juntos" in ab2.index
+
+
+# ------------------------------------------------------------ multi-simbolo
+def test_tipo_activo_y_deteccion_de_simbolos():
+    assert [met.tipo_activo(s) for s in ("XAUUSD", "XAGUSD.a", "BTCUSD", "EURUSD", "USDJPY", "US30.cash",
+                                          "GER40", "NAS100", "JP225")] == \
+        ["metal", "metal", "cripto", "forex", "forex", "indice", "indice", "indice", "indice"]
+    h = dt.detectar_simbolos(["XAUUSD", "XAUUSD.r", "EURUSD", "US30.cash", "BTCUSD", "NADA"])
+    assert h["oro"] == "XAUUSD" and h["EURUSD"] == "EURUSD" and h["Dow Jones"] == "US30.cash"
+    assert h["plata"] is None and h["Nikkei"] is None
+
+
+def test_comparar_simbolos_recorte_comun_y_cripto_sin_sesion():
+    datos = {"XAUUSD": dt.sintetico(n=5000, seed=1), "BTCUSD": dt.sintetico(n=3000, seed=2),
+             "EURUSD": dt.sintetico(n=4000, seed=3)}
+    cfg = eng.Config(sesion_activo=True, servidor_offset_horas=2)
+    c = met.ContadorPruebas()
+    tabla, notas = met.comparar_simbolos(datos, cfg, azar_veces=5, contador=c, recortar_comun=True)
+    assert list(tabla.index) == ["XAUUSD", "BTCUSD", "EURUSD"] and c.n == 3
+    assert tabla["velas"].nunique() == 1 and tabla["desde"].nunique() == 1
+    assert any("BTCUSD" in n and "24/7" in n for n in notas)
+    t2, n2 = met.comparar_simbolos(datos, eng.Config(), azar_veces=5)
+    assert any("distinto largo" in n for n in n2) and t2["velas"].nunique() == 3
 
 
 if __name__ == "__main__":

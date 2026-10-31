@@ -1,8 +1,13 @@
 """Interfaz Streamlit del backtester de cruce de EMAs con filtros opcionales.
 
-Usa solo los módulos existentes (data, engine, metrics). No toca app.py ni los bots.
-Online (Render) funciona con CSV exportado de MT5 o datos sintéticos; la conexión
-directa a MT5 solo aparece si la librería MetaTrader5 está instalada (Windows, local).
+Usa solo los módulos del backtester (data, engine, metrics, ui_helpers). No toca app.py ni los bots.
+
+Fuentes de datos:
+  - MT5 directo (FTMO): solo corriendo la app EN TU PC con Windows, con el terminal abierto
+    (pip install MetaTrader5 y streamlit run app_backtest.py). Elegís símbolos por familia.
+  - CSV exportado de MT5: sirve online (Render). Generalos con exportar_mt5.py; podés subir
+    varios archivos, uno por símbolo.
+  - Datos sintéticos: solo para probar la interfaz.
 """
 import io
 from datetime import date
@@ -13,6 +18,7 @@ import streamlit as st
 import data
 import engine as eng
 import metrics as met
+import ui_helpers as ui
 
 st.set_page_config(page_title="Backtester cruce de EMAs", layout="wide")
 
@@ -29,6 +35,9 @@ SESIONES = ["Tokio", "Londres", "Nueva York"]
 COLS_TABLA = ["resueltas", "TP", "SL", "abiertas", "ambiguas", "%TP", "%equilibrio", "exp_R",
               "R_total", "maxDD_R", "racha_SL", "azar_exp_R", "mejor_que_%azar",
               "cruces", "tomados", "ignoradas"]
+ETQ_MT5 = "MT5 directo (FTMO)" if MT5_OK else "MT5 directo (solo en tu PC con Windows)"
+ETQ_CSV = "CSV exportado de MT5"
+ETQ_SINT = "Datos sintéticos (demo)"
 
 
 @st.cache_data(show_spinner=False)
@@ -41,13 +50,19 @@ def _sintetico(n: int, tendencia: float, semilla: int) -> pd.DataFrame:
     return data.sintetico(n=n, tendencia=tendencia, seed=semilla)
 
 
-@st.cache_data(show_spinner="Descargando de MT5 (por tramos)...")
+@st.cache_data(show_spinner=False)
 def _mt5(simbolo: str, tf: str, desde: str, hasta: str):
     return data.cargar_mt5(simbolo, tf, desde, hasta)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _simbolos_mt5() -> list:
+    return data.listar_simbolos_mt5()
+
+
 st.session_state.setdefault("contador", met.ContadorPruebas())
 st.session_state.setdefault("res", None)
+st.session_state.setdefault("comp", None)
 
 st.title("Backtester: cruce de EMAs con filtros")
 st.info("Herramienta para medir si una idea tiene ventaja demostrable, **no** para elegir "
@@ -56,42 +71,71 @@ st.info("Herramienta para medir si una idea tiene ventaja demostrable, **no** pa
 # ------------------------------------------------------------------ datos
 with st.sidebar:
     st.header("1. Datos")
-    fuentes = ["CSV exportado de MT5", "Datos sintéticos (demo)"] + (["MT5 directo"] if MT5_OK else [])
-    fuente = st.radio("Fuente", fuentes)
-    spec, df, aviso_datos = None, None, None
+    fuente = st.radio("Fuente", [ETQ_MT5, ETQ_CSV, ETQ_SINT], index=0 if MT5_OK else 1)
+    datos, specs, avisos_datos = {}, {}, []
     try:
-        if fuente == "CSV exportado de MT5":
-            archivo = st.file_uploader("Archivo CSV", type=["csv", "txt"])
-            point = st.number_input("Point del símbolo (spread en puntos → precio)",
-                                    value=0.01, format="%.5f")
-            if archivo is not None:
-                df = _csv(archivo.getvalue(), point)
-        elif fuente == "Datos sintéticos (demo)":
-            tend = st.slider("Tendencia (0 = azar puro)", 0.0, 1.0, 0.0, 0.1)
-            df = _sintetico(30000, tend, 1)
-        else:
-            simbolo = st.text_input("Símbolo", "XAUUSD")
+        if fuente == ETQ_MT5 and not MT5_OK:
+            st.warning("MT5 directo solo funciona corriendo la app **en tu PC con Windows**, con el "
+                       "terminal de FTMO abierto y con sesión iniciada:\n\n"
+                       "1. `pip install MetaTrader5`\n2. `streamlit run app_backtest.py`\n\n"
+                       "En Render (online) no existe terminal de MT5. Online usá **CSV exportado**: "
+                       "generalo en tu PC con `exportar_mt5.py`.")
+        elif fuente == ETQ_MT5:
+            grupos, faltan = ui.agrupar_hallados(data.detectar_simbolos(_simbolos_mt5()))
+            elegidos = []
+            for familia, items in grupos.items():
+                opciones = [nombre for _, nombre in items]
+                por_defecto = [nombre for etiqueta, nombre in items if etiqueta == "oro"]
+                elegidos += st.multiselect(familia, opciones, por_defecto)
+            if faltan:
+                st.caption("No encontrados en tu servidor: " + ", ".join(faltan))
+            otros = st.text_input("Otros símbolos (separados por coma)", "")
+            simbolos = ui.unir_simbolos(elegidos, otros)
             tf = st.selectbox("Temporalidad", ["D1", "H4", "H1", "M30", "M15", "M5", "M1"], index=2)
             c1, c2 = st.columns(2)
             desde = c1.date_input("Desde", date(2020, 1, 1))
             hasta = c2.date_input("Hasta", date.today())
             if desde >= hasta:
                 st.error("La fecha 'desde' debe ser anterior a 'hasta'.")
+            elif not simbolos:
+                st.info("Elegí al menos un símbolo.")
             else:
-                df, spec, sin_datos = _mt5(simbolo, tf, str(desde), str(hasta))
-                if sin_datos:
-                    aviso_datos = f"{sin_datos} tramos de descarga vinieron vacíos."
+                barra = st.progress(0.0)
+                for k, simbolo in enumerate(simbolos):
+                    try:
+                        d_, sp_, vacios = _mt5(simbolo, tf, str(desde), str(hasta))
+                        datos[simbolo], specs[simbolo] = d_, sp_
+                        if vacios:
+                            avisos_datos.append(f"{simbolo}: {vacios} tramos de descarga vinieron vacíos.")
+                    except data.ErrorDatos as e:
+                        avisos_datos.append(f"{simbolo}: {e}")
+                    barra.progress((k + 1) / len(simbolos))
+                barra.empty()
+        elif fuente == ETQ_CSV:
+            archivos = st.file_uploader("Archivos CSV (uno por símbolo)", type=["csv", "txt"],
+                                        accept_multiple_files=True)
+            point = st.number_input("Point del símbolo (solo si el CSV no trae columna 'point')",
+                                    value=0.01, format="%.5f")
+            for archivo in archivos or []:
+                datos[ui.simbolo_desde_archivo(archivo.name)] = _csv(archivo.getvalue(), point)
+        else:
+            tend = st.slider("Tendencia (0 = azar puro)", 0.0, 1.0, 0.0, 0.1)
+            n_series = st.slider("Cantidad de series de demo", 1, 4, 1)
+            for k in range(n_series):
+                datos[f"SINT{k + 1}"] = _sintetico(30000, tend, k + 1)
     except (data.ErrorDatos, ValueError, KeyError) as e:
         st.error(str(e))
-        df = None
+        datos, specs = {}, {}
 
-    if df is not None:
+    if datos:
         regla = st.selectbox("Remuestrear a", ["No", "15min", "30min", "1h", "4h", "1D"])
         if regla != "No":
-            df = data.resamplear(df, regla)
-        rango = st.date_input("Recortar período", (df.index[0].date(), df.index[-1].date()))
+            datos = {s: data.resamplear(d_, regla) for s, d_ in datos.items()}
+        primero = next(iter(datos.values()))
+        rango = st.date_input("Recortar período", (primero.index[0].date(), primero.index[-1].date()))
         if isinstance(rango, tuple) and len(rango) == 2:
-            df = df.loc[str(rango[0]):str(rango[1])]
+            datos = {s: d_.loc[str(rango[0]):str(rango[1])] for s, d_ in datos.items()}
+        datos = {s: d_ for s, d_ in datos.items() if len(d_)}
 
     st.header("2. Señal y gestión")
     c1, c2 = st.columns(2)
@@ -143,7 +187,8 @@ with st.sidebar:
         offset = st.number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)
         dst = st.checkbox("El servidor cambia de hora con EE.UU.", True)
         st.caption("Confirmá el desfase midiéndolo con el mercado abierto. Los horarios de "
-                   "las sesiones se mueven con el horario de verano de cada plaza.")
+                   "las sesiones se mueven con el horario de verano de cada plaza. En BTC el "
+                   "filtro se desactiva solo (opera 24/7).")
     else:
         sesiones, offset, dst = ["Londres", "Nueva York"], None, True
 
@@ -168,10 +213,20 @@ def construir_config() -> eng.Config:
 
 
 # ------------------------------------------------------------------ cuerpo
-if df is None or not len(df):
+if not datos:
     st.write("Cargá datos en la barra lateral para empezar. Para probar la interfaz sin "
              "datos reales, elegí **Datos sintéticos (demo)**.")
     st.stop()
+
+for av in avisos_datos:
+    st.warning(av)
+
+if len(datos) > 1:
+    activo = st.selectbox("Símbolo para el análisis detallado", list(datos))
+    recortar = st.checkbox("Al comparar, recortar al período común", True)
+else:
+    activo, recortar = next(iter(datos)), True
+df, spec = datos[activo], specs.get(activo)
 
 cal = data.calidad(df)
 a, b, c, d = st.columns(4)
@@ -179,21 +234,29 @@ a.metric("Velas analizadas", f"{cal['velas']:,}")
 b.metric("Rango real", f"{cal['primera'][:10]} → {cal['ultima'][:10]}")
 c.metric("Spread en 0", f"{cal['spread_cero_pct']}%")
 d.metric("Pruebas en la sesión", st.session_state.contador.n)
-if aviso_datos:
-    st.warning(aviso_datos)
 if cal["duplicadas"] or cal["con_nan"]:
     st.warning(f"Calidad de datos: {cal['duplicadas']} velas duplicadas y {cal['con_nan']} con NaN.")
 
-b1, b2 = st.columns(2)
+b1, b2, b3 = st.columns(3)
 correr = b1.button("Correr backtest", type="primary")
 abl = b2.button("Modo ablación (cruce solo + cada filtro)")
+comp = b3.button("Comparar símbolos", disabled=len(datos) < 2)
 
 if correr:
     try:
         cfg = construir_config()
         with st.spinner("Calculando..."):
             st.session_state.res = (met.evaluar(df, cfg, oos / 100, int(azar_n), 42,
-                                                st.session_state.contador), cfg)
+                                                st.session_state.contador), cfg, activo)
+    except (ValueError, data.ErrorDatos) as e:
+        st.error(str(e))
+
+if comp:
+    try:
+        cfg = construir_config()
+        with st.spinner("Comparando símbolos..."):
+            st.session_state.comp = met.comparar_simbolos(
+                datos, cfg, oos / 100, int(azar_n), 42, st.session_state.contador, recortar)
     except (ValueError, data.ErrorDatos) as e:
         st.error(str(e))
 
@@ -204,8 +267,8 @@ if abl:
             tabla_abl, omitidos = met.ablacion(df, cfg, oos_pct=oos / 100,
                                                azar_veces=min(int(azar_n), 100),
                                                contador=st.session_state.contador)
-        st.subheader("Ablación")
-        st.dataframe(tabla_abl.round(3), use_container_width=True)
+        st.subheader(f"Ablación ({activo})")
+        st.dataframe(tabla_abl.round(3))
         st.caption("Los filtros se miden con parámetros fijos (SMA 200, ADX mínimo 20, "
                    "ATR relativo de 100 velas entre 0,8 y 2,0). El aporte es el de esos valores, "
                    "no el del filtro en general.")
@@ -214,14 +277,30 @@ if abl:
     except (ValueError, data.ErrorDatos) as e:
         st.error(str(e))
 
+if st.session_state.comp is not None:
+    tabla_c, notas_c = st.session_state.comp
+    st.subheader("Comparación de símbolos (mismos parámetros en todos)")
+    st.dataframe(tabla_c.round(3))
+    pos = int(((tabla_c["exp_R"] > 0) & (tabla_c["exp_R_OOS"] > 0)).sum())
+    st.write(f"**Lectura de robustez:** expectativa positiva en el total y en out-of-sample en "
+             f"{pos} de {len(tabla_c)} símbolos.")
+    st.caption("Sirve para ver si la idea se sostiene en varios mercados, no para elegir el ganador: "
+               "al probar varios activos es esperable que alguno salga bien por azar. Comparar en R, "
+               "no en dinero (el valor por tick difiere entre activos).")
+    for n_ in dict.fromkeys(notas_c):
+        st.caption("• " + n_)
+
 if st.session_state.res is None:
     st.stop()
 
-r, cfg_usada = st.session_state.res
-st.subheader(f"Resultado (prueba n.º {r['prueba']})")
+r, cfg_usada, act_res = st.session_state.res
+st.subheader(f"Resultado de {act_res} (prueba n.º {r['prueba']})")
+if act_res != activo:
+    st.warning(f"Este resultado es de {act_res}; el símbolo seleccionado ahora es {activo}. "
+               "Volvé a correr el backtest para actualizarlo.")
 for av in r["avisos"]:
     st.warning(av)
-st.dataframe(r["tabla"][COLS_TABLA].round(3), use_container_width=True)
+st.dataframe(r["tabla"][COLS_TABLA].round(3))
 st.caption("In-sample y out-of-sample se muestran siempre aparte. Si ajustás parámetros "
            "mirando el out-of-sample, deja de ser out-of-sample. Un 'mejor que el azar' cercano "
            "a 50% significa que la señal no se distingue de entrar al azar.")
@@ -234,16 +313,20 @@ if len(res):
     st.subheader("Curva de equity (R)")
     st.line_chart(res.set_index("fecha_entrada")["R"].cumsum())
     st.subheader("Por año")
-    st.dataframe(r["por_anio"].round(3), use_container_width=True)
+    st.dataframe(r["por_anio"].round(3))
 
     st.subheader("Resultados en dinero (teóricos)")
+    spec_res = specs.get(act_res)
+    if not spec_res:
+        st.caption("Con CSV no se conocen tick_size y tick_value del símbolo: los valores por defecto son los "
+                   "del oro. Si el símbolo es otro, cargá los reales (en MT5: especificación del símbolo).")
     c1, c2, c3, c4 = st.columns(4)
     lotes = c1.number_input("Lotes", 0.01, 100.0, 0.10, 0.01)
-    tick_size = c2.number_input("tick_size", 0.00001, value=float(spec["tick_size"]) if spec else 0.01, format="%.5f")
-    tick_value = c3.number_input("tick_value", 0.00001, value=float(spec["tick_value"]) if spec else 1.0, format="%.5f")
+    tick_size = c2.number_input("tick_size", 0.00001, value=float(spec_res["tick_size"]) if spec_res else 0.01, format="%.5f")
+    tick_value = c3.number_input("tick_value", 0.00001, value=float(spec_res["tick_value"]) if spec_res else 1.0, format="%.5f")
     comision = c4.number_input("Comisión por lote", 0.0, value=0.0)
     try:
-        v = spec or {"vol_min": 0.01, "vol_max": 100.0, "vol_step": 0.01}
+        v = spec_res or {"vol_min": 0.01, "vol_max": 100.0, "vol_step": 0.01}
         met.validar_lotaje(lotes, v["vol_min"], v["vol_max"], v["vol_step"])
         dinero = met.resumen_dinero(tr, tick_size, tick_value, lotes, comision)
         st.caption(f"Fórmula: (diferencia de precio / {tick_size}) × {tick_value} × {lotes} lotes "
@@ -254,7 +337,7 @@ if len(res):
         st.error(str(e))
 
     st.subheader("Operaciones")
-    st.dataframe(tr, use_container_width=True)
+    st.dataframe(tr)
     st.download_button("Descargar operaciones (CSV)", tr.to_csv(index=False).encode("utf-8"),
                        "operaciones.csv", "text/csv")
 
@@ -265,4 +348,5 @@ with st.expander("Supuestos y limitaciones"):
         "- El spread es el de cierre de cada vela; en velas viejas suele venir en 0.\n"
         "- Una cuenta demo puede diferir en spread y ejecución. El Strategy Tester de MT5 con "
         "ticks reales es la validación final.\n"
+        "- En índices hay gaps de apertura y pausas diarias que el backtest no modela.\n"
         "- Resultados pasados no garantizan resultados futuros.")

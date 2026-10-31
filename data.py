@@ -98,6 +98,8 @@ def cargar_csv(archivo: str, point: float = 0.01) -> pd.DataFrame:
     faltan = [c for c in ("open", "high", "low", "close") if c not in df]
     if faltan:
         raise ErrorDatos(f"Faltan columnas en el CSV: {faltan}")
+    if "point" in df:                       # CSV de exportar_mt5.py: trae el point de cada simbolo
+        point = df["point"].to_numpy(float)
     vol = df["tickvol"] if "tickvol" in df else (df["tick_volume"] if "tick_volume" in df else 0)
     out = pd.DataFrame({"Open": df["open"].to_numpy(), "High": df["high"].to_numpy(),
                         "Low": df["low"].to_numpy(), "Close": df["close"].to_numpy(),
@@ -137,3 +139,49 @@ def calidad(df: pd.DataFrame) -> dict:
             "duplicadas": int(df.index.duplicated().sum()),
             "con_nan": int(df[["Open", "High", "Low", "Close"]].isna().any(axis=1).sum()),
             "spread_cero_pct": round(100 * float((df["Spread"] == 0).mean()), 1)}
+
+
+# ------------------------------------------------- simbolos candidatos por familia
+CANDIDATOS = {
+    "oro": ["XAUUSD", "GOLD"], "plata": ["XAGUSD", "SILVER"], "btc": ["BTCUSD"],
+    "EURUSD": ["EURUSD"], "GBPUSD": ["GBPUSD"], "USDJPY": ["USDJPY"], "USDCHF": ["USDCHF"],
+    "AUDUSD": ["AUDUSD"], "USDCAD": ["USDCAD"], "NZDUSD": ["NZDUSD"],
+    "Dow Jones": ["US30", "DJ30", "WS30"], "Nasdaq 100": ["US100", "NAS100", "USTEC"],
+    "S&P 500": ["US500", "SPX500", "SP500"], "DAX": ["GER40", "DE40", "DAX"],
+    "FTSE 100": ["UK100", "FTSE100"], "Nikkei": ["JP225", "JPN225", "NIKKEI"],
+}
+
+
+def detectar_simbolos(nombres) -> dict:
+    """Para cada candidato, el simbolo mas corto del servidor cuyo nombre empieza igual (o None)."""
+    hallados = {}
+    for etiqueta, bases in CANDIDATOS.items():
+        hallados[etiqueta] = None
+        for base in bases:
+            m = sorted([n for n in nombres if n.upper().startswith(base)], key=len)
+            if m:
+                hallados[etiqueta] = m[0]
+                break
+    return hallados
+
+
+def listar_simbolos_mt5() -> list:
+    mt5 = _importar_mt5()
+    if not mt5.initialize():
+        raise ErrorDatos(f"No se pudo conectar al terminal MT5: {mt5.last_error()}")
+    try:
+        return [s.name for s in (mt5.symbols_get() or [])]
+    finally:
+        mt5.shutdown()
+
+
+def exportar_df(df: pd.DataFrame, point: float) -> pd.DataFrame:
+    """DataFrame normalizado -> tabla lista para guardar como CSV (la lee cargar_csv).
+    El spread se guarda en PUNTOS y se agrega la columna 'point' para poder reconstruirlo."""
+    return pd.DataFrame({
+        "time": df.index.strftime("%Y-%m-%d %H:%M:%S"),
+        "open": df["Open"].to_numpy(), "high": df["High"].to_numpy(),
+        "low": df["Low"].to_numpy(), "close": df["Close"].to_numpy(),
+        "tick_volume": df["Volume"].to_numpy(),
+        "spread": np.rint(df["Spread"].to_numpy() / point).astype(int),
+        "point": point})

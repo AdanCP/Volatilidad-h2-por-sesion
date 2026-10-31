@@ -21,7 +21,7 @@ pd.set_option("display.width", 200)
 pd.set_option("display.max_columns", 30)
 
 
-def parse():
+def crear_parser():
     p = argparse.ArgumentParser(description="Backtester de cruce de EMAs con filtros")
     p.add_argument("--fuente", choices=["mt5", "csv", "sintetico"], default="sintetico")
     p.add_argument("--simbolo", default="XAUUSD")
@@ -68,7 +68,11 @@ def parse():
     p.add_argument("--azar-veces", type=int, default=200)
     p.add_argument("--semilla", type=int, default=42)
     p.add_argument("--ablacion", action="store_true", help="cruce solo + un filtro por vez")
-    return p.parse_args()
+    return p
+
+
+def parse():
+    return crear_parser().parse_args()
 
 
 def armar_config(a) -> eng.Config:

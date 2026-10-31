@@ -166,3 +166,54 @@ def resumen_dinero(tr: pd.DataFrame, tick_size, tick_value, lotes, comision_por_
             "perdida_media_SL": float(pnl[res["res"].to_numpy() == "SL"].mean()) if (res["res"] == "SL").any() else 0.0,
             "neto": float(pnl.sum()), "comisiones": float(comision_por_lote * lotes * len(res)),
             "max_drawdown": float((pico - np.r_[0.0, eq]).max())}
+
+
+# ------------------------------------------------------------ multi-simbolo
+def tipo_activo(simbolo: str) -> str:
+    s = simbolo.upper()
+    if s.startswith(("BTC", "ETH", "LTC", "XRP")):
+        return "cripto"
+    if s.startswith(("XAU", "XAG", "XPT", "XPD", "GOLD", "SILVER")):
+        return "metal"
+    if s.startswith(("US30", "US100", "US500", "USTEC", "NAS", "SPX", "SP500", "GER", "DE40", "DAX",
+                     "UK100", "FTSE", "JP225", "JPN", "NIKKEI", "DJ30", "WS30", "FRA", "EU50", "AUS200")):
+        return "indice"
+    return "forex" if len(s) >= 6 and s[:6].isalpha() else "otro"
+
+
+def comparar_simbolos(datos: dict, cfg, oos_pct=0.3, azar_veces=100, semilla=42,
+                      contador=None, recortar_comun=False):
+    """Mismos parametros en todos los simbolos (sin optimizar por activo). Devuelve (tabla, notas)."""
+    notas = []
+    if recortar_comun and len(datos) > 1:
+        ini = max(df.index[0] for df in datos.values())
+        fin = min(df.index[-1] for df in datos.values())
+        datos = {s: df.loc[ini:fin] for s, df in datos.items()}
+        notas.append(f"Periodo comun recortado: {ini} -> {fin}.")
+    filas = []
+    for simbolo, df in datos.items():
+        tipo = tipo_activo(simbolo)
+        c = cfg
+        if tipo == "cripto" and cfg.sesion_activo:
+            c = replace(cfg, sesion_activo=False)
+            notas.append(f"{simbolo}: opera 24/7, el filtro de sesion se desactivo para este simbolo.")
+        if tipo == "indice" and cfg.sesion_activo:
+            notas.append(f"{simbolo}: el filtro Tokio/Londres/NY no equivale al horario propio del indice.")
+        if tipo == "indice":
+            notas.append(f"{simbolo}: los indices tienen gaps de apertura y pausas que el backtest no modela.")
+        r = evaluar(df, c, oos_pct, azar_veces, semilla, contador)
+        t, P = r["tabla"], r["P"]
+        filas.append({"simbolo": simbolo, "tipo": tipo, "velas": len(df), "desde": str(df.index[0].date()),
+                      "hasta": str(df.index[-1].date()),
+                      "spread_%SL": 100 * float(P.sp.mean() / P.dist.mean()) if P.dist.mean() > 0 else np.nan,
+                      "spread_cero_%": P.spread_ceros_pct,
+                      "resueltas": t.loc["Todo", "resueltas"], "%TP": t.loc["Todo", "%TP"],
+                      "%equilibrio": t.loc["Todo", "%equilibrio"], "exp_R": t.loc["Todo", "exp_R"],
+                      "exp_R_IS": t.loc["In-sample", "exp_R"], "exp_R_OOS": t.loc["Out-of-sample", "exp_R"],
+                      "mejor_que_%azar_OOS": t.loc["Out-of-sample", "mejor_que_%azar"],
+                      "descartadas": sum(r["descartes"].values())})
+    tabla = pd.DataFrame(filas).set_index("simbolo")
+    if len(tabla) > 1 and len(tabla[["desde", "hasta"]].drop_duplicates()) > 1 and not recortar_comun:
+        notas.append("Los simbolos tienen historiales de distinto largo: no son comparables tal cual "
+                     "(usar --recortar-comun).")
+    return tabla, notas
