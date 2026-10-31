@@ -439,9 +439,9 @@ def _veredicto(df, **kw):
 
 def test_veredicto_azar_no_es_valida_y_tendencia_si():
     v_azar, *_ = _veredicto(dt.sintetico(n=30000, tendencia=0.0, seed=3))
-    assert v_azar["nivel"] in ("no", "dudosa") and v_azar["nivel"] != "ok"
+    assert v_azar["nivel"] in ("sin", "pierde", "dudosa")
     v_ten, r, cfg, meses = _veredicto(dt.sintetico(n=30000, tendencia=0.6, seed=3))
-    assert v_ten["nivel"] == "ok" and v_ten["puntos"] == v_ten["tope"]
+    assert v_ten["nivel"] in ("solida", "ok") and v_ten["puntos"] == v_ten["tope"]
     assert [f["meses"] for f in v_ten["proy_total"]] == [1, 3, 6, 12]
     ps = [f["p_ganar"] for f in v_ten["proy_total"]]
     assert ps == sorted(ps) and ps[-1] > 0.99                         # con ventaja real, más tiempo = más probabilidad
@@ -508,6 +508,20 @@ def test_frecuencia():
     assert met.frecuencia(tr.iloc[0:0], idx)["por_mes"] == 0.0
     # entradas en los días 0,0,5,10,20,30,40 de 70: el mayor hueco es 40 -> fin (29 días libres hasta el día 69)
     assert f["max_sin_op"] == 29
+
+
+def test_veredicto_seis_estados_alcanzables():
+    df0 = dt.sintetico(n=30000, tendencia=0.0, seed=3)
+    m = (df0.index[-1] - df0.index[0]).days / 30.44
+
+    def nivel(df, **c):
+        cfg = eng.Config(sl_modo="precio", sl_valor=10.0, rr=2.0, **c)
+        r = met.evaluar(df, cfg, 0.3, 30, 42, met.ContadorPruebas())
+        return vd.evaluar_veredicto(r, cfg, m, usd_por_R=100.0, capital=100000, limite_pct=10)["nivel"]
+    assert nivel(df0) == "sin"                                   # sin ventaja: compatible con el azar
+    assert nivel(df0, costo_extra=4.0) == "pierde"               # costos > ventaja: expectativa negativa
+    assert nivel(dt.sintetico(n=30000, tendencia=0.6, seed=3)) == "solida"
+    assert nivel(dt.sintetico(n=1500, tendencia=0.6, seed=3)) == "nc"
 
 
 if __name__ == "__main__":

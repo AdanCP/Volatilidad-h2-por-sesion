@@ -427,12 +427,14 @@ def tabla_df(df, decs: dict = None, dec: int = 2, signo_cols=COLS_CON_SIGNO, max
     return h
 
 
-_FONDOS = {"ok": "linear-gradient(120deg,#4c4fe0,#2f3fd8)", "dudosa": "linear-gradient(120deg,#7c5cf0,#a355e8)",
-           "no": "linear-gradient(120deg,#ff4fa3,#e63e9c)", "nc": "linear-gradient(120deg,#7a7f9d,#555a82)"}
+_FONDOS = {"solida": "linear-gradient(120deg,#2f3fd8,#1b2a9e)", "ok": "linear-gradient(120deg,#4c4fe0,#2f3fd8)",
+           "dudosa": "linear-gradient(120deg,#7c5cf0,#a355e8)", "sin": "linear-gradient(120deg,#c04fd0,#e63e9c)",
+           "pierde": "linear-gradient(120deg,#e63e5c,#b3123f)", "no": "linear-gradient(120deg,#e63e5c,#b3123f)",
+           "nc": "linear-gradient(120deg,#7a7f9d,#555a82)"}
 
 
 def veredicto_caja(etiqueta: str, titulo: str, texto_html: str, nivel: str) -> str:
-    """Recuadro de color según el nivel: ok / dudosa / no / nc."""
+    """Recuadro de color según el nivel: solida / ok / dudosa / sin / pierde / nc."""
     return (f'<div class="insight" style="background:{_FONDOS.get(nivel, _FONDOS["nc"])}">'
             f'<div class="tt">{_e(etiqueta)}</div><div style="font-size:1.25rem;font-weight:800;margin:2px 0 8px">{_e(titulo)}</div>'
             f'{texto_html}</div>')

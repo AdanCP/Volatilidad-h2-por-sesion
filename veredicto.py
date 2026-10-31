@@ -264,9 +264,18 @@ def evaluar_veredicto(r: dict, cfg, meses_datos: float, usd_por_R: Optional[floa
     if est["Muestra suficiente"] == BAD:
         nivel, titulo = "nc", "No concluyente: hay muy pocas operaciones para opinar"
         sig = "Ampliá el período, usá una temporalidad menor o aflojá los filtros hasta tener más operaciones."
-    elif est["Expectativa positiva"] == BAD or est["Ventaja estadística"] == BAD:
-        nivel, titulo = "no", "No válida para intentarla tal como está"
-        sig = "No hay evidencia de ventaja. No la automatices: cambiar parámetros hasta que salga bien suele ser sobreajuste."
+    elif est["Expectativa positiva"] == BAD:
+        nivel, titulo = "pierde", "No válida: pierde dinero"
+        sig = ("La expectativa es negativa con estos parámetros. Descartala o cambiá la lógica de fondo, no solo los números: "
+               "ajustar hasta que salga bien suele ser sobreajuste.")
+    elif est["Ventaja estadística"] == BAD:
+        nivel, titulo = "sin", "No válida: no hay ventaja demostrable"
+        sig = ("El resultado es compatible con el azar. Probá otra idea o sumá más datos; no la automatices ni la ajustes "
+               "hasta que dé bien.")
+    elif (puntos == tope and est["Muestra suficiente"] == OK and n >= 200 and n_oos >= 50):
+        nivel, titulo = "solida", "Válida, evidencia sólida"
+        sig = ("Pasala a demo con el lote previsto y revisá cada mes que la frecuencia de operaciones, el spread y la "
+               "ejecución reales se parezcan a lo modelado.")
     elif puntos >= tope - 1 and BAD not in est.values() and est["Muestra suficiente"] == OK:
         nivel, titulo = "ok", "Válida para intentar, empezando en demo"
         sig = "Pasala a demo 1 a 3 meses y comprobá que la frecuencia de operaciones, el spread y la ejecución reales se parezcan a lo modelado."
@@ -274,8 +283,8 @@ def evaluar_veredicto(r: dict, cfg, meses_datos: float, usd_por_R: Optional[floa
         nivel, titulo = "dudosa", "Dudosa: hay indicios, pero no alcanza para confiar"
         sig = "Revisá los puntos con ! o ✕. Antes de arriesgar una cuenta, validala con más datos o en otros símbolos."
     else:
-        nivel, titulo = "no", "No válida para intentarla tal como está"
-        sig = "Los criterios no se cumplen en conjunto. No la automatices."
+        nivel, titulo = "sin", "No válida: los criterios no se cumplen en conjunto"
+        sig = "No hay evidencia suficiente en conjunto. No la automatices: probá otra idea o más datos."
     if pruebas > 10:
         notas.append(f"Llevás {pruebas} pruebas: se exigió una confianza mayor (99%) porque con tantas combinaciones "
                      "algo sale bien por azar.")
