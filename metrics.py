@@ -243,3 +243,26 @@ def rachas(tr: pd.DataFrame, indice, top: int = 5) -> dict:
     for k in out:   # más largas primero; a igual largo, la más reciente
         out[k] = sorted(out[k], key=lambda x: (-x["largo"], -x["desde"].value))[:top]
     return out
+
+
+def frecuencia(tr: pd.DataFrame, indice) -> dict:
+    """Operaciones tomadas por día, semana y mes (promedios sobre el período con datos).
+    Día = días con velas (fines de semana sin mercado no cuentan); semana y mes = tiempo calendario."""
+    n = int(len(tr))
+    if n == 0 or len(indice) < 2:
+        return {"n": n, "por_dia": 0.0, "por_semana": 0.0, "por_mes": 0.0, "max_dia": 0, "dias_con_op": 0,
+                "max_sin_op": 0, "sin_op_desde": None, "sin_op_hasta": None, "dias_mercado": 0}
+    dias_mercado = max(len(pd.DatetimeIndex(indice).normalize().unique()), 1)
+    dias_cal = max((indice[-1] - indice[0]).days, 1)
+    entradas = pd.DatetimeIndex([indice[int(i)] for i in tr["i"]]).normalize()
+    por_dia = pd.Series(1, index=entradas).groupby(level=0).sum()
+    # mayor lapso sin operar: entre el inicio del período, cada entrada y el final (días calendario sin ninguna entrada)
+    marcas = [pd.Timestamp(indice[0]).normalize()] + sorted(set(entradas)) + [pd.Timestamp(indice[-1]).normalize()]
+    mejor, ini, fin = 0, None, None
+    for a, b in zip(marcas[:-1], marcas[1:]):
+        libres = (b - a).days - 1 if a != marcas[0] and b != marcas[-1] else (b - a).days
+        if libres > mejor:
+            mejor, ini, fin = libres, a, b
+    return {"n": n, "por_dia": n / dias_mercado, "por_semana": n / (dias_cal / 7),
+            "por_mes": n / (dias_cal / 30.44), "max_dia": int(por_dia.max()), "dias_con_op": int(len(por_dia)),
+            "dias_mercado": dias_mercado, "max_sin_op": int(mejor), "sin_op_desde": ini, "sin_op_hasta": fin}

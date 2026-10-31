@@ -499,6 +499,17 @@ def test_rachas():
     assert met.rachas(tr.iloc[0:0], idx)["TP"] == []
 
 
+def test_frecuencia():
+    idx = pd.date_range("2024-01-01", periods=70, freq="D")   # 70 dias
+    tr = pd.DataFrame({"i": [0, 0, 5, 10, 20, 30, 40], "res": ["TP"] * 7})
+    f = met.frecuencia(tr, idx)
+    assert f["n"] == 7 and f["max_dia"] == 2 and f["dias_con_op"] == 6
+    assert abs(f["por_dia"] - 0.1) < 1e-9 and abs(f["por_semana"] - 0.7 * 7 / 7 * 1.0) < 0.05
+    assert met.frecuencia(tr.iloc[0:0], idx)["por_mes"] == 0.0
+    # entradas en los días 0,0,5,10,20,30,40 de 70: el mayor hueco es 40 -> fin (29 días libres hasta el día 69)
+    assert f["max_sin_op"] == 29
+
+
 if __name__ == "__main__":
     tests = [(k, v) for k, v in sorted(globals().items()) if k.startswith("test_")]
     for nombre, f in tests:

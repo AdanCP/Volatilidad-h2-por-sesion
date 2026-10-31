@@ -113,6 +113,12 @@ with st.sidebar:
                             datos[simbolo], specs[simbolo] = d_, sp_
                             if vacios:
                                 avisos_datos.append(f"{simbolo}: {vacios} tramos de descarga vinieron vacíos.")
+                            if len(d_) and (d_.index[0].date() - desde).days > 30:
+                                avisos_datos.append(
+                                    f"{simbolo}: pediste desde {desde:%d/%m/%Y}, pero MT5 solo tiene historia {tf} desde "
+                                    f"{d_.index[0]:%d/%m/%Y}. El servidor o el terminal no guardan más atrás: por eso "
+                                    "'Recortar período' muestra otra fecha. Para más historia usá una temporalidad mayor "
+                                    "(H1 o D1) o subí 'Max bars in chart' en MT5 (Herramientas → Opciones → Gráficos).")
                         except data.ErrorDatos as e:
                             avisos_datos.append(f"{simbolo}: {e}")
                         barra.progress((k + 1) / len(simbolos))
@@ -509,6 +515,27 @@ if len(res):
                    "Valores teóricos: el slippage y los gaps pueden hacer que una pérdida real supere la calculada.")
     except ValueError as e:
         st.error(str(e))
+
+# ------------------------------------------------------------- frecuencia
+if len(res):
+    st.write("")
+    html(vis.titulo_seccion("Frecuencia de operaciones", "Promedio de operaciones tomadas en el período analizado"))
+    _fr = met.frecuencia(tr, r["P"].indice)
+    f1, f2, f3, f4, f5 = st.columns(5)
+    with f1:
+        html(vis.kpi("Por día", vis.n(_fr["por_dia"], 2), f"promedio por día con mercado ({_fr.get('dias_mercado', 0)} días)", vis.INDIGO))
+    with f2:
+        html(vis.kpi("Por semana", vis.n(_fr["por_semana"], 1), "promedio por semana calendario", vis.VIOLETA))
+    with f3:
+        html(vis.kpi("Por mes", vis.n(_fr["por_mes"], 1), "promedio por mes calendario", vis.ROSA))
+    with f4:
+        html(vis.kpi("Máx. en un día", str(_fr["max_dia"]), f"operaba en {_fr['dias_con_op']} días del período", vis.AZUL))
+    with f5:
+        _sub = (f"entre el {_fr['sin_op_desde']:%d/%m/%Y} y el {_fr['sin_op_hasta']:%d/%m/%Y}"
+                if _fr["sin_op_desde"] is not None else "sin lapsos")
+        html(vis.kpi("Mayor lapso sin operar", f"{_fr['max_sin_op']} d", _sub, vis.MAGENTA))
+    st.caption(f"Total: {_fr['n']} operaciones tomadas (incluye las que no llegaron a TP ni SL). "
+               "Con pocas operaciones por mes, los porcentajes tardan más en volverse confiables.")
 
 # ------------------------------------------------------------- rachas
 if len(res):
