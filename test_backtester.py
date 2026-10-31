@@ -12,6 +12,7 @@ import data as dt
 import engine as eng
 import indicators as ind
 import metrics as met
+import veredicto as vd
 import sessions as ses
 
 try:
@@ -347,6 +348,155 @@ def test_comparar_simbolos_recorte_comun_y_cripto_sin_sesion():
     assert any("BTCUSD" in n and "24/7" in n for n in notas)
     t2, n2 = met.comparar_simbolos(datos, eng.Config(), azar_veces=5)
     assert any("distinto largo" in n for n in n2) and t2["velas"].nunique() == 3
+
+
+def test_sync_ida_y_vuelta_y_manifest():
+    d = dt.sintetico(n=500, spread=0.25)
+    spec = {"simbolo": "XAUUSD", "point": 0.01, "tick_size": 0.01, "tick_value": 1.0}
+    with tempfile.TemporaryDirectory() as t:
+        ruta = dt.guardar_sync(d, spec, t, "XAUUSD", "H1")
+        assert ruta.endswith("XAUUSD_H1.csv.gz")
+        b1 = open(ruta, "rb").read()
+        dt.guardar_sync(d, spec, t, "XAUUSD", "H1")
+        assert open(ruta, "rb").read() == b1          # bytes reproducibles: sin cambios inutiles en git
+        r = dt.cargar_sync(t, "XAUUSD", "H1")
+        assert len(r) == 500 and abs(r["Close"] - d["Close"]).max() < 1e-9
+        assert abs(r["Spread"].iloc[0] - 0.25) < 1e-9
+        assert dt.leer_manifest(t) == {}
+        dt.escribir_manifest(t, {"sincronizado": "x", "simbolos": {"XAUUSD": {"spec": spec, "tfs": {}}}})
+        assert dt.leer_manifest(t)["simbolos"]["XAUUSD"]["spec"]["tick_value"] == 1.0
+        try:
+            dt.cargar_sync(t, "NADA", "H1")
+            assert False
+        except dt.ErrorDatos:
+            pass
+
+
+def test_subir_git_con_remoto_que_avanzo():
+    import subprocess
+    import sincronizar_mt5 as sm
+    def g(cwd, *a):
+        return subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True, check=True)
+    with tempfile.TemporaryDirectory() as t:
+        remoto, a, b = (os.path.join(t, x) for x in ("remoto.git", "a", "b"))
+        g(t, "init", "-q", "--bare", "-b", "main", remoto)
+        for c in (a, b):
+            g(t, "clone", "-q", remoto, c)
+            g(c, "config", "user.email", "t@t"); g(c, "config", "user.name", "t")
+        open(os.path.join(a, "estado.json"), "w").write("1")
+        g(a, "add", "."); g(a, "commit", "-qm", "base"); g(a, "push", "-q", "origin", "HEAD:main")
+        g(b, "pull", "-q", "origin", "main")
+        open(os.path.join(a, "estado.json"), "w").write("2")        # el "bot" avanza el remoto
+        g(a, "commit", "-qam", "bot"); g(a, "push", "-q")
+        os.makedirs(os.path.join(b, "datos_mt5"))
+        open(os.path.join(b, "datos_mt5", "x.csv.gz"), "w").write("datos")
+        cwd = os.getcwd(); os.chdir(b)
+        try:
+            sm.subir("datos_mt5")
+            sm.subir("datos_mt5")                                    # segunda vez: nada que subir
+        finally:
+            os.chdir(cwd)
+        g(a, "pull", "-q"); assert os.path.exists(os.path.join(a, "datos_mt5", "x.csv.gz"))
+
+
+def test_sl_fijo_en_precio_y_dolares():
+    df = dt.sintetico(n=6000, tendencia=0.3, seed=4)
+    # 0,10 lotes de oro: tick 0,01 y tick_value 1 -> 100 US$ por cada 1,00 de precio; SL 200 US$ = 2,00 de precio
+    vpu = met.valor_por_unidad(0.01, 1.0, 0.10)
+    assert abs(vpu - 10.0) < 1e-9
+    dist = 200.0 / vpu
+    cfg = eng.Config(sl_modo="precio", sl_valor=dist, rr=2.0)
+    r = met.evaluar(df, cfg, 0.3, 10)
+    tr = r["trades"]
+    assert len(tr) > 20 and (abs(tr["dist"] - dist) < 1e-9).all()
+    d = met.resumen_dinero(tr, 0.01, 1.0, 0.10)
+    assert abs(d["riesgo_medio_por_operacion"] - 200.0) < 1e-6          # el SL fijo es exactamente el riesgo en dinero
+    assert abs(d["perdida_media_SL"] + 200.0) < 1e-6 and abs(d["ganancia_media_TP"] - 400.0) < 1e-6
+    # relacion TP/SL menor que 1 solo se permite con SL fijo
+    eng.Config(sl_modo="precio", sl_valor=2.0, rr=0.5).validar()
+    try:
+        eng.Config(sl_modo="atr", rr=0.5).validar()
+        assert False
+    except ValueError:
+        pass
+
+
+def test_comparar_simbolos_con_config_por_simbolo():
+    datos = {"A": dt.sintetico(n=4000, seed=1), "B": dt.sintetico(n=4000, seed=2)}
+    cfgs = {"A": eng.Config(sl_modo="precio", sl_valor=3.0), "B": eng.Config(sl_modo="precio", sl_valor=6.0)}
+    tabla, _ = met.comparar_simbolos(datos, cfgs, azar_veces=5)
+    assert list(tabla.index) == ["A", "B"]
+    uno, _ = met.comparar_simbolos(datos, eng.Config(), azar_veces=5)         # sigue aceptando una sola Config
+    assert list(uno.index) == ["A", "B"]
+
+
+def _veredicto(df, **kw):
+    cfg = eng.Config(sl_modo="precio", sl_valor=10.0, rr=2.0)
+    r = met.evaluar(df, cfg, 0.3, 30, 42, met.ContadorPruebas())
+    meses = (df.index[-1] - df.index[0]).days / 30.44
+    return vd.evaluar_veredicto(r, cfg, meses, usd_por_R=100.0, capital=100000, limite_pct=10, **kw), r, cfg, meses
+
+
+def test_veredicto_azar_no_es_valida_y_tendencia_si():
+    v_azar, *_ = _veredicto(dt.sintetico(n=30000, tendencia=0.0, seed=3))
+    assert v_azar["nivel"] in ("no", "dudosa") and v_azar["nivel"] != "ok"
+    v_ten, r, cfg, meses = _veredicto(dt.sintetico(n=30000, tendencia=0.6, seed=3))
+    assert v_ten["nivel"] == "ok" and v_ten["puntos"] == v_ten["tope"]
+    assert [f["meses"] for f in v_ten["proy_total"]] == [1, 3, 6, 12]
+    ps = [f["p_ganar"] for f in v_ten["proy_total"]]
+    assert ps == sorted(ps) and ps[-1] > 0.99                         # con ventaja real, más tiempo = más probabilidad
+    assert all(0 <= f["p_limite"] <= 1 for f in v_ten["proy_total"])
+
+
+def test_veredicto_pocas_operaciones_no_concluyente():
+    v, *_ = _veredicto(dt.sintetico(n=1500, tendencia=0.6, seed=3))
+    assert v["nivel"] == "nc"
+
+
+def test_veredicto_es_reproducible_y_muchas_pruebas_exigen_mas():
+    df = dt.sintetico(n=30000, tendencia=0.0, seed=3)
+    a, *_ = _veredicto(df)
+    b, *_ = _veredicto(df)
+    assert a["proy_total"] == b["proy_total"] and a["prob_ventaja_total"] == b["prob_ventaja_total"]
+    c, *_ = _veredicto(dt.sintetico(n=30000, tendencia=0.6, seed=3), pruebas=40)
+    assert any("99%" in n_ or "muchas pruebas" in n_ for n_ in c["notas"] + [x[2] for x in c["checks"]])
+
+
+def test_probabilidad_de_ventaja_y_proyeccion_basicas():
+    sin_ventaja = {"w": 100, "l": 200, "gana_R": 2.0, "pierde_R": -1.0, "p_equilibrio": 1 / 3}
+    assert 0.3 < vd.prob_ventaja(sin_ventaja) < 0.7                    # 33% de acierto con RR 2: justo el equilibrio
+    claro = {"w": 150, "l": 150, "gana_R": 2.0, "pierde_R": -1.0, "p_equilibrio": 1 / 3}
+    assert vd.prob_ventaja(claro) > 0.99
+    perdedora = {"w": 20, "l": 180, "gana_R": 2.0, "pierde_R": -1.0, "p_equilibrio": 1 / 3}
+    pr = vd.proyectar(perdedora, 10, usd_por_R=100.0, limite_usd=1000.0)
+    assert pr[-1]["p_ganar"] < 0.05 and pr[-1]["p_limite"] > 0.95       # mala estrategia: casi seguro toca el límite
+    assert vd.proyectar(None, 10) == [] and vd.proyectar(claro, 0) == []
+    assert vd.prob_ventaja(None) != vd.prob_ventaja(None)               # NaN
+
+
+def test_descripcion_incluye_los_parametros_marcados():
+    df = dt.sintetico(n=8000, seed=2)
+    cfg = eng.Config(ema_corta=13, ema_larga=34, sl_modo="precio", sl_valor=5.0, rr=2.0, sma_activo=True, sma_periodo=200,
+                     adx_activo=True, adx_min=25.0, sesion_activo=True, sesiones=("Londres",), servidor_offset_horas=2.0,
+                     direccion="largos")
+    h = vd.describir(cfg, "XAUUSD", "H1", df.index[0], df.index[-1], 12.0, 0.1, -1234.5, 80, 20, 60, -0.3, 2000.0,
+                     sl_usd=200.0, tp_usd=400.0)
+    for x in ("XAUUSD", "H1", "13/34", "solo largos", "SL de US$200,00", "TP de US$400,00", "SMA 200", "ADX(14) ≥ 25",
+              "sesión Londres", "perdido US$1.234,50", "0,10 lotes", "80 operaciones", "-0,30 R"):
+        assert x in h, x
+
+
+def test_rachas():
+    import pandas as pd
+    idx = pd.date_range("2024-01-01", periods=50, freq="D")
+    seq = ["TP","TP","TP","SL","SL","TP","SL","SL","SL","SL","TP","ABIERTA"]
+    tr = pd.DataFrame({"i": range(0, 36, 3), "salida": range(1, 37, 3), "res": seq,
+                       "R": [2 if x == "TP" else -1 if x == "SL" else 0 for x in seq]})
+    r = met.rachas(tr, idx, 5)
+    assert [x["largo"] for x in r["TP"]] == [3, 1, 1]
+    assert [x["largo"] for x in r["SL"]] == [4, 2]
+    assert r["SL"][0]["R"] == -4 and r["TP"][0]["R"] == 6
+    assert met.rachas(tr.iloc[0:0], idx)["TP"] == []
 
 
 if __name__ == "__main__":

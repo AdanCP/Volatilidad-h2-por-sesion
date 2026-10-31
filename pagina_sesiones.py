@@ -1,8 +1,8 @@
 from datetime import date
 
-import numpy as np
-import pandas as pd
 import streamlit as st
+
+import ui_estilo as vis
 
 from xauusd_sesiones import (
     TICKER,
@@ -10,17 +10,6 @@ from xauusd_sesiones import (
     descargar,
     estadisticas_objetivo,
     nombre_csv,
-)
-
-st.title("📈 XAU/USD - Movimiento de las Sesiones")
-st.write(
-    "Calcula el rango High-Low en **dólares ($)** durante las dos primeras"
-    " horas de Tokio, Londres y Nueva York."
-)
-st.caption(
-    f"Datos de {TICKER} (futuro de oro COMEX, no spot XAU/USD) vía Yahoo"
-    " Finance. Aperturas: Tokio 09:00 JST, Londres 08:00 local, Nueva York"
-    " 08:00 ET. El horario de verano se ajusta automáticamente."
 )
 
 st.sidebar.header("Parámetros de Búsqueda")
@@ -41,6 +30,16 @@ objetivo = st.sidebar.number_input(
     help="Se cuenta cuántas veces el rango High-Low de las 2 primeras horas"
     " alcanzó o superó este valor.",
 )
+
+
+st.html(vis.barra_superior(
+    "XAU/USD · Movimiento de las sesiones",
+    "Rango High-Low en dólares durante las dos primeras horas de Tokio, Londres y Nueva York.",
+    [("Desde", f"{fecha_inicio:%d/%m/%Y}"), ("Hasta", f"{fecha_fin:%d/%m/%Y}"), ("Objetivo", f"${objetivo:,.2f}")]))
+st.html(
+    f'<div class="note">Datos de {TICKER} (futuro de oro COMEX, no spot XAU/USD) vía Yahoo Finance. '
+    "Aperturas: Tokio 09:00 JST, Londres 08:00 local, Nueva York 08:00 ET. "
+    "El horario de verano se ajusta automáticamente.</div>")
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -84,6 +83,10 @@ if st.sidebar.button("Calcular Movimientos", type="primary"):
                 }
 
 
+def corto(columna: str) -> str:
+    return columna.replace(" 2H ($)", "")
+
+
 def mostrar_calculo(calculo: dict) -> None:
     if "aviso" in calculo:
         tipo, texto = calculo["aviso"]
@@ -91,35 +94,51 @@ def mostrar_calculo(calculo: dict) -> None:
         return
 
     tabla = calculo["tabla"]
-    st.success("¡Datos procesados con éxito!")
-
-    st.subheader("Resumen")
-    resumen = tabla.agg(["mean", "median", "max"]).round(2)
-    resumen.index = ["Promedio", "Mediana", "Máximo"]
-    st.dataframe(resumen)
-
-    st.subheader(f"Objetivo de ${objetivo:,.2f}")
-    st.caption(
-        "Días en que el rango High-Low de las 2 primeras horas alcanzó o"
-        " superó el objetivo."
-    )
+    resumen = tabla.agg(["mean", "median", "max"])
     stats = estadisticas_objetivo(tabla, objetivo)
-    st.dataframe(stats.style.format({"% de veces": "{:.1f}%"}, na_rep="-"))
 
-    st.subheader("Detalle diario")
-    st.caption("En verde, los días en que se alcanzó el objetivo.")
+    # ---- anillos: % de sesiones que alcanzaron el objetivo
+    cols = st.columns(len(tabla.columns))
+    for k, columna in enumerate(tabla.columns):
+        fila = stats.loc[columna]
+        pct = fila["% de veces"]
+        with cols[k]:
+            st.html(vis.anillo(
+                pct if pct is not None else 0, corto(columna),
+                f"{int(fila['Veces que alcanzó'])} de {int(fila['Sesiones medidas'])} sesiones<br>"
+                f"promedio ${vis.n(resumen.loc['mean', columna])} · máx ${vis.n(resumen.loc['max', columna])}",
+                uid=f"s{k}"))
 
-    def resaltar(data: pd.DataFrame) -> pd.DataFrame:
-        return pd.DataFrame(
-            np.where(data >= objetivo, "background-color: #2e7d3255", ""),
-            index=data.index,
-            columns=data.columns,
-        )
+    st.write("")
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        filas = [[nombre] + [vis.n(resumen.loc[clave, c]) if resumen.loc[clave, c] == resumen.loc[clave, c] else "–"
+                             for c in tabla.columns]
+                 for nombre, clave in (("Promedio", "mean"), ("Mediana", "median"), ("Máximo", "max"))]
+        st.html(vis.tarjeta("Resumen del rango (US$)", vis.tabla_html([""] + [corto(c) for c in tabla.columns], filas),
+                            "Rango High-Low de las dos primeras horas de cada sesión."))
+    with c2:
+        st.html(vis.tarjeta("Rango promedio por sesión (US$)", vis.barras_verticales(
+            [(corto(c), float(resumen.loc["mean", c]), f"máx {vis.n(resumen.loc['max', c], 1)}") for c in tabla.columns], signo=False)))
 
-    st.dataframe(
-        tabla.style.apply(resaltar, axis=None).format("{:.2f}", na_rep="-")
-    )
+    st.write("")
+    partes = []
+    for columna in tabla.columns:
+        fila = stats.loc[columna]
+        if fila["Sesiones medidas"]:
+            partes.append(f"<b>{corto(columna)}</b> lo alcanzó en {int(fila['Veces que alcanzó'])} de "
+                          f"{int(fila['Sesiones medidas'])} sesiones ({vis.n(fila['% de veces'], 1)}%)")
+    st.html(vis.insight(f"Objetivo de ${vis.n(objetivo)}",
+                        "; ".join(partes) + ".<br><br>Describe el período elegido; no predice las sesiones futuras."))
 
+    st.write("")
+    nd = lambda v: vis.n(v, 2) if v == v else "–"
+    filas = [[f"{idx:%d/%m/%Y}"] + [nd(v) for v in fila] for idx, fila in zip(tabla.index, tabla.to_numpy())]
+    st.html(vis.tarjeta(
+        "Detalle diario (US$)",
+        vis.tabla_html(["Fecha"] + [corto(c) for c in tabla.columns], filas, max_alto=420,
+                       resaltar=lambda i, j: tabla.iat[i, j - 1] >= objetivo),
+        "En violeta, los días en que se alcanzó el objetivo.", f"{len(tabla)} días"))
     st.download_button(
         label="📥 Descargar resultados en CSV",
         data=tabla.to_csv().encode("utf-8"),

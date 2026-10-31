@@ -25,7 +25,7 @@ class Config:
     ema_corta: int = 13
     ema_larga: int = 34
     rr: float = 2.0
-    sl_modo: str = "atr"            # "atr" (multiplo) o "pct" (% del precio)
+    sl_modo: str = "atr"            # "atr" (multiplo), "pct" (% del precio) o "precio" (distancia fija en unidades de precio)
     sl_valor: float = 1.5
     atr_periodo: int = 14
     direccion: str = "ambas"        # "ambas" | "largos" | "cortos"
@@ -62,10 +62,13 @@ class Config:
     def validar(self) -> None:
         if self.ema_corta >= self.ema_larga:
             raise ValueError("La EMA corta debe ser menor que la larga.")
-        if not 1 <= self.rr <= 10:
+        if self.sl_modo not in ("atr", "pct", "precio") or self.sl_valor <= 0:
+            raise ValueError("SL invalido: modo 'atr', 'pct' o 'precio' y valor mayor que 0.")
+        if self.sl_modo == "precio":        # SL y TP fijos (p. ej. en dolares): la relacion TP/SL es libre
+            if not 0.05 <= self.rr <= 50:
+                raise ValueError("La relacion TP/SL debe estar entre 0,05 y 50.")
+        elif not 1 <= self.rr <= 10:
             raise ValueError("El RR debe estar entre 1 y 10.")
-        if self.sl_modo not in ("atr", "pct") or self.sl_valor <= 0:
-            raise ValueError("SL invalido: modo 'atr' o 'pct' y valor mayor que 0.")
         if self.direccion not in ("ambas", "largos", "cortos"):
             raise ValueError("Direccion invalida.")
         if self.spread not in ("vela", "mediana", "fijo", "ninguno"):
@@ -109,7 +112,12 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     h, l, c = (df[k].to_numpy(float) for k in ("High", "Low", "Close"))
     n = len(c)
     atr = ind.atr_wilder(h, l, c, cfg.atr_periodo)
-    dist = atr * cfg.sl_valor if cfg.sl_modo == "atr" else c * cfg.sl_valor / 100.0
+    if cfg.sl_modo == "atr":
+        dist = atr * cfg.sl_valor
+    elif cfg.sl_modo == "pct":
+        dist = c * cfg.sl_valor / 100.0
+    else:                                   # "precio": la misma distancia en todas las operaciones
+        dist = np.full(n, float(cfg.sl_valor))
 
     warm = cfg.ema_larga + 1        # sin filtros: igual que cruce_minimo.py
     if cfg.sma_activo:

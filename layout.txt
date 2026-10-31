@@ -3,11 +3,13 @@ VOLATILIDAD-H2-POR-SESION/
 ├── pagina_sesiones.py       Pagina 1: movimiento de las sesiones XAU/USD
 ├── xauusd_sesiones.py       Logica de la pagina de sesiones
 ├── app_backtest.py          Pagina 2: backtester de cruce de EMAs
+├── ui_estilo.py             Estilo y componentes visuales del dashboard (HTML/SVG)
+├── .streamlit/config.toml   Tema claro violeta
 ├── data.py  engine.py  indicators.py  metrics.py  sessions.py  ui_helpers.py
 │                            Motor y utilidades del backtester
 ├── run_backtest.py  run_multi.py   Versiones por consola del backtester
 ├── exportar_mt5.py          Exporta historial de MT5 a CSV
 ├── cruce_minimo.py          Motor minimo de referencia (lo usa un test)
-├── test_backtester.py       Tests
+├── test_backtester.py  test_estilo.py   Tests
 ├── abrir_app.bat            Doble clic para abrirla en local
 ├── requirements.txt  render.yaml

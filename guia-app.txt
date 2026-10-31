@@ -1,0 +1,60 @@
+Guía de cada campo (también dentro de la app, en “📖 Guía de cada campo”)
+
+1. Datos
+
+Fuente: MT5 directo lee tu terminal de FTMO (solo en tu PC). CSV usa archivos de exportar_mt5.py. Sintéticos son series inventadas para probar la interfaz.
+Temporalidad: el tamaño de cada vela, que define cada cuánto se mira el cruce. Velas chicas dan más operaciones, más ruido y un spread que pesa más.
+Remuestrear a: arma velas más grandes (H4 desde H1). No puede armar velas más chicas.
+Point (solo CSV): tamaño del punto del símbolo (0,01 en oro, 0,00001 en EURUSD), para pasar el spread de puntos a precio.
+Tendencia sintética en 0: es azar puro. Ninguna estrategia debería ganar ahí, y sirve para comprobar que el sistema no inventa ventaja.
+
+2. Señal y gestión
+
+EMA corta y larga: la señal es el cruce al cierre de la vela. Entra al cierre de esa vela, y la corta debe ser menor que la larga.
+SL por ATR: SL igual al ATR por el valor que pongas, y se adapta a la volatilidad.
+SL por %: SL igual al precio por el porcentaje.
+RR: el TP queda a SL por RR. Con RR 2 hace falta ganar al menos 1 de cada 3 para no perder (100 / (1 + RR)).
+Período ATR: ventana de cálculo del ATR (14 por defecto). Se usa en el SL por ATR, en la distancia a la SMA y en el filtro de ATR.
+
+3. Lotaje y dinero
+
+Fórmula: dinero por cada 1,00 de precio igual a tick_value dividido tick_size por lotes.
+tick_size y tick_value: con MT5 directo se leen solos de cada símbolo.
+
+4. Costos
+
+Spread de la vela: el spread de cierre de cada vela. En historial viejo suele venir en 0 y subestima el costo.
+Ceros → mediana: reemplaza esos ceros por la mediana.
+Valor fijo y Sin spread: el que indiques, o ninguno.
+Cómo se aplica: los largos entran al ask (precio de venta). En los cortos, el SL y el TP se activan con el ask.
+Costo extra: unidades de precio que se restan a cada operación (slippage, comisión).
+
+5. Filtros (se pueden combinar; el cruce tiene que pasar todos los activos)
+
+SMA: compra solo si el cierre está arriba de la SMA y venta solo si está abajo.
+Distancia mínima: el cierre a por lo menos N veces el ATR de la SMA, para evitar cruces pegados a ella.
+Pendiente: la SMA tiene que ir a favor respecto de hace N velas.
+ADX: mide la fuerza de la tendencia, no su dirección.
+Mínimo: descarta el mercado sin tendencia (menos de 20, por ejemplo).
+Máximo: descarta tendencias muy extendidas.
+Creciente: pide que el ADX sea mayor que hace N velas.
+ATR: mide la volatilidad.
+Mínimo y máximo: en % del precio.
+Modo relativo: compara el ATR con su promedio reciente. Con 0,8 de mínimo descarta el mercado dormido y con 2,0 de máximo la volatilidad extrema.
+Sesión: solo toma cruces dentro de Tokio (09–18), Londres (08–17) o Nueva York (08–17), en hora local.
+Desfase del servidor: la diferencia entre la hora de las velas del broker y UTC en invierno (GMT+2 es 2). Hay que medirlo con el mercado abierto: si está mal, las sesiones quedan corridas.
+
+6. Control de sobreajuste
+
+Out-of-sample: el último tramo del historial, que se mide aparte. Si funciona antes y no ahí, probablemente era azar.
+Repeticiones del azar: cuántas veces se simulan entradas aleatorias con las mismas reglas de SL, TP y spread, como vara de comparación.
+Pruebas en la sesión: cuántas combinaciones llevás probadas. Con muchas, un buen resultado puede ser casualidad.
+
+Cómo leer los resultados
+
+Expectativa (R): el promedio por operación, con 1 R igual a lo que arriesgás. +0,3 R significa ganar 0,3 veces tu riesgo por operación.
+Anillo y rayita: el anillo es el % de operaciones que llegan al TP, y la rayita es el mínimo para no perder.
+Mejor que el azar: cerca de 50% no se distingue de entrar al azar.
+Racha de SL y drawdown: lo que tendrías que poder aguantar en una cuenta de fondeo.
+Ambiguas: velas que tocaron el SL y el TP a la vez. Como no se sabe cuál fue primero, cuentan como SL.
+Ablación: corre el cruce solo y después cada filtro por separado, para ver qué aporta cada uno.

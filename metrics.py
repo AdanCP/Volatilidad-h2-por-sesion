@@ -183,7 +183,9 @@ def tipo_activo(simbolo: str) -> str:
 
 def comparar_simbolos(datos: dict, cfg, oos_pct=0.3, azar_veces=100, semilla=42,
                       contador=None, recortar_comun=False):
-    """Mismos parametros en todos los simbolos (sin optimizar por activo). Devuelve (tabla, notas)."""
+    """Mismos parametros en todos los simbolos (sin optimizar por activo). Devuelve (tabla, notas).
+    `cfg` puede ser una Config (igual para todos) o un dict {simbolo: Config}, util cuando el SL
+    se fija en dolares y la distancia de precio depende del valor por tick de cada simbolo."""
     notas = []
     if recortar_comun and len(datos) > 1:
         ini = max(df.index[0] for df in datos.values())
@@ -193,11 +195,11 @@ def comparar_simbolos(datos: dict, cfg, oos_pct=0.3, azar_veces=100, semilla=42,
     filas = []
     for simbolo, df in datos.items():
         tipo = tipo_activo(simbolo)
-        c = cfg
-        if tipo == "cripto" and cfg.sesion_activo:
-            c = replace(cfg, sesion_activo=False)
+        c = cfg[simbolo] if isinstance(cfg, dict) else cfg
+        if tipo == "cripto" and c.sesion_activo:
+            c = replace(c, sesion_activo=False)
             notas.append(f"{simbolo}: opera 24/7, el filtro de sesion se desactivo para este simbolo.")
-        if tipo == "indice" and cfg.sesion_activo:
+        if tipo == "indice" and c.sesion_activo:
             notas.append(f"{simbolo}: el filtro Tokio/Londres/NY no equivale al horario propio del indice.")
         if tipo == "indice":
             notas.append(f"{simbolo}: los indices tienen gaps de apertura y pausas que el backtest no modela.")
@@ -217,3 +219,27 @@ def comparar_simbolos(datos: dict, cfg, oos_pct=0.3, azar_veces=100, semilla=42,
         notas.append("Los simbolos tienen historiales de distinto largo: no son comparables tal cual "
                      "(usar --recortar-comun).")
     return tabla, notas
+
+
+def rachas(tr: pd.DataFrame, indice, top: int = 5) -> dict:
+    """Las `top` rachas más largas de TP seguidos y de SL seguidos (solo operaciones resueltas, en orden).
+    Cada racha: {"largo", "desde", "hasta", "R"} con fechas de entrada de la primera y salida de la última."""
+    out = {"TP": [], "SL": []}
+    res = tr[tr["res"].isin(["TP", "SL"])] if len(tr) else tr
+    if not len(res):
+        return out
+    actual = None
+    for _, f in res.iterrows():
+        if actual and actual["res"] == f["res"]:
+            actual["largo"] += 1
+            actual["hasta"] = indice[int(f["salida"])]
+            actual["R"] += float(f["R"])
+        else:
+            if actual:
+                out[actual["res"]].append(actual)
+            actual = {"res": f["res"], "largo": 1, "desde": indice[int(f["i"])],
+                      "hasta": indice[int(f["salida"])], "R": float(f["R"])}
+    out[actual["res"]].append(actual)
+    for k in out:   # más largas primero; a igual largo, la más reciente
+        out[k] = sorted(out[k], key=lambda x: (-x["largo"], -x["desde"].value))[:top]
+    return out
