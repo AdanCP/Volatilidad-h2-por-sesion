@@ -524,6 +524,16 @@ def test_veredicto_seis_estados_alcanzables():
     assert nivel(dt.sintetico(n=1500, tendencia=0.6, seed=3)) == "nc"
 
 
+def test_extremos_diarios():
+    idx = pd.date_range("2024-01-01", periods=10, freq="12h")
+    # dias: d0 = TP(+2) y SL(-1) ; d1 = SL,SL ; d2 = TP,TP
+    tr = pd.DataFrame({"res": ["TP", "SL", "SL", "SL", "TP", "TP"], "R": [2, -1, -1, -1, 2, 2],
+                       "dist": [1.0] * 6, "salida": [0, 1, 2, 3, 4, 5]})
+    e = met.extremos_diarios(tr, idx, 1.0, 1.0, 1.0)     # 1 US$ por unidad de precio
+    assert e["peor_usd"] == -2.0 and e["peor_ops"] == 2 and e["mejor_usd"] == 4.0 and e["peor_R"] == -2.0
+    assert met.extremos_diarios(tr.iloc[0:0], idx, 1, 1, 1) == {}
+
+
 if __name__ == "__main__":
     tests = [(k, v) for k, v in sorted(globals().items()) if k.startswith("test_")]
     for nombre, f in tests:

@@ -510,6 +510,17 @@ if len(res):
             html(vis.kpi("Pérdida media (SL)", vis.n(dinero["perdida_media_SL"], 2, True), "por operación perdedora", vis.ROSA))
         with m4:
             html(vis.kpi("Máx. drawdown", vis.n(dinero["max_drawdown"], 2), f"riesgo medio por operación: {vis.n(dinero['riesgo_medio_por_operacion'], 2)}", vis.ROSA))
+        _ex = met.extremos_diarios(tr, r["P"].indice, tick_size, tick_value, lotes_u, comision_u)
+        if _ex:
+            d1, d2 = st.columns(2)
+            with d1:
+                html(vis.kpi("Máx. drawdown diario", vis.n(min(_ex["peor_usd"], 0), 2),
+                             f"{_ex['peor_dia']:%d/%m/%Y} · {_ex['peor_ops']} op. · {vis.n(_ex['peor_R'], 1, True)} R "
+                             "(peor día, operaciones cerradas)", vis.ROSA))
+            with d2:
+                html(vis.kpi("Máx. ganancia diaria (TP)", vis.n(max(_ex["mejor_usd"], 0), 2, True),
+                             f"{_ex['mejor_dia']:%d/%m/%Y} · {_ex['mejor_ops']} op. · {vis.n(_ex['mejor_R'], 1, True)} R "
+                             "(mejor día)", vis.INDIGO))
         st.caption(f"Fórmula: (diferencia de precio / {tick_size}) × {tick_value} × {lotes_u} lotes "
                    f"= {met.valor_por_unidad(tick_size, tick_value, lotes_u):.2f} por cada 1,00 de precio. "
                    "Valores teóricos: el slippage y los gaps pueden hacer que una pérdida real supere la calculada.")

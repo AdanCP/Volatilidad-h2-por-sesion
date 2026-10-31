@@ -266,3 +266,20 @@ def frecuencia(tr: pd.DataFrame, indice) -> dict:
     return {"n": n, "por_dia": n / dias_mercado, "por_semana": n / (dias_cal / 7),
             "por_mes": n / (dias_cal / 30.44), "max_dia": int(por_dia.max()), "dias_con_op": int(len(por_dia)),
             "dias_mercado": dias_mercado, "max_sin_op": int(mejor), "sin_op_desde": ini, "sin_op_hasta": fin}
+
+
+def extremos_diarios(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comision_por_lote=0.0) -> dict:
+    """Peor y mejor día en dinero y en R. Cada operación cuenta en el día en que se cerró (salida).
+    Es sobre operaciones cerradas: no ve el flotante intradía."""
+    res = tr[tr["res"].isin(["TP", "SL"])]
+    if not len(res):
+        return {}
+    vu = valor_por_unidad(tick_size, tick_value, lotes)
+    pnl = res["R"].to_numpy() * res["dist"].to_numpy() * vu - comision_por_lote * lotes
+    dias = pd.DatetimeIndex([indice[int(j)] for j in res["salida"]]).normalize()
+    usd = pd.Series(pnl, index=dias).groupby(level=0).sum()
+    r_ = pd.Series(res["R"].to_numpy(), index=dias).groupby(level=0).sum()
+    n_ = pd.Series(1, index=dias).groupby(level=0).sum()
+    peor, mejor = usd.idxmin(), usd.idxmax()
+    return {"peor_dia": peor, "peor_usd": float(usd[peor]), "peor_R": float(r_[peor]), "peor_ops": int(n_[peor]),
+            "mejor_dia": mejor, "mejor_usd": float(usd[mejor]), "mejor_R": float(r_[mejor]), "mejor_ops": int(n_[mejor])}
