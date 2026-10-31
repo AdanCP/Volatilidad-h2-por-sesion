@@ -1,9 +1,13 @@
-LISTADO VOLATILIDAD 2H SESION/
-├── app.py                    (la app Streamlit)
-├── xauusd_sesiones.py        (lógica de sesiones)
-├── bot_alertas.py            (NUEVO: el bot)
-├── requirements.txt          (para Render)
-├── requirements-bot.txt      (NUEVO: para el bot)
-├── render.yaml               (actualizado)
-├── estado_alertas.json       (lo crea el bot solo)
-└── .github/workflows/alertas.yml   
+VOLATILIDAD-H2-POR-SESION/
+├── app.py                   App unica (menu con las dos paginas). Es lo que corre Render
+├── pagina_sesiones.py       Pagina 1: movimiento de las sesiones XAU/USD
+├── xauusd_sesiones.py       Logica de la pagina de sesiones
+├── app_backtest.py          Pagina 2: backtester de cruce de EMAs
+├── data.py  engine.py  indicators.py  metrics.py  sessions.py  ui_helpers.py
+│                            Motor y utilidades del backtester
+├── run_backtest.py  run_multi.py   Versiones por consola del backtester
+├── exportar_mt5.py          Exporta historial de MT5 a CSV
+├── cruce_minimo.py          Motor minimo de referencia (lo usa un test)
+├── test_backtester.py       Tests
+├── abrir_app.bat            Doble clic para abrirla en local
+├── requirements.txt  render.yaml

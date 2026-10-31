@@ -6,28 +6,6 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     healthCheckPath: /_stcore/health
-    # Los cambios solo en estos archivos (bot y su estado) no redesplegan la app
-    buildFilter:
-      ignoredPaths:
-        - estado_alertas.json
-        - requirements-bot.txt
-        - app_backtest.py
-        - .github/**
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.3
-      - key: GITHUB_TOKEN
-        sync: false
-      - key: GITHUB_REPO
-        sync: false
-
-  - type: web
-    name: backtester-ema
-    runtime: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run app_backtest.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
-    healthCheckPath: /_stcore/health
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.3

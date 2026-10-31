@@ -20,8 +20,6 @@ import engine as eng
 import metrics as met
 import ui_helpers as ui
 
-st.set_page_config(page_title="Backtester cruce de EMAs", layout="wide")
-
 try:
     import MetaTrader5  # noqa: F401
     MT5_OK = True
