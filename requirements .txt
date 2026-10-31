@@ -1,5 +1,0 @@
-pandas
-numpy
-tzdata
-MetaTrader5   # solo Windows, solo si usas --fuente mt5
-pytest        # opcional
