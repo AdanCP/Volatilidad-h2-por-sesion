@@ -81,15 +81,20 @@ with st.sidebar:
                        "En Render (online) no existe terminal de MT5. Online usá **CSV exportado**: "
                        "generalo en tu PC con `exportar_mt5.py`.")
         elif fuente == ETQ_MT5:
-            grupos, faltan = ui.agrupar_hallados(data.detectar_simbolos(_simbolos_mt5()))
+            todos = sorted(_simbolos_mt5())
+            grupos, faltan = ui.agrupar_hallados(data.detectar_simbolos(todos))
+            st.caption(f"El terminal informa {len(todos)} símbolos.")
             elegidos = []
             for familia, items in grupos.items():
                 opciones = [nombre for _, nombre in items]
                 por_defecto = [nombre for etiqueta, nombre in items if etiqueta == "oro"]
                 elegidos += st.multiselect(familia, opciones, por_defecto)
             if faltan:
-                st.caption("No encontrados en tu servidor: " + ", ".join(faltan))
-            otros = st.text_input("Otros símbolos (separados por coma)", "")
+                st.caption("No detectados automáticamente: " + ", ".join(faltan))
+            # Cualquier símbolo del servidor (escribí para buscar: US30, GER40, EURUSD...)
+            elegidos += st.multiselect("Cualquier otro símbolo del servidor (escribí para buscar)",
+                                       [s for s in todos if s not in elegidos], [])
+            otros = st.text_input("O escribilos a mano (separados por coma)", "")
             simbolos = ui.unir_simbolos(elegidos, otros)
             tf = st.selectbox("Temporalidad", ["D1", "H4", "H1", "M30", "M15", "M5", "M1"], index=2)
             c1, c2 = st.columns(2)
