@@ -619,6 +619,82 @@ def test_pullback_integracion_apagado_no_cambia_y_encendido_filtra_operaciones()
     assert "+ Pullback" in ab.index and "Cruce solo" in ab.index
 
 
+def test_vwap_diario_se_reinicia_y_pondera_por_volumen():
+    idx = pd.date_range("2024-01-01 00:00", periods=6, freq="12h")      # 2 velas por dia
+    h = np.array([11, 11, 21, 21, 31, 31.0]); l = np.array([9, 9, 19, 19, 29, 29.0]); c = np.array([10, 10, 20, 20, 30, 30.0])
+    vol = np.array([1, 3, 1, 1, 0, 0.0])
+    v, nro = ind.vwap_diario(h, l, c, vol, idx.normalize().to_numpy())
+    assert list(nro) == [1, 2, 1, 2, 1, 2]
+    assert v[0] == 10 and v[1] == 10 and v[2] == 20 and v[4] == 30          # cada dia arranca de cero; sin volumen no hay NaN
+    v2, _ = ind.vwap_diario([12, 12], [8, 8], [10, 20], [1, 3], [1, 1])      # típicos 10 y 13,33 -> (10*1 + 13,33*3) / 4 = 12,5
+    assert abs(v2[1] - 12.5) < 1e-9
+
+
+def test_filtro_vwap_direccion_y_requisitos():
+    df = dt.sintetico(n=6000, tendencia=0.6, seed=3)
+    base = eng.Config(sl_modo="precio", sl_valor=10.0, rr=2.0)
+    sin = eng.preparar(df, base)
+    con = eng.preparar(df, replace(base, vwap_activo=True, vwap_min_minutos=0))
+    mot = [m for _, _, m in con.cruces]
+    assert mot.count("vwap") > 0 and len(con.cruces) == len(sin.cruces)           # mismos cruces, algunos descartados por VWAP
+    dist = eng.preparar(df, replace(base, vwap_activo=True, vwap_min_minutos=0, vwap_dist_min_atr=5.0))
+    assert [m for _, _, m in dist.cruces].count("vwap") >= mot.count("vwap")        # exigir distancia nunca descarta menos
+    dia = dt.sintetico(n=800, seed=1)
+    d1 = dia.resample("1D").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum", "Spread": "last"}).dropna()
+    assert not eng.es_intradia(d1) and eng.es_intradia(df)
+    try:
+        eng.preparar(d1, replace(base, vwap_activo=True)); assert False
+    except ValueError:
+        pass
+    ab, omitidos = met.ablacion(d1, base, azar_veces=3)
+    assert "VWAP" in omitidos
+
+
+def _tabla_comp(sobre=None):
+    base = {"XAUUSD": dict(tipo="metal", desde="2025-01-02", hasta="2026-10-30", resueltas=134, resueltas_OOS=41, sl_atr=1.4,
+                           **{"spread_%SL": 4.0}, ops_mes=6.1, exp_R=0.18, exp_R_OOS=0.26, sesion_no_aplica=False),
+            "US30": dict(tipo="indice", desde="2025-01-02", hasta="2026-10-30", resueltas=118, resueltas_OOS=22, sl_atr=3.8,
+                         **{"spread_%SL": 2.0}, ops_mes=5.4, exp_R=-0.13, exp_R_OOS=-0.73, sesion_no_aplica=True)}
+    for (s, k), v in (sobre or {}).items():
+        base[s][k] = v
+    return pd.DataFrame(base).T
+
+
+def test_comparabilidad_caso_oro_vs_indice_no_son_comparables():
+    r = vd.evaluar_comparabilidad(_tabla_comp())
+    est = {n: e for e, n, _ in r["checks"]}
+    assert r["nivel"] == "no" and r["n_bad"] == 2
+    assert est["Mismo tipo de activo"] == vd.BAD and est["Riesgo equivalente (SL en ATR)"] == vd.BAD
+    assert est["Muestra suficiente en cada uno"] == vd.WARN and est["Período común"] == vd.OK
+    assert est["Costos comparables (spread / SL)"] == vd.OK and est["Frecuencia parecida"] == vd.OK
+    assert est["Filtros aplicables a todos"] == vd.WARN
+    assert r["robustez"]["k"] == 1 and r["robustez"]["nivel"] == "sin" and r["robustez"]["N"] == 2
+
+
+def test_comparabilidad_niveles_con_reservas_y_comparables():
+    ok = _tabla_comp({("US30", "tipo"): "metal", ("US30", "sl_atr"): 1.5, ("US30", "resueltas_OOS"): 40,
+                         ("US30", "sesion_no_aplica"): False, ("US30", "exp_R"): 0.1, ("US30", "exp_R_OOS"): 0.2})
+    assert vd.evaluar_comparabilidad(ok)["nivel"] == "ok"
+    assert vd.evaluar_comparabilidad(ok)["robustez"]["nivel"] == "ok"
+    res = _tabla_comp({("US30", "tipo"): "metal", ("US30", "sl_atr"): 1.5, ("US30", "resueltas_OOS"): 22,
+                          ("US30", "sesion_no_aplica"): False})
+    assert vd.evaluar_comparabilidad(res)["nivel"] == "reservas"
+    otra_epoca = _tabla_comp({("US30", "tipo"): "metal", ("US30", "sl_atr"): 1.5, ("US30", "resueltas_OOS"): 40,
+                                 ("US30", "sesion_no_aplica"): False, ("US30", "desde"): "2022-01-02"})
+    assert vd.evaluar_comparabilidad(otra_epoca)["nivel"] == "no"
+
+
+def test_comparar_simbolos_trae_las_columnas_nuevas():
+    datos = {"XAUUSD": dt.sintetico(n=6000, tendencia=0.6, seed=1), "US30": dt.sintetico(n=6000, tendencia=0.6, seed=2)}
+    cfg = eng.Config(sl_modo="precio", sl_valor=10.0, rr=2.0)
+    tabla, _ = met.comparar_simbolos(datos, cfg, azar_veces=3)
+    for c in ("sl_atr", "ops_mes", "maxDD_R", "resueltas_OOS", "sesion_no_aplica"):
+        assert c in tabla.columns
+    assert (tabla["sl_atr"] > 0).all() and (tabla["ops_mes"] > 0).all()
+    r = vd.evaluar_comparabilidad(tabla)
+    assert r["nivel"] in ("ok", "reservas", "no") and len(r["checks"]) == 7
+
+
 if __name__ == "__main__":
     tests = [(k, v) for k, v in sorted(globals().items()) if k.startswith("test_")]
     for nombre, f in tests:

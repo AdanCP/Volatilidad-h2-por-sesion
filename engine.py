@@ -2,7 +2,7 @@
 
 Reglas (ver prompt):
   - Entrada al CIERRE de la vela del cruce (alcista = largo, bajista = corto).
-  - Filtros evaluados con datos de la vela de la señal, en este orden: sesion, SMA, ADX, ATR.
+  - Filtros evaluados con datos de la vela de la señal, en este orden: sesion, SMA, VWAP, ADX, ATR.
     Cada cruce descartado se atribuye al PRIMER filtro que falla.
   - SL = ATR * mult (o % del precio); TP = SL * RR. Una operacion a la vez.
   - Vela que toca SL y TP a la vez = SL ("ambigua"). Sin slippage ni gaps.
@@ -46,6 +46,10 @@ class Config:
     sma_periodo: int = 200
     sma_dist_min_atr: float = 0.0   # 0 = sin condicion
     sma_pendiente_n: int = 0        # 0 = sin condicion
+    # filtro VWAP (diario: se reinicia cada dia del servidor; volumen de ticks)
+    vwap_activo: bool = False
+    vwap_dist_min_atr: float = 0.5  # el precio debe estar al menos a 0,5 ATR del VWAP (0 = sin condicion); regla practica habitual
+    vwap_min_minutos: float = 30.0  # no filtra en los primeros 30 min del dia: al abrir el VWAP es casi igual al precio
     # filtro ADX
     adx_activo: bool = False
     adx_periodo: int = 14
@@ -72,6 +76,8 @@ class Config:
         return bool(self.pullback_activo and self.pullback_pct > 0)
 
     def validar(self) -> None:
+        if self.vwap_dist_min_atr < 0 or self.vwap_min_minutos < 0:
+            raise ValueError("Los parametros del VWAP no pueden ser negativos.")
         if not 0 <= self.pullback_pct <= 100:
             raise ValueError("El porcentaje de pullback debe estar entre 0 y 100.")
         if self.pullback_ema not in ("corta", "larga"):
@@ -96,7 +102,7 @@ class Config:
                              "(servidor_offset_horas). Medilo con el mercado abierto.")
 
 
-FILTROS_APAGADOS = dict(sma_activo=False, adx_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False)
+FILTROS_APAGADOS = dict(sma_activo=False, vwap_activo=False, adx_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False)
 
 
 @dataclass
@@ -116,6 +122,13 @@ class Preparado:
     sube: Optional[np.ndarray] = None       # cruces alcistas/bajistas de TODA la serie (cancelan ordenes pendientes)
     baja: Optional[np.ndarray] = None
     ok_ses: Optional[np.ndarray] = None     # sesion al EJECUTAR la entrada (solo con pullback)
+
+
+def es_intradia(df: pd.DataFrame) -> bool:
+    """El VWAP diario solo tiene sentido con velas menores a un dia."""
+    if len(df) < 3:
+        return False
+    return bool(pd.Series(df.index).diff().median() < pd.Timedelta(hours=20))
 
 
 def _spread(df: pd.DataFrame, cfg: Config) -> np.ndarray:
@@ -151,6 +164,16 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
         warm = max(warm, cfg.atr_rel_n + cfg.atr_periodo)
 
     ema_c, ema_l = ind.ema(c, cfg.ema_corta), ind.ema(c, cfg.ema_larga)
+    vwap = vwap_min = None
+    if cfg.vwap_activo:
+        if not es_intradia(df):
+            raise ValueError("El filtro VWAP diario necesita velas menores a un dia (H4 o menos).")
+        vol = df["Volume"].to_numpy(float) if "Volume" in df else np.ones(n)
+        vwap, _ = ind.vwap_diario(h, l, c, vol, df.index.normalize().to_numpy())
+        paso = pd.Series(df.index).diff().median()                       # duracion de una vela
+        # minutos transcurridos desde el inicio del dia hasta el CIERRE de cada vela
+        vwap_min = ((df.index - df.index.normalize()) + paso) / pd.Timedelta(minutes=1)
+        vwap_min = np.asarray(vwap_min, float)
     diff = ema_c - ema_l
     prev = np.r_[np.nan, diff[:-1]]
     sube, baja = (diff > 0) & (prev <= 0), (diff < 0) & (prev >= 0)
@@ -176,6 +199,11 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
         if cfg.sma_pendiente_n > 0:
             return (s - sma[i - cfg.sma_pendiente_n]) * lado > 0
         return True
+
+    def ok_vwap(i, lado):
+        if vwap_min[i] < cfg.vwap_min_minutos or np.isnan(vwap[i]) or (c[i] - vwap[i]) * lado <= 0:
+            return False
+        return not (cfg.vwap_dist_min_atr > 0 and abs(c[i] - vwap[i]) < cfg.vwap_dist_min_atr * atr[i])
 
     def ok_adx(i):
         if not entre(adx[i], cfg.adx_min, cfg.adx_max):
@@ -203,6 +231,8 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
             motivo = "sesion"
         elif cfg.sma_activo and not ok_sma(i, lado):
             motivo = "sma"
+        elif cfg.vwap_activo and not ok_vwap(i, lado):
+            motivo = "vwap"
         elif cfg.adx_activo and not ok_adx(i):
             motivo = "adx"
         elif cfg.atr_activo and not ok_atr(i):

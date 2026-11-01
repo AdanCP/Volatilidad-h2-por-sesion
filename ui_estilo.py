@@ -69,6 +69,7 @@ _CSS_NATIVOS = """/* widgets nativos: colores forzados para que no dependan del 
 [data-testid="stFileUploaderDropzone"]{background:@INBG@ !important;}
 [data-testid="stFileUploaderDropzone"] :is(span,small,p,div){color:@TXT@ !important;}
 [data-testid="stExpander"] summary :is(p,span){color:@TXT@ !important;}
+[data-testid="stMain"] [data-testid="stExpander"] :is(details,summary){background:@CARD@ !important;}
 [data-testid="stAlert"] :is(p,div,span){color:@TXT@ !important;}"""
 
 _CSS_SIDEBAR = """
@@ -90,6 +91,12 @@ _CSS_SIDEBAR = """
 .fte{font-size:1.05rem;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:#fff !important;
   border-top:1px solid rgba(255,255,255,.25);padding-top:.7rem;margin-top:.4rem;}
 .fte-fin{border-bottom:1px solid rgba(255,255,255,.25);margin:.2rem 0 .7rem;}
+[data-testid="stSidebar"] :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button{
+  background:linear-gradient(90deg,@NEG@,@VIO@) !important;border:0 !important;border-radius:12px;
+  box-shadow:0 4px 14px rgba(40,20,120,.35);}
+[data-testid="stSidebar"] :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button :is(p,span,div){
+  color:#fff !important;font-weight:700;}
+[data-testid="stSidebar"] [data-testid="stButton"] button:disabled{opacity:.45;box-shadow:none;cursor:not-allowed;}
 [data-testid="stSidebarNav"] a{border-radius:10px;}
 [data-testid="stSidebarNav"] a span{color:#fff !important;}
 [data-testid="stSidebarNav"] a[aria-current="page"]{background:rgba(255,255,255,.18);}
@@ -178,7 +185,7 @@ def css() -> str:
     fichas = {"@BG@": p["BG"], "@CARD@": p["CARD"], "@TXT@": p["TEXTO"], "@MUTED@": p["SUAVE"], "@TRACK@": p["PISTA"],
               "@LINE@": p["LINE"], "@HEAD@": p["HEAD"], "@ND@": p["ND"], "@EJE@": p["EJE"], "@SHADOW@": p["SHADOW"],
               "@SHADOW2@": p["SHADOW2"], "@INBG@": p["INBG"], "@INBD@": p["INBD"], "@ACC@": p["INDIGO"],
-              "@NEG@": p["ROSA"], "@SIDE@": p["SIDE"]}
+              "@NEG@": p["ROSA"], "@VIO@": p["VIOLETA"], "@SIDE@": p["SIDE"]}
     for k, v in fichas.items():
         out = out.replace(k, v)
     return "\n".join(l for l in out.split("\n") if l.strip())

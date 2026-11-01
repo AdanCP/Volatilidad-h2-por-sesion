@@ -38,6 +38,29 @@ components.html(
     height=0,
 )
 
+# Acordeón: en la barra lateral solo puede haber un menú abierto a la vez (al abrir uno se cierran los demás).
+# Se apoya en la estructura interna de Streamlit (<details>/<summary>); si algún día cambia, los menús vuelven a ser independientes.
+components.html(
+    """<script>
+    const d = window.parent.document, w = window.parent;
+    if (!w.__acordeonListo) {
+      w.__acordeonListo = true;
+      let propio = false;
+      d.addEventListener("click", (ev) => {
+        if (propio) return;
+        const sum = ev.target.closest && ev.target.closest("summary");
+        const det = sum && sum.closest("details");
+        const lado = det && det.closest('[data-testid="stSidebar"]');
+        if (!lado || det.open) return;              // solo cuando se está ABRIENDO un menú de la barra lateral
+        propio = true;
+        lado.querySelectorAll("details[open]").forEach((o) => { if (o !== det) o.querySelector("summary").click(); });
+        propio = false;
+      }, true);
+    }
+    </script>""",
+    height=0,
+)
+
 pagina = st.navigation([
     st.Page("pagina_sesiones.py", title="Sesiones XAU/USD", icon="📈", default=True),
     st.Page("app_backtest.py", title="Backtester EMA", icon="🧪"),

@@ -99,6 +99,7 @@ def evaluar(df, cfg, oos_pct=0.3, azar_veces=200, semilla=42, contador=None) -> 
 
 FILTROS_ABLACION = {
     "SMA": dict(sma_activo=True),
+    "VWAP": dict(vwap_activo=True),
     "ADX": dict(adx_activo=True),
     "ATR relativo": dict(atr_activo=True, atr_rel_n=100, atr_rel_min=0.8, atr_rel_max=2.0),
     "Sesion": dict(sesion_activo=True),
@@ -115,7 +116,7 @@ def ablacion(df, cfg_base, filtros=None, oos_pct=0.3, azar_veces=100, semilla=42
     omitidos = []
     for nombre, ov in filtros.items():
         c = replace(base, **ov)
-        if c.sesion_activo and c.servidor_offset_horas is None:
+        if (c.sesion_activo and c.servidor_offset_horas is None) or (c.vwap_activo and not eng.es_intradia(df)):
             omitidos.append(nombre)
             continue
         configs.append((f"+ {nombre}", c))
@@ -184,6 +185,12 @@ def tipo_activo(simbolo: str) -> str:
     return "forex" if len(s) >= 6 and s[:6].isalpha() else "otro"
 
 
+def cfg_sesion_original(cfg, simbolo) -> bool:
+    """True si el filtro de sesion estaba activo para ese simbolo en la configuracion recibida."""
+    c = cfg[simbolo] if isinstance(cfg, dict) else cfg
+    return bool(c.sesion_activo)
+
+
 def comparar_simbolos(datos: dict, cfg, oos_pct=0.3, azar_veces=100, semilla=42,
                       contador=None, recortar_comun=False):
     """Mismos parametros en todos los simbolos (sin optimizar por activo). Devuelve (tabla, notas).
@@ -194,7 +201,7 @@ def comparar_simbolos(datos: dict, cfg, oos_pct=0.3, azar_veces=100, semilla=42,
         ini = max(df.index[0] for df in datos.values())
         fin = min(df.index[-1] for df in datos.values())
         datos = {s: df.loc[ini:fin] for s, df in datos.items()}
-        notas.append(f"Periodo comun recortado: {ini} -> {fin}.")
+        notas.append(f"Período común recortado: {ini:%Y-%m-%d} → {fin:%Y-%m-%d}.")
     filas = []
     for simbolo, df in datos.items():
         tipo = tipo_activo(simbolo)
@@ -206,10 +213,17 @@ def comparar_simbolos(datos: dict, cfg, oos_pct=0.3, azar_veces=100, semilla=42,
             notas.append(f"{simbolo}: el filtro Tokio/Londres/NY no equivale al horario propio del indice.")
         if tipo == "indice":
             notas.append(f"{simbolo}: los indices tienen gaps de apertura y pausas que el backtest no modela.")
+        sesion_no_aplica = bool((tipo == "indice" or tipo == "cripto") and cfg_sesion_original(cfg, simbolo))
         r = evaluar(df, c, oos_pct, azar_veces, semilla, contador)
         t, P = r["tabla"], r["P"]
+        ok_atr = np.isfinite(P.atr) & (P.atr > 0) & np.isfinite(P.dist)
+        meses = max((df.index[-1] - df.index[0]).days / 30.44, 0.1)
         filas.append({"simbolo": simbolo, "tipo": tipo, "velas": len(df), "desde": str(df.index[0].date()),
                       "hasta": str(df.index[-1].date()),
+                      "sl_atr": float((P.dist[ok_atr] / P.atr[ok_atr]).mean()) if ok_atr.any() else np.nan,
+                      "ops_mes": float(t.loc["Todo", "resueltas"]) / meses,
+                      "maxDD_R": t.loc["Todo", "maxDD_R"], "resueltas_OOS": t.loc["Out-of-sample", "resueltas"],
+                      "sesion_no_aplica": sesion_no_aplica,
                       "spread_%SL": 100 * float(P.sp.mean() / P.dist.mean()) if P.dist.mean() > 0 else np.nan,
                       "spread_cero_%": P.spread_ceros_pct,
                       "resueltas": t.loc["Todo", "resueltas"], "%TP": t.loc["Todo", "%TP"],

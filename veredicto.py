@@ -105,6 +105,11 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         if cfg.sma_pendiente_n > 0:
             x += f", pendiente a favor ({cfg.sma_pendiente_n} velas)"
         filtros.append(x)
+    if cfg.vwap_activo:
+        x = "VWAP diario"
+        if cfg.vwap_dist_min_atr > 0:
+            x += f", a más de {n(cfg.vwap_dist_min_atr, 1)}×ATR"
+        filtros.append(x)
     if cfg.adx_activo:
         x = f"ADX({cfg.adx_periodo}) ≥ {n(cfg.adx_min, 0)}"
         if cfg.adx_max:
@@ -294,3 +299,111 @@ def evaluar_veredicto(r: dict, cfg, meses_datos: float, usd_por_R: Optional[floa
     return {"nivel": nivel, "titulo": titulo, "siguiente_paso": sig, "checks": checks, "puntos": puntos, "tope": tope,
             "prob_ventaja_total": pv_t, "prob_ventaja_oos": pv_o, "proy_total": proy_t, "proy_oos": proy_o,
             "tasa_mes": tasa, "notas": notas}
+
+
+# ----------------------------------------------------------------------------- comparación de símbolos
+def evaluar_comparabilidad(tabla: pd.DataFrame) -> dict:
+    """Dos preguntas distintas sobre la tabla de comparar_simbolos:
+      1) ¿son comparables los símbolos entre sí? (checks -> 'ok' / 'reservas' / 'no')
+      2) ¿la estrategia se sostiene en todos? (robustez -> 'ok' / 'dudosa' / 'sin')
+    Ser comparables no dice que la estrategia funcione: solo que la comparación es justa."""
+    t = tabla
+    N = len(t)
+    f = lambda x: f"{x:.1f}".replace(".", ",")
+    y_ = lambda xs: xs[0] if len(xs) == 1 else ", ".join(xs[:-1]) + " y " + xs[-1]
+    checks = []
+
+    # 1) período común
+    ini, fin = pd.to_datetime(t["desde"]), pd.to_datetime(t["hasta"])
+    dif = max((ini.max() - ini.min()).days, (fin.max() - fin.min()).days)
+    meses = (fin.min() - ini.max()).days / 30.44
+    ctx = f"{ini.max():%Y-%m-%d} → {fin.min():%Y-%m-%d} ({f(max(meses, 0))} meses)"
+    if dif <= 5:
+        checks.append((OK, "Período común", f"{ctx} en todos los símbolos."))
+    elif dif <= 60:
+        checks.append((WARN, "Período común", f"Los períodos difieren hasta {dif} días. Período compartido: {ctx}."))
+    else:
+        checks.append((BAD, "Período común", f"Los períodos difieren hasta {dif} días: se comparan épocas distintas."))
+
+    # 2) muestra
+    chicos = [s for s, r in t.iterrows() if r["resueltas"] < 100 or r["resueltas_OOS"] < 30]
+    muy_chicos = [s for s, r in t.iterrows() if r["resueltas"] < 50 or r["resueltas_OOS"] < 15]
+    if not chicos:
+        checks.append((OK, "Muestra suficiente en cada uno", "Todos tienen al menos 100 operaciones y 30 en out-of-sample."))
+    else:
+        det = "; ".join(f"{s}: {int(t.loc[s, 'resueltas'])} operaciones, {int(t.loc[s, 'resueltas_OOS'])} en out-of-sample" for s in chicos)
+        checks.append((BAD if muy_chicos else WARN, "Muestra suficiente en cada uno", f"{det} (mínimo 100 y 30)."))
+
+    # 3) tipo de activo
+    tipos = list(dict.fromkeys(t["tipo"]))
+    if len(tipos) == 1:
+        checks.append((OK, "Mismo tipo de activo", f"Todos son de tipo «{tipos[0]}»."))
+    else:
+        checks.append((BAD, "Mismo tipo de activo", " vs ".join(f"{s} es {r['tipo']}" for s, r in t.iterrows())
+                       + ": distinta dinámica, gaps y horarios."))
+
+    # 4) riesgo equivalente (SL en múltiplos de ATR)
+    sl = t["sl_atr"].astype(float)
+    if sl.isna().any() or (sl <= 0).any():
+        checks.append((WARN, "Riesgo equivalente (SL en ATR)", "No se pudo medir el SL en múltiplos de ATR."))
+    else:
+        ratio = sl.max() / sl.min()
+        det = y_([f"{f(x)}×ATR en {s}" for s, x in sl.items()])
+        txt = f"El SL equivale a {det}" + (f" ({f(ratio)} veces más ancho)." if ratio > 1.05 else ".")
+        checks.append((OK if ratio <= 1.5 else WARN if ratio <= 2.5 else BAD, "Riesgo equivalente (SL en ATR)", txt))
+
+    # 5) costos
+    sp = t["spread_%SL"].astype(float)
+    dsp = float(sp.max() - sp.min())
+    det = y_([f"{sp[s]:.0f}%" for s in t.index])
+    checks.append((OK if dsp <= 5 else WARN if dsp <= 15 else BAD, "Costos comparables (spread / SL)",
+                   f"{det} del SL: " + ("los costos pesan parecido." if dsp <= 5 else "los costos pesan distinto en cada uno.")))
+
+    # 6) frecuencia
+    om = t["ops_mes"].astype(float)
+    rat = om.max() / om.min() if om.min() > 0 else float("inf")
+    det = y_([f(x) for x in om])
+    checks.append((OK if rat <= 2 else WARN if rat <= 4 else BAD, "Frecuencia parecida", f"{det} operaciones por mes."))
+
+    # 7) filtros aplicables
+    if t["sesion_no_aplica"].astype(bool).any():
+        quienes = ", ".join(s for s, r in t.iterrows() if r["sesion_no_aplica"])
+        checks.append((WARN, "Filtros aplicables a todos",
+                       f"El filtro Tokio/Londres/NY no equivale al horario propio de {quienes}."))
+    else:
+        checks.append((OK, "Filtros aplicables a todos", "Los filtros activos tienen sentido en todos los símbolos."))
+
+    n_ok = sum(c[0] == OK for c in checks)
+    n_w = sum(c[0] == WARN for c in checks)
+    n_b = sum(c[0] == BAD for c in checks)
+    malos = [c[1] for c in checks if c[0] == BAD]
+    if n_b:
+        nivel, titulo = "no", "No comparables entre sí"
+        texto = (f"Hay {n_b} criterio{'s' if n_b > 1 else ''} que no se cumple{'n' if n_b > 1 else ''} "
+                 f"({'; '.join(m_.lower() for m_ in malos)}). Leé cada símbolo por separado y no promedies ni compares "
+                 "sus resultados como si fueran una misma prueba.")
+    elif n_w:
+        nivel, titulo = "reservas", "Comparables con reservas"
+        texto = "Se pueden mirar lado a lado, pero revisá los criterios marcados con ! antes de sacar conclusiones."
+    else:
+        nivel, titulo = "ok", "Comparables"
+        texto = "Los símbolos son equiparables: la comparación es justa. Eso no dice todavía que la estrategia funcione."
+
+    # robustez: positiva en todo el período y en out-of-sample
+    pos_t = int((t["exp_R"] > 0).sum())
+    pos_o = int((t["exp_R_OOS"] > 0).sum())
+    k = int(((t["exp_R"] > 0) & (t["exp_R_OOS"] > 0)).sum())
+    if k == N:
+        rn, rtit = "ok", "Se sostiene en todos los símbolos"
+    elif k > N / 2:
+        rn, rtit = "dudosa", "Se sostiene en la mayoría de los símbolos"
+    else:
+        rn, rtit = "sin", "No se sostiene en todos los símbolos"
+    rtxt = f"Expectativa positiva en todo el período y en out-of-sample en {k} de {N}. "
+    if nivel == "no":
+        rtxt += "Con símbolos no comparables, esto es solo una pista: probar varios activos hace esperable que alguno salga bien por azar."
+    else:
+        rtxt += "Probar varios activos hace esperable que alguno salga bien por azar."
+    return {"nivel": nivel, "titulo": titulo, "texto": texto, "checks": checks, "n_ok": n_ok, "n_warn": n_w, "n_bad": n_b,
+            "robustez": {"nivel": rn, "titulo": rtit, "texto": rtxt, "k": k, "N": N, "pos_total": pos_t, "pos_oos": pos_o},
+            "rango_exp": (float(t["exp_R"].min()), float(t["exp_R"].max()))}

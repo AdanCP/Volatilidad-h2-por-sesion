@@ -7,7 +7,7 @@ Cada campo cambia **qué operaciones se toman** o **cómo se miden**. Cambiá de
 - **Temporalidad.** Tamaño de cada vela (M1, M5, H1...). Define cada cuánto se mira el cruce. Velas chicas dan más operaciones, más ruido y un spread que pesa más respecto del SL.
 - **Desde / Hasta.** Período descargado. El terminal puede guardar un máximo de velas por gráfico, así que en M1 o M5 el historial disponible es más corto.
 - **Remuestrear a.** Arma velas más grandes a partir de las descargadas (por ejemplo H4 desde H1). No puede armar velas más chicas.
-- **Recortar período.** Limita el análisis a un tramo, sin volver a descargar.
+- **Recortar período** (solo con CSV o datos de demo). Limita el análisis a un tramo del archivo cargado. Con MT5 no aparece: el período lo define *Desde / Hasta*.
 - **Point (solo CSV).** Tamaño del punto del símbolo (0,01 en oro; 0,00001 en EURUSD). Sirve para pasar el spread de puntos a precio, y solo hace falta si el CSV no trae la columna `point`.
 - **Tendencia / cantidad de series (sintéticos).** Con 0 la serie es azar puro: ninguna estrategia debería ganar ahí. Es una buena prueba de que el sistema no inventa ventaja.
 
@@ -47,6 +47,7 @@ Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los
 - **SMA.** Compra solo si el cierre está por encima de la SMA y venta solo si está por debajo.
   - *Distancia mínima*: pide que el cierre esté a por lo menos N × ATR de la SMA, para evitar cruces pegados a ella (0 = sin condición).
   - *Pendiente a favor*: la SMA tiene que estar subiendo (en compras) o bajando (en ventas) respecto de hace N velas.
+- **VWAP (diario).** Precio medio del día ponderado por volumen (precio típico = (máx + mín + cierre) / 3), reiniciado en cada día del servidor. Largos solo si el cierre está sobre el VWAP y cortos solo si está debajo: es un filtro de contexto, no una señal por sí solo. En forex, oro e índices el volumen es el de ticks (cuántas veces cambió el precio), no el volumen real. *Distancia mínima* (por defecto 0,5×ATR): exige que el precio esté al menos esa distancia del VWAP, para no operar en la zona de ruido pegada a él. *Minutos mínimos desde el inicio del día* (por defecto 30): al abrir, el VWAP es casi igual al precio y filtrar ahí es ruido. Ninguno de los dos valores es un estándar formal: son reglas prácticas habituales, y la ablación te dice si aportan. Necesita velas menores a D1; con datos de demo (volumen constante) es solo un promedio simple.
 - **ADX.** Mide la **fuerza** de la tendencia, no su dirección.
   - *Mínimo*: descarta los cruces con ADX bajo (por ejemplo menor a 20, mercado sin tendencia).
   - *Máximo*: descarta tendencias ya muy extendidas (0 = sin límite).
@@ -91,3 +92,18 @@ Al final del resultado, la app arma tres cosas:
 - **Probabilidad de terminar en ganancia a 1, 3, 6 meses y 1 año.** Es la probabilidad de que el resultado acumulado a ese plazo sea positivo. Se simula miles de veces: en cada simulación se sortea la probabilidad real de acierto (que es incierta, más cuando hay pocas operaciones) y luego las operaciones que entrarían en ese plazo, según la frecuencia observada. Se muestra con todo el historial y solo con el out-of-sample (más conservador). El resultado típico y el riesgo de tocar la pérdida máxima usan el escenario conservador.
 
 **Límites que conviene tener presentes:** supone que el futuro se parece al pasado, que las operaciones son independientes y que los costos reales son los modelados. Una probabilidad alta indica que la historia fue consistente, no que el futuro esté garantizado. Por eso el veredicto más favorable siempre dice "empezando en demo".
+
+---
+
+### Generar bot (barra lateral, debajo de los menús)
+
+El botón **Generar bot (.mq5)** descarga un Expert Advisor de MetaTrader 5 con los valores que tenés cargados: EMAs, dirección, SL y TP, lotes, filtros (SMA, VWAP, ADX, ATR, sesión) y pullback. Solo arma texto, así que funciona también en la versión online y no necesita MT5.
+
+**Cómo usarlo:** copiá el archivo a `MQL5/Experts` (en MT5: Archivo → Abrir carpeta de datos), abrilo en MetaEditor y compilá con F7. Antes de operar, corrélo en el Strategy Tester y compará con la app; después probalo en demo.
+
+- **Mismo gráfico:** ponelo en el símbolo y la temporalidad con que hiciste el backtest (el bot avisa si no coinciden).
+- **Lotes fijos**, como en la app. Con SL en dólares, el bot convierte el monto a distancia de precio con el valor del tick de tu broker.
+- **Protección de cuenta (incluida):** corta todo si la pérdida del día llega al 4 % o la total al 8 % del balance inicial (editables). Quedan por debajo de los límites de FTMO (5 % y 10 %).
+- **Sesiones:** el bot necesita el desfase horario de tu servidor (el mismo campo de la app).
+- **Veredicto:** si el backtest no respalda la estrategia, la app lo advierte y el archivo lo indica en su cabecera. No se bloquea la descarga.
+- **Límites:** una operación a la vez por magic number; no incluye slippage ni gaps, y los resultados reales pueden diferir del backtest.

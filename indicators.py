@@ -46,3 +46,16 @@ def adx_wilder(h, l, c, periodo: int):
     dx = (100 * (pdi - ndi).abs() / (pdi + ndi)).fillna(0.0)
     adx = dx.ewm(alpha=a, adjust=False).mean()
     return adx.to_numpy(), pdi.fillna(0.0).to_numpy(), ndi.fillna(0.0).to_numpy()
+
+
+def vwap_diario(h, l, c, vol, dia):
+    """VWAP que se reinicia cada día. `dia`: una clave por vela (p. ej. la fecha). Precio típico (H+L+C)/3 ponderado por volumen.
+    Las velas sin volumen pesan 1 (evita dividir por cero; con volumen de ticks el efecto es despreciable).
+    Devuelve (vwap, numero_de_vela_del_dia) con la primera vela del día = 1."""
+    tp = (np.asarray(h, float) + np.asarray(l, float) + np.asarray(c, float)) / 3.0
+    w = np.asarray(vol, float).copy()
+    w[~(w > 0)] = 1.0
+    pv = pd.Series(tp * w).groupby(np.asarray(dia)).cumsum().to_numpy()
+    v = pd.Series(w).groupby(np.asarray(dia)).cumsum().to_numpy()
+    nro = pd.Series(np.ones(len(tp))).groupby(np.asarray(dia)).cumsum().to_numpy()
+    return pv / v, nro

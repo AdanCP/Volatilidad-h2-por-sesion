@@ -18,6 +18,7 @@ import streamlit as st
 
 import data
 import engine as eng
+import generar_bot as gb
 import metrics as met
 import ui_estilo as vis
 import veredicto as vd
@@ -77,6 +78,8 @@ def _simbolos_mt5() -> list:
 st.session_state.setdefault("contador", met.ContadorPruebas())
 st.session_state.setdefault("res", None)
 st.session_state.setdefault("comp", None)
+st.session_state.setdefault("abl", None)
+st.session_state.setdefault("vista", "bt")      # pantalla: bt = backtest, abl = ablación, comp = comparación
 
 st.markdown(vis.css(), unsafe_allow_html=True)
 
@@ -153,8 +156,8 @@ with st.sidebar:
                             if len(d_) and (d_.index[0].date() - desde).days > 30:
                                 avisos_datos.append(
                                     f"{simbolo}: pediste desde {desde:%d/%m/%Y}, pero MT5 solo tiene historia {tf} desde "
-                                    f"{d_.index[0]:%d/%m/%Y}. El servidor o el terminal no guardan más atrás: por eso "
-                                    "'Recortar período' muestra otra fecha. Para más historia usá una temporalidad mayor "
+                                    f"{d_.index[0]:%d/%m/%Y}. El servidor o el terminal no guardan más atrás. "
+                                    "Para más historia usá una temporalidad mayor "
                                     "(H1 o D1) o subí 'Max bars in chart' en MT5 (Herramientas → Opciones → Gráficos).")
                         except data.ErrorDatos as e:
                             avisos_datos.append(f"{simbolo}: {e}")
@@ -169,9 +172,10 @@ with st.sidebar:
             if regla != "No":
                 datos = {s: data.resamplear(d_, regla) for s, d_ in datos.items()}
             primero = next(iter(datos.values()))
-            rango = st.date_input("Recortar período", (primero.index[0].date(), primero.index[-1].date()))
-            if isinstance(rango, tuple) and len(rango) == 2:
-                datos = {s: d_.loc[str(rango[0]):str(rango[1])] for s, d_ in datos.items()}
+            if fuente != ETQ_MT5:       # con MT5 el período ya lo define "Desde / Hasta"
+                rango = st.date_input("Recortar período", (primero.index[0].date(), primero.index[-1].date()))
+                if isinstance(rango, tuple) and len(rango) == 2:
+                    datos = {s: d_.loc[str(rango[0]):str(rango[1])] for s, d_ in datos.items()}
             datos = {s: d_ for s, d_ in datos.items() if len(d_)}
         elif fuente != ETQ_MT5 or not MT5_OK:
             st.caption("Cargá archivos o datos de demo en «Instrumento a operar».")
@@ -200,9 +204,10 @@ with st.sidebar:
         # El ATR solo interviene si el SL va en múltiplos de ATR o si algún filtro lo usa (los filtros se definen más abajo:
         # sus valores ya están en session_state al comienzo de cada ejecución).
         usa_atr = (sl_modo == SL_ATR or bool(st.session_state.get("f_atr"))
-                   or (bool(st.session_state.get("f_sma")) and float(st.session_state.get("f_sma_dist", 0) or 0) > 0))
+                   or (bool(st.session_state.get("f_sma")) and float(st.session_state.get("f_sma_dist", 0) or 0) > 0)
+                   or (bool(st.session_state.get("f_vwap")) and float(st.session_state.get("f_vwap_dist", 0) or 0) > 0))
         atr_per = st.number_input("Período ATR", 2, 200, 14, disabled=not usa_atr,
-                                  help="Se usa en el SL en múltiplos de ATR, en el filtro ATR y en la distancia mínima a la SMA.")
+                                  help="Se usa en el SL en múltiplos de ATR, en el filtro ATR y en la distancia mínima a la SMA o al VWAP.")
         if not usa_atr:
             st.caption("Desactivado: con SL en dólares o en % del precio y sin filtros que usen ATR, este valor no interviene.")
         pb_on = st.checkbox("Entrar en pullback a la EMA (opcional)",
@@ -248,6 +253,17 @@ with st.sidebar:
             sma_pend = st.number_input("Pendiente a favor: N velas (0 = sin)", 0, 500, 0)
         else:
             sma_per, sma_dist, sma_pend = 200, 0.0, 0
+        vwap_on = st.checkbox("Filtro VWAP (diario)", key="f_vwap")
+        if vwap_on:
+            vwap_dist = st.number_input("Distancia mínima al VWAP (múltiplos de ATR, 0 = sin)", 0.0, value=0.5, step=0.1, key="f_vwap_dist",
+                                        help="Regla práctica habitual: exigir al menos 0,5 ATR de distancia para no operar en la zona de ruido pegada al VWAP.")
+            vwap_min = st.number_input("Minutos mínimos desde el inicio del día", 0, 1440, 30, 5,
+                                       help="No se filtra en los primeros minutos del día: al abrir el VWAP es casi igual al precio. "
+                                            "Práctica habitual: ignorar la primera media hora.")
+            st.caption("VWAP del día (precio típico × volumen de ticks), reiniciado en cada día del servidor. "
+                       "Largos solo con el cierre sobre el VWAP; cortos solo debajo. Necesita velas menores a D1.")
+        else:
+            vwap_dist, vwap_min = 0.5, 30
         adx_on = st.checkbox("Filtro ADX")
         if adx_on:
             adx_per = st.number_input("Período ADX", 2, 100, 14)
@@ -312,6 +328,7 @@ def construir_config(simbolo: str = None) -> eng.Config:
         sl_modo=modo, sl_valor=valor, atr_periodo=int(atr_per),
         pullback_activo=bool(pb_on), pullback_pct=float(pb_pct), pullback_ema=pb_ema, pullback_velas=int(pb_velas),
         direccion=direccion, spread=spread, spread_fijo=float(spread_fijo), costo_extra=float(costo_extra),
+        vwap_activo=vwap_on, vwap_dist_min_atr=float(vwap_dist), vwap_min_minutos=float(vwap_min),
         sma_activo=sma_on, sma_periodo=int(sma_per), sma_dist_min_atr=float(sma_dist), sma_pendiente_n=int(sma_pend),
         adx_activo=adx_on, adx_periodo=int(adx_per), adx_min=float(adx_min),
         adx_max=float(adx_max) or None, adx_creciente_n=int(adx_cre),
@@ -390,6 +407,8 @@ with st.expander("📖 Guía de cada campo"):
 st.write("")
 b1, b2, b3 = st.columns(3)
 correr = b1.button("Correr backtest", type="primary")
+if correr:
+    st.session_state.vista = "bt"
 abl = b2.button("Modo ablación (cruce solo + cada filtro)")
 comp = b3.button("Comparar símbolos", disabled=len(datos) < 2)
 
@@ -404,12 +423,45 @@ if correr:
     except (ValueError, data.ErrorDatos) as e:
         st.error(str(e))
 
+# ------------------------------------------------------------- generar bot (barra lateral, fuera de los menús)
+_REGLA_TF = {"15min": "M15", "30min": "M30", "1h": "H1", "4h": "H4", "1D": "D1"}
+with st.sidebar:
+    st.markdown('<div class="fte">Bot para MT5</div>', unsafe_allow_html=True)
+    try:
+        _cfg_bot = construir_config()
+        _tf_bot = _REGLA_TF.get(regla, "") if regla != "No" else (globals().get("tf") or "")
+        _vd_bot = None
+        _g = st.session_state.get("veredicto_bot")      # (config, veredicto, símbolo, lotes, temporalidad)
+        if _g and _g[0] == _cfg_bot and _g[2] == activo and _g[3] == float(lotes) and _g[4] == _tf_bot:
+            _vd_bot = _g[1]
+        _motivo = ("Con datos sintéticos no se genera bot." if fuente == ETQ_SINT
+                   else gb.motivo_rechazo(_vd_bot, _tf_bot))
+        if _motivo:
+            st.button("⚙️ Generar bot (.mq5)", disabled=True, use_container_width=True)
+            st.caption(_motivo)
+        else:
+            _mq5 = gb.generar_mq5(_cfg_bot, activo, _tf_bot, float(lotes),
+                                  float(sl_usd) if sl_modo == SL_USD else None, _vd_bot,
+                                  capital=float(capital), limite_pct=float(limite_pct))
+            st.download_button("⚙️ Generar bot (.mq5)", _mq5.encode("utf-8"),
+                               file_name=gb.nombre_archivo(activo, _tf_bot), mime="text/plain",
+                               use_container_width=True)
+            st.caption("Veredicto del backtest: " + _vd_bot["titulo"] + ". El bot opera solo y con parámetros fijos: "
+                       "se niega a arrancar si el símbolo, la temporalidad, el lote o el horario del servidor no coinciden. "
+                       "Compilalo en MetaEditor (F7) y probalo en demo.")
+    except (ValueError, RuntimeError, OSError) as e:
+        st.caption("No se puede generar el bot: " + str(e))
+
 if comp:
     try:
         cfgs = {s: construir_config(s) for s in datos}
         with st.spinner("Comparando símbolos..."):
-            st.session_state.comp = met.comparar_simbolos(
+            _tabla, _notas = met.comparar_simbolos(
                 datos, cfgs, oos / 100, int(azar_n), 42, st.session_state.contador, recortar)
+            _gest = (f"SL US${vis.n(sl_usd, 0)} · TP US${vis.n(sl_usd * rr, 0)}" if sl_modo == SL_USD
+                     else f"SL {vis.n(sl_valor, 1)}{'×ATR' if sl_modo == SL_ATR else '%'} · TP 1:{vis.n(rr, 1)}")
+            st.session_state.comp = (_tabla, _notas, f"EMA {int(ema_c)}/{int(ema_l)} · {_gest}")
+            st.session_state.vista = "comp"
     except (ValueError, data.ErrorDatos) as e:
         st.error(str(e))
 
@@ -420,41 +472,110 @@ if abl:
             tabla_abl, omitidos = met.ablacion(df, cfg, oos_pct=oos / 100,
                                                azar_veces=min(int(azar_n), 100),
                                                contador=st.session_state.contador)
-        st.write("")
-        filas = []
-        for nombre, fila in tabla_abl.iterrows():
-            filas += [(f"{nombre} · todo", fila["exp_R"]), (f"{nombre} · OOS", fila["exp_R_OOS"], vis.VIOLETA)]
-        tarjeta_html(f"Ablación de {activo}: expectativa en R", vis.barras_divergentes(filas),
-                     "Los filtros se miden con parámetros fijos (SMA 200, ADX mínimo 20, ATR relativo de 100 "
-                     "velas entre 0,8 y 2,0). El aporte es el de esos valores, no el del filtro en general.")
-        with st.expander("Ver tabla de la ablación"):
-            html(vis.tabla_df(tabla_abl, dec=3, nombre_indice="Configuración"))
-        if omitidos:
-            st.warning(f"Omitidos por falta de desfase del servidor: {', '.join(omitidos)}.")
+        st.session_state.abl = (tabla_abl, omitidos, activo)
+        st.session_state.vista = "abl"
     except (ValueError, data.ErrorDatos) as e:
         st.error(str(e))
 
-if st.session_state.comp is not None:
-    tabla_c, notas_c = st.session_state.comp
-    pos = int(((tabla_c["exp_R"] > 0) & (tabla_c["exp_R_OOS"] > 0)).sum())
+if st.session_state.vista == "abl" and st.session_state.abl is not None:
+    tabla_abl, omitidos, act_abl = st.session_state.abl
+    st.write("")
+    if st.button("← Volver al backtest", key="volver_abl"):
+        st.session_state.vista = "bt"
+        st.rerun()
+    html(vis.titulo_seccion("Modo ablación", "El cruce solo y el efecto de cada filtro, uno por uno"))
+    filas = []
+    for nombre, fila in tabla_abl.iterrows():
+        filas += [(f"{nombre} · todo", fila["exp_R"]), (f"{nombre} · OOS", fila["exp_R_OOS"], vis.VIOLETA)]
+    tarjeta_html(f"Ablación de {act_abl}: expectativa en R", vis.barras_divergentes(filas),
+                 "Los filtros se miden con parámetros fijos (SMA 200, VWAP diario sin distancia, ADX mínimo 20, ATR relativo de 100 "
+                 "velas entre 0,8 y 2,0). El aporte es el de esos valores, no el del filtro en general.")
+    with st.expander("Ver tabla de la ablación"):
+        html(vis.tabla_df(tabla_abl, dec=3, nombre_indice="Configuración"))
+    if omitidos:
+        st.warning(f"Omitidos: {', '.join(omitidos)}. (Sesión necesita el desfase del servidor; VWAP necesita velas menores a D1.)")
+    st.stop()
+
+if st.session_state.comp is not None and len(st.session_state.comp) != 3:      # versión anterior: se descarta
+    st.session_state.comp = None
+if st.session_state.comp is not None and st.session_state.vista == "comp":
+    tabla_c, notas_c, estrategia_c = st.session_state.comp
+    if st.button("← Volver al backtest", key="volver_comp"):
+        st.session_state.vista = "bt"
+        st.rerun()
+    vc = vd.evaluar_comparabilidad(tabla_c)
+    rb = vc["robustez"]
+    N_c = len(tabla_c)
+    ini_c, fin_c = tabla_c["desde"].max(), tabla_c["hasta"].min()
+    st.write("")
+    html(vis.titulo_seccion("Comparación de símbolos", "Mismos parámetros en todos, sin optimizar por activo"))
+    html(vis.chips([("Símbolos", ", ".join(tabla_c.index)), ("Período común", f"{ini_c} → {fin_c}"), ("Estrategia", estrategia_c)]))
+    st.write("")
+    k1, k2, k3, k4 = st.columns(4)
+    lo_, hi_ = vc["rango_exp"]
+    with k1:
+        html(vis.kpi("Símbolos comparados", str(N_c), "mismos parámetros en todos", vis.INDIGO))
+    with k2:
+        html(vis.kpi("Positivos en todo el período", f"{rb['pos_total']} de {N_c}", "expectativa mayor que 0", vis.VIOLETA))
+    with k3:
+        html(vis.kpi("Positivos en out-of-sample", f"{rb['pos_oos']} de {N_c}", "datos que el modelo no vio", vis.ROSA))
+    with k4:
+        html(vis.kpi("Rango de expectativa", vis.n(hi_ - lo_, 2) + " R",
+                     f"de {vis.n(lo_, 2, True)} a {vis.n(hi_, 2, True)} (todo el período)", vis.AZUL))
+    st.write("")
     filas = []
     for simbolo, fila in tabla_c.iterrows():
         filas += [(f"{simbolo} · todo", fila["exp_R"]), (f"{simbolo} · OOS", fila["exp_R_OOS"], vis.VIOLETA)]
-    st.write("")
     cc1, cc2 = st.columns([3, 2])
     with cc1:
-        tarjeta_html("Comparación de símbolos (mismos parámetros en todos)", vis.barras_divergentes(filas),
-                     "Expectativa en R por operación. Se compara en R, no en dinero: el valor por tick difiere entre activos.")
+        tarjeta_html("Expectativa por símbolo (R por operación)", vis.barras_divergentes(filas),
+                     "Se compara en R, no en dinero: el valor por tick difiere entre activos.", min_alto=340)
     with cc2:
-        html(vis.insight(
-            "Lectura de robustez",
-            f"Expectativa positiva en el total y en out-of-sample en <b>{pos} de {len(tabla_c)}</b> símbolos.<br><br>"
-            "Sirve para ver si la idea se sostiene en varios mercados, no para elegir el ganador: al probar varios "
-            "activos es esperable que alguno salga bien por azar."))
-    for n_ in dict.fromkeys(notas_c):
-        st.caption("• " + n_)
+        html(vis.veredicto_caja(
+            "Veredicto de comparabilidad", vc["titulo"],
+            f"<div>{vc['texto']}</div><div style='margin-top:8px;opacity:.85;font-size:.8rem'>Criterios: "
+            f"{vc['n_ok']} cumplen · {vc['n_warn']} con reservas · {vc['n_bad']} no cumplen</div>",
+            {"ok": "ok", "reservas": "dudosa", "no": "pierde"}[vc["nivel"]]))
+        st.write("")
+        html(vis.veredicto_caja("Robustez de la estrategia", rb["titulo"], f"<div>{rb['texto']}</div>",
+                                {"ok": "ok", "dudosa": "dudosa", "sin": "sin"}[rb["nivel"]]))
+    st.write("")
+    simbolos_c = list(tabla_c.index)
+    for k0 in range(0, N_c, 4):
+        cols_r = st.columns(min(4, N_c - k0))
+        for col_, simbolo in zip(cols_r, simbolos_c[k0:k0 + 4]):
+            f_ = tabla_c.loc[simbolo]
+            with col_:
+                html(vis.tarjeta("", vis.anillo(
+                    f_["%TP"], simbolo, f"{int(f_['resueltas'])} operaciones · exp. {vis.n(f_['exp_R'], 2, True)} R · "
+                    f"equilibrio {vis.n(f_['%equilibrio'], 1)}%", f_["%equilibrio"],
+                    vis.INDIGO if f_["exp_R"] > 0 else vis.ROSA, uid=f"c{k0}{simbolo}"[:12])))
+    st.write("")
+    cols_f = ["Símbolo", "Tipo", "Operaciones", "en OOS", "% TP", "Exp. todo", "Exp. OOS", "Mejor que azar OOS",
+              "Spread % SL", "SL en ATR", "Ops/mes", "Máx. DD (R)"]
+    filas_f = [[s_, f_["tipo"], str(int(f_["resueltas"])), str(int(f_["resueltas_OOS"])), vis.n(f_["%TP"], 1) + "%",
+                vis.n(f_["exp_R"], 2, True), vis.n(f_["exp_R_OOS"], 2, True),
+                "–" if f_["mejor_que_%azar_OOS"] != f_["mejor_que_%azar_OOS"] else vis.n(f_["mejor_que_%azar_OOS"], 0) + "%",
+                vis.n(f_["spread_%SL"], 0) + "%", vis.n(f_["sl_atr"], 1) + "×", vis.n(f_["ops_mes"], 1), vis.n(f_["maxDD_R"], 1)]
+               for s_, f_ in tabla_c.iterrows()]
+    est_c = {n_: e_ for e_, n_, _ in vc["checks"]}
+    resalta = {9: est_c["Riesgo equivalente (SL en ATR)"] != vd.OK, 8: est_c["Costos comparables (spread / SL)"] != vd.OK,
+               10: est_c["Frecuencia parecida"] != vd.OK, 3: est_c["Muestra suficiente en cada uno"] != vd.OK,
+               1: est_c["Mismo tipo de activo"] != vd.OK}
+    tarjeta_html("Ficha por símbolo", vis.tabla_html(cols_f, filas_f, resaltar=lambda i, j: resalta.get(j, False), izq=(1,)),
+                 "Las columnas resaltadas son las que no cumplen su criterio de comparabilidad.")
+    st.write("")
+    filas_k = [[vd.SIMBOLO[e_], n_, d_] for e_, n_, d_ in vc["checks"]]
+    tarjeta_html("Criterios de comparabilidad", vis.tabla_html(
+        ["", "Criterio", "Resultado"], filas_k, izq=(1, 2),
+        clase=lambda i, j: ("pos" if filas_k[i][0] == "✓" else "neg" if filas_k[i][0] == "✕" else None) if j == 0 else None),
+        "Si todos se cumplen: «Comparables». Con alguno en «!»: «Comparables con reservas». Con alguno en «✕»: «No comparables».")
+    if notas_c:
+        html("<ul style='margin:4px 0 0 18px;padding:0;font-size:.82rem;line-height:1.5;color:" + vis.TEXTO + ";opacity:.8'>"
+             + "".join(f"<li>{n_}</li>" for n_ in dict.fromkeys(notas_c)) + "</ul>")
     with st.expander("Ver tabla de la comparación"):
         html(vis.tabla_df(tabla_c, dec=3, nombre_indice="Símbolo"))
+    st.stop()
 
 if st.session_state.res is None:
     st.stop()
@@ -648,6 +769,12 @@ if cfg_usada.sl_modo == "precio":
     tp_usd_u = sl_usd_u * cfg_usada.rr
 _tf = globals().get("tf")
 tf_txt = regla if regla != "No" else (_tf or "")
+_vd_clave = (cfg_usada, act_res, float(pdin["lotes"]), _REGLA_TF.get(regla, "") if regla != "No" else (_tf or ""),
+             veredicto["nivel"], veredicto["titulo"])
+if st.session_state.get("veredicto_bot_clave") != _vd_clave:
+    st.session_state.veredicto_bot = (cfg_usada, veredicto, act_res, float(pdin["lotes"]), _vd_clave[3])
+    st.session_state.veredicto_bot_clave = _vd_clave
+    st.rerun()          # la barra lateral ya se dibujó: se repite para que el botón del bot vea el veredicto nuevo
 relato = vd.describir(cfg_usada, act_res, tf_txt, r["P"].indice[0], r["P"].indice[-1], meses_datos, pdin["lotes"],
                       dinero["neto"] if dinero else None, int(tt["resueltas"]), int(tt["TP"]), int(tt["SL"]),
                       float(tt["exp_R"]) if tt["exp_R"] == tt["exp_R"] else 0.0,
@@ -712,9 +839,14 @@ if len(res):
         st.download_button("Descargar operaciones (CSV)", tr.to_csv(index=False).encode("utf-8"),
                            "operaciones.csv", "text/csv")
 
+_entrada_txt = ("- Con pullback: tras el cruce se deja una orden límite en el nivel de retroceso elegido y la operación se "
+                "abre cuando el precio lo toca (no al cierre del cruce ni de la vela que llega). Caduca a las N velas o si "
+                "aparece el cruce contrario; fills exactos en SL/TP, sin slippage ni gaps.\n"
+                if cfg_usada.pb_efectivo() else
+                "- Entrada al cierre de la vela del cruce; fills exactos en SL/TP, sin slippage ni gaps.\n")
 with st.expander("Supuestos y limitaciones"):
     st.markdown(
-        "- Entrada al cierre de la vela del cruce; fills exactos en SL/TP, sin slippage ni gaps.\n"
+        _entrada_txt +
         "- Velas OHLC, no ticks: si una vela toca SL y TP, se cuenta SL y como ambigua.\n"
         "- El spread es el de cierre de cada vela; en velas viejas suele venir en 0.\n"
         "- Una cuenta demo puede diferir en spread y ejecución. El Strategy Tester de MT5 con "
