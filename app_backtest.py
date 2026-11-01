@@ -32,6 +32,7 @@ except ImportError:
 SPREADS = {"Spread de la vela": "vela", "Ceros → mediana": "mediana",
            "Valor fijo": "fijo", "Sin spread": "ninguno"}
 DIRECCIONES = {"Largos y cortos": "ambas", "Solo largos": "largos", "Solo cortos": "cortos"}
+ALTO_FILA = 400          # alto mínimo (px) de las tarjetas «Expectativa por año» y «Embudo», para que queden iguales
 SESIONES = ["Tokio", "Londres", "Nueva York"]
 COLS_TABLA = ["resueltas", "TP", "SL", "abiertas", "ambiguas", "%TP", "%equilibrio", "exp_R",
               "R_total", "maxDD_R", "racha_SL", "azar_exp_R", "mejor_que_%azar",
@@ -53,6 +54,16 @@ def _sintetico(n: int, tendencia: float, semilla: int) -> pd.DataFrame:
     return data.sintetico(n=n, tendencia=tendencia, seed=semilla)
 
 
+def _hoy() -> date:
+    """El día en que se ejecuta (hora de Argentina: en Render el reloj del servidor va en UTC y se adelantaría un día)."""
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
+    except Exception:                       # Windows sin tzdata: se usa el reloj de la PC
+        return date.today()
+
+
 @st.cache_data(show_spinner=False)
 def _mt5(simbolo: str, tf: str, desde: str, hasta: str):
     return data.cargar_mt5(simbolo, tf, desde, hasta)
@@ -71,9 +82,16 @@ st.markdown(vis.css(), unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ datos
 with st.sidebar:
-    with st.expander("1. Datos", expanded=True):
-        fuente = st.radio("Fuente", [ETQ_MT5, ETQ_CSV, ETQ_SINT], index=0 if MT5_OK else 1)
-        datos, specs, avisos_datos = {}, {}, []
+    # La fuente es la base de todo: va fuera de los menús, como un título, debajo del modo oscuro.
+    st.markdown('<div class="fte">Fuente de datos</div>', unsafe_allow_html=True)
+    fuente = st.radio("Fuente de datos", [ETQ_MT5, ETQ_CSV, ETQ_SINT], index=0 if MT5_OK else 1,
+                      label_visibility="collapsed")
+    st.markdown('<div class="fte-fin"></div>', unsafe_allow_html=True)
+    exp_instr = st.expander("1. Instrumento a operar", expanded=False)
+    exp_datos = st.expander("2. Datos: período y temporalidad", expanded=False)
+    datos, specs, avisos_datos = {}, {}, []
+    simbolos, tf, desde, hasta = [], None, None, None
+    with exp_instr:
         try:
             if fuente == ETQ_MT5 and not MT5_OK:
                 st.warning("MT5 directo solo funciona corriendo la app **en tu PC con Windows**, con el "
@@ -97,14 +115,33 @@ with st.sidebar:
                                            [s for s in todos if s not in elegidos], [])
                 otros = st.text_input("O escribilos a mano (separados por coma)", "")
                 simbolos = ui.unir_simbolos(elegidos, otros)
+            elif fuente == ETQ_CSV:
+                archivos = st.file_uploader("Archivos CSV (uno por símbolo)", type=["csv", "txt"],
+                                            accept_multiple_files=True)
+                point = st.number_input("Point del símbolo (solo si el CSV no trae columna 'point')",
+                                        value=0.01, format="%.5f")
+                for archivo in archivos or []:
+                    datos[ui.simbolo_desde_archivo(archivo.name)] = _csv(archivo.getvalue(), point)
+            else:
+                tend = st.slider("Tendencia (0 = azar puro)", 0.0, 1.0, 0.0, 0.1)
+                n_series = st.slider("Cantidad de series de demo", 1, 4, 1)
+                for k in range(n_series):
+                    datos[f"SINT{k + 1}"] = _sintetico(30000, tend, k + 1)
+        except (data.ErrorDatos, ValueError, KeyError) as e:
+            st.error(str(e))
+            datos, specs = {}, {}
+
+    with exp_datos:
+        try:
+            if fuente == ETQ_MT5 and MT5_OK:
                 tf = st.selectbox("Temporalidad", ["D1", "H4", "H1", "M30", "M15", "M5", "M1"], index=2)
                 c1, c2 = st.columns(2)
                 desde = c1.date_input("Desde", date(2020, 1, 1))
-                hasta = c2.date_input("Hasta", date.today())
+                hasta = c2.date_input("Hasta", _hoy())
                 if desde >= hasta:
                     st.error("La fecha 'desde' debe ser anterior a 'hasta'.")
                 elif not simbolos:
-                    st.info("Elegí al menos un símbolo.")
+                    st.info("Elegí al menos un símbolo en «Instrumento a operar».")
                 else:
                     barra = st.progress(0.0)
                     for k, simbolo in enumerate(simbolos):
@@ -123,18 +160,6 @@ with st.sidebar:
                             avisos_datos.append(f"{simbolo}: {e}")
                         barra.progress((k + 1) / len(simbolos))
                     barra.empty()
-            elif fuente == ETQ_CSV:
-                archivos = st.file_uploader("Archivos CSV (uno por símbolo)", type=["csv", "txt"],
-                                            accept_multiple_files=True)
-                point = st.number_input("Point del símbolo (solo si el CSV no trae columna 'point')",
-                                        value=0.01, format="%.5f")
-                for archivo in archivos or []:
-                    datos[ui.simbolo_desde_archivo(archivo.name)] = _csv(archivo.getvalue(), point)
-            else:
-                tend = st.slider("Tendencia (0 = azar puro)", 0.0, 1.0, 0.0, 0.1)
-                n_series = st.slider("Cantidad de series de demo", 1, 4, 1)
-                for k in range(n_series):
-                    datos[f"SINT{k + 1}"] = _sintetico(30000, tend, k + 1)
         except (data.ErrorDatos, ValueError, KeyError) as e:
             st.error(str(e))
             datos, specs = {}, {}
@@ -148,8 +173,10 @@ with st.sidebar:
             if isinstance(rango, tuple) and len(rango) == 2:
                 datos = {s: d_.loc[str(rango[0]):str(rango[1])] for s, d_ in datos.items()}
             datos = {s: d_ for s, d_ in datos.items() if len(d_)}
+        elif fuente != ETQ_MT5 or not MT5_OK:
+            st.caption("Cargá archivos o datos de demo en «Instrumento a operar».")
 
-    with st.expander("2. Señal y gestión", expanded=True):
+    with st.expander("3. Señal y gestión", expanded=False):
         c1, c2 = st.columns(2)
         ema_c = c1.number_input("EMA corta", 2, 500, 13)
         ema_l = c2.number_input("EMA larga", 3, 1000, 34)
@@ -170,9 +197,29 @@ with st.sidebar:
             tp_modo = TP_RR
             rr = st.number_input("RR (1:x)", 1.0, 10.0, 2.0, 0.5)
             sl_valor = st.number_input("Valor del SL", 0.01, 100.0, 1.5 if sl_modo == SL_ATR else 0.5, 0.1)
-        atr_per = st.number_input("Período ATR", 2, 200, 14)
+        # El ATR solo interviene si el SL va en múltiplos de ATR o si algún filtro lo usa (los filtros se definen más abajo:
+        # sus valores ya están en session_state al comienzo de cada ejecución).
+        usa_atr = (sl_modo == SL_ATR or bool(st.session_state.get("f_atr"))
+                   or (bool(st.session_state.get("f_sma")) and float(st.session_state.get("f_sma_dist", 0) or 0) > 0))
+        atr_per = st.number_input("Período ATR", 2, 200, 14, disabled=not usa_atr,
+                                  help="Se usa en el SL en múltiplos de ATR, en el filtro ATR y en la distancia mínima a la SMA.")
+        if not usa_atr:
+            st.caption("Desactivado: con SL en dólares o en % del precio y sin filtros que usen ATR, este valor no interviene.")
+        pb_on = st.checkbox("Entrar en pullback a la EMA (opcional)",
+                            help="Apagado: se entra al cierre de la vela del cruce, como siempre. Encendido: el cruce sigue "
+                                 "siendo la señal, pero la entrada se hace cuando el precio retrocede hacia la EMA.")
+        pb_pct, pb_ema, pb_velas = 50, "corta", 10
+        if pb_on:
+            pb_pct = st.number_input("Retroceso hacia la EMA (%)", 0, 100, 50, 5,
+                                     help="0 = entrar al cierre (igual que sin pullback). 100 = entrar recién cuando el precio "
+                                          "toca la EMA. Se mide sobre la distancia entre el extremo posterior al cruce y la EMA.")
+            pb_ema = {"Corta": "corta", "Larga": "larga"}[st.radio("EMA de referencia", ["Corta", "Larga"], horizontal=True)]
+            pb_velas = st.number_input("Caducidad (velas)", 1, 200, 10,
+                                       help="Si en estas velas el precio no hizo el retroceso, la orden se cancela. También "
+                                            "se cancela si aparece un cruce en sentido contrario.")
+            st.caption("Con pullback, el filtro de sesión se evalúa cuando se ejecuta la entrada.")
 
-    with st.expander("3. Lotaje y dinero", expanded=False):
+    with st.expander("4. Lotaje y dinero", expanded=False):
         lotes = st.number_input("Lotes", 0.01, 1000.0, 0.10, 0.01, format="%.2f")
         tick_size_man, tick_value_man = 0.01, 1.0
         if any(s not in specs for s in datos):
@@ -188,16 +235,16 @@ with st.sidebar:
         limite_pct = st.number_input("Pérdida máxima permitida (% del capital)", 0.0, 100.0, 10.0, 1.0,
                                      help="En FTMO la pérdida máxima total es del 10% del capital inicial.")
 
-    with st.expander("4. Costos", expanded=False):
+    with st.expander("5. Costos", expanded=False):
         spread = SPREADS[st.selectbox("Spread", list(SPREADS))]
         spread_fijo = st.number_input("Spread fijo (unid. de precio)", 0.0, value=0.3) if spread == "fijo" else 0.0
         costo_extra = st.number_input("Costo extra por operación (unid. de precio)", 0.0, value=0.0)
 
-    with st.expander("5. Filtros (independientes)", expanded=False):
-        sma_on = st.checkbox("Filtro SMA")
+    with st.expander("6. Filtros (independientes)", expanded=False):
+        sma_on = st.checkbox("Filtro SMA", key="f_sma")
         if sma_on:
             sma_per = st.number_input("Período SMA", 2, 1000, 200)
-            sma_dist = st.number_input("Distancia mínima al cierre (múltiplos de ATR, 0 = sin)", 0.0, value=0.0, step=0.1)
+            sma_dist = st.number_input("Distancia mínima al cierre (múltiplos de ATR, 0 = sin)", 0.0, value=0.0, step=0.1, key="f_sma_dist")
             sma_pend = st.number_input("Pendiente a favor: N velas (0 = sin)", 0, 500, 0)
         else:
             sma_per, sma_dist, sma_pend = 200, 0.0, 0
@@ -209,7 +256,7 @@ with st.sidebar:
             adx_cre = st.number_input("ADX creciente: N velas (0 = sin)", 0, 200, 0)
         else:
             adx_per, adx_min, adx_max, adx_cre = 14, 20.0, 0.0, 0
-        atr_on = st.checkbox("Filtro ATR")
+        atr_on = st.checkbox("Filtro ATR", key="f_atr")
         if atr_on:
             atr_min = st.number_input("ATR mínimo (% del precio, 0 = sin)", 0.0, value=0.0, step=0.01, format="%.3f")
             atr_max = st.number_input("ATR máximo (% del precio, 0 = sin)", 0.0, value=0.0, step=0.01, format="%.3f")
@@ -224,16 +271,16 @@ with st.sidebar:
             atr_min = atr_max = rel_n = rel_min = rel_max = 0
         ses_on = st.checkbox("Filtro de sesión")
         if ses_on:
-            sesiones = st.multiselect("Sesiones permitidas", SESIONES, ["Londres", "Nueva York"])
+            sesiones = st.multiselect("Sesiones permitidas", SESIONES, SESIONES)
             offset = st.number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)
             dst = st.checkbox("El servidor cambia de hora con EE.UU.", True)
             st.caption("Confirmá el desfase midiéndolo con el mercado abierto. Los horarios de "
                        "las sesiones se mueven con el horario de verano de cada plaza. En BTC el "
                        "filtro se desactiva solo (opera 24/7).")
         else:
-            sesiones, offset, dst = ["Londres", "Nueva York"], None, True
+            sesiones, offset, dst = list(SESIONES), None, True
 
-    with st.expander("6. Control de sobreajuste", expanded=False):
+    with st.expander("7. Control de sobreajuste", expanded=False):
         oos = st.slider("Out-of-sample reservado (%)", 10, 50, 30)
         azar_n = st.number_input("Repeticiones del azar", 20, 500, 100, 20)
 
@@ -263,6 +310,7 @@ def construir_config(simbolo: str = None) -> eng.Config:
     return eng.Config(
         ema_corta=int(ema_c), ema_larga=int(ema_l), rr=float(rr),
         sl_modo=modo, sl_valor=valor, atr_periodo=int(atr_per),
+        pullback_activo=bool(pb_on), pullback_pct=float(pb_pct), pullback_ema=pb_ema, pullback_velas=int(pb_velas),
         direccion=direccion, spread=spread, spread_fijo=float(spread_fijo), costo_extra=float(costo_extra),
         sma_activo=sma_on, sma_periodo=int(sma_per), sma_dist_min_atr=float(sma_dist), sma_pendiente_n=int(sma_pend),
         adx_activo=adx_on, adx_periodo=int(adx_per), adx_min=float(adx_min),
@@ -278,8 +326,8 @@ def html(x: str) -> None:
     st.html(x)
 
 
-def tarjeta_html(titulo: str, cuerpo: str, nota: str = "", derecha: str = "") -> None:
-    html(vis.tarjeta(titulo, cuerpo, nota, derecha))
+def tarjeta_html(titulo: str, cuerpo: str, nota: str = "", derecha: str = "", min_alto: int = 0) -> None:
+    html(vis.tarjeta(titulo, cuerpo, nota, derecha, min_alto))
 
 
 if not datos:
@@ -483,14 +531,23 @@ if len(res):
         anio = r["por_anio"]
         tarjeta_html("Expectativa por año (R)",
                      vis.barras_verticales([(int(a), f_["exp_R"], f"{int(f_['resueltas'])} op.") for a, f_ in anio.iterrows()]),
-                     "Un año con pocas operaciones pesa poco: mirá el número debajo de cada barra.")
+                     "Un año con pocas operaciones pesa poco: mirá el número debajo de cada barra.", min_alto=ALTO_FILA)
     with h2:
-        cuerpo = vis.embudo([("Cruces detectados", tt["cruces"]), ("Tomados", tt["tomados"]),
-                             ("Resueltas", tt["resueltas"]), ("Llegaron a TP", tt["TP"])])
+        _pb = tt["pb"] if isinstance(tt["pb"], dict) else {}
+        _pasos = [("Cruces detectados", tt["cruces"]), ("Pasan los filtros", tt["tomados"])]
+        if _pb:
+            _pasos += [("Órdenes dejadas (pullback)", _pb["ordenes"]), ("Entradas ejecutadas", _pb["llenadas"])]
+        else:
+            _pasos += [("Operaciones tomadas", tt["resueltas"] + tt["abiertas"])]
+        cuerpo = vis.embudo(_pasos + [("Llegaron a TP", tt["TP"])])
+        _nombres = {"sma": "SMA", "adx": "ADX", "atr": "ATR", "sesion": "Sesión"}
+        _txt = []
         if r["descartes"]:
-            cuerpo += "<div class='note'>Descartadas por filtro:</div>" + vis.chips(list(r["descartes"].items()))
-        tarjeta_html("Embudo de señales", cuerpo,
-                     f"{int(tt['ignoradas'])} señales ignoradas por haber ya una operación abierta.")
+            _txt.append("Descartadas por filtro: " + " · ".join(f"{_nombres.get(k, k)} {int(v_)}" for k, v_ in r["descartes"].items()) + ".")
+        if _pb and _pb["ordenes"]:
+            _txt.append(f"Sin ejecutar: caducaron {_pb['caducadas']}, cruce contrario {_pb['cruce_contrario']}.")
+        _txt.append(f"{int(tt['ignoradas'])} señales ignoradas por haber ya una operación abierta.")
+        tarjeta_html("Embudo de señales", cuerpo, " ".join(_txt), min_alto=ALTO_FILA)
 
     # ------------------------------------------------------------- dinero
     st.write("")

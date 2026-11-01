@@ -124,6 +124,9 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
     if cfg.sesion_activo:
         filtros.append("sesión " + " + ".join(cfg.sesiones))
     filtros_txt = ("filtros: " + "; ".join(filtros)) if filtros else "sin filtros"
+    if cfg.pb_efectivo():
+        filtros_txt += (f", entrando en pullback del {n(cfg.pullback_pct, 0)}% hacia la EMA {cfg.pullback_ema} "
+                        f"(caduca a las {cfg.pullback_velas} velas)")
     costos = {"vela": "spread de cada vela", "mediana": "spread de cada vela (ceros reemplazados por la mediana)",
               "fijo": f"spread fijo de {n(cfg.spread_fijo, 2)}", "ninguno": "sin spread"}[cfg.spread]
     if cfg.costo_extra:

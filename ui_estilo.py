@@ -87,6 +87,9 @@ _CSS_SIDEBAR = """
 [data-testid="stSidebar"] [data-testid="stExpander"] summary{padding:.55rem .8rem;}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary :is(p,span){color:#fff !important;font-weight:700;}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary svg{fill:#fff;color:#fff;}
+.fte{font-size:1.05rem;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:#fff !important;
+  border-top:1px solid rgba(255,255,255,.25);padding-top:.7rem;margin-top:.4rem;}
+.fte-fin{border-bottom:1px solid rgba(255,255,255,.25);margin:.2rem 0 .7rem;}
 [data-testid="stSidebarNav"] a{border-radius:10px;}
 [data-testid="stSidebarNav"] a span{color:#fff !important;}
 [data-testid="stSidebarNav"] a[aria-current="page"]{background:rgba(255,255,255,.18);}
@@ -138,6 +141,12 @@ button[kind="secondary"],[data-testid="stBaseButton-secondary"]{border-radius:12
 .emb .e{box-sizing:border-box;margin:8px auto;border-radius:12px;color:#fff;padding:9px 14px;display:flex;justify-content:space-between;
   font-weight:600;font-size:.82rem;box-shadow:0 4px 12px rgba(124,92,240,.25);}
 .emb .e span:last-child{font-weight:800;}
+.ra{margin-bottom:9px;}
+.ra .rl{display:flex;justify-content:space-between;font-size:.86rem;font-weight:600;color:@TXT@;}
+.ra .rv{font-weight:800;}
+.ra .trk{background:@TRACK@;border-radius:8px;height:13px;margin-top:3px;overflow:hidden;}
+.ra .trk div{height:100%;border-radius:8px;}
+.ra .rp{font-size:.7rem;color:@MUTED@;margin-top:1px;}
 .insight{background:linear-gradient(120deg,#4c4fe0,#2f3fd8);color:#fff;border-radius:18px;padding:16px 20px;
   box-shadow:0 8px 24px rgba(47,63,216,.30);font-size:.9rem;line-height:1.55;}
 .insight b{color:#fff;}
@@ -199,10 +208,12 @@ def kpi(etiqueta: str, valor: str, sub: str = "", color: str = None) -> str:
             f'<div class="sub">{_e(sub)}</div></div>')
 
 
-def tarjeta(titulo: str, cuerpo_html: str, nota: str = "", derecha: str = "") -> str:
+def tarjeta(titulo: str, cuerpo_html: str, nota: str = "", derecha: str = "", min_alto: int = 0) -> str:
+    """min_alto (px) sirve para que dos tarjetas lado a lado queden del mismo tamaño."""
     h = f"<h4><span>{_e(titulo)}</span><small>{_e(derecha)}</small></h4>" if titulo else ""
     nt = f'<div class="note">{_e(nota)}</div>' if nota else ""
-    return f'<div class="card">{h}{cuerpo_html}{nt}</div>'
+    est = f' style="min-height:{int(min_alto)}px;box-sizing:border-box"' if min_alto else ""
+    return f'<div class="card"{est}>{h}{cuerpo_html}{nt}</div>'
 
 
 def anillo(pct, titulo: str, sub: str, equilibrio=None, color: str = None, uid: str = "a") -> str:
@@ -269,15 +280,17 @@ def barras_divergentes(filas: list, maximo=None, dec=2) -> str:
 
 
 def embudo(etapas: list) -> str:
-    """etapas: [(nombre, cantidad)] de mayor a menor. Ancho proporcional con un mínimo legible."""
-    top = max((c for _, c in etapas), default=0) or 1
+    """etapas: [(nombre, cantidad)]. Una barra por etapa; el largo es el % de la etapa ANTERIOR (la primera = 100 %),
+    así cada paso se lee bien aunque la cantidad inicial sea mucho mayor que las siguientes."""
     cols = [ROSA, MAGENTA, "#a355e8", VIOLETA, INDIGO, AZUL]
     out, previo = [], None
     for k, (nombre, c) in enumerate(etapas):
-        w = max(38.0, 100.0 * c / top)
-        pct = "" if previo in (None, 0) else f" · {n(100 * c / previo, 0)}%"
-        out.append(f'<div class="e" style="width:{w:.0f}%;background:{cols[k % len(cols)]}">'
-                   f'<span>{_e(nombre)}<small style="opacity:.85;font-weight:500">{pct}</small></span><span>{n(c, 0)}</span></div>')
+        f = 100.0 if previo is None else (100.0 * c / previo if previo else 0.0)
+        ancho = max(min(f, 100.0), 3.0)
+        pie = "&nbsp;" if previo is None else f"{n(f, 0)}% del paso anterior"
+        out.append(f'<div class="ra"><div class="rl"><span>{_e(nombre)}</span><span class="rv">{n(c, 0)}</span></div>'
+                   f'<div class="trk"><div style="width:{ancho:.0f}%;background:linear-gradient(90deg,{cols[k % len(cols)]},{VIOLETA})"></div></div>'
+                   f'<div class="rp">{pie}</div></div>')
         previo = c
     return f'<div class="emb">{"".join(out)}</div>'
 

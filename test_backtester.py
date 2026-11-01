@@ -534,6 +534,91 @@ def test_extremos_diarios():
     assert met.extremos_diarios(tr.iloc[0:0], idx, 1, 1, 1) == {}
 
 
+def _P_pb(h, l, ema=100.0, sube=None, baja=None, ok_ses=None, dist=2.0):
+    n = len(h)
+    h, l = np.array(h, float), np.array(l, float)
+    z = np.zeros(n)
+    return eng.Preparado(h, l, (h + l) / 2, z.copy(), z.copy(), np.full(n, dist), pd.date_range("2024-01-01", periods=n, freq="h"),
+                         [], 0.0, np.full(n, ema), np.full(n, ema),
+                         np.zeros(n, bool) if sube is None else np.array(sube, bool),
+                         np.zeros(n, bool) if baja is None else np.array(baja, bool), ok_ses)
+
+
+def test_pullback_largo_se_ejecuta_en_el_nivel_y_llega_a_tp():
+    #            0    1    2    3    4    5
+    P = _P_pb([101, 103, 105, 104, 107, 108], [99, 101, 103, 102, 103, 106])
+    tr, _ = eng.simular(P, [(2, 1)], 2.0, 0.0, {"pct": 50, "ema": "corta", "velas": 10})
+    f = tr.iloc[0]
+    # extremo 105, EMA 100 -> nivel 102,5; la vela 3 (minimo 102) lo toca
+    assert f["señal"] == 2 and f["i"] == 3 and abs(f["entrada"] - 102.5) < 1e-9
+    assert f["res"] == "TP" and f["salida"] == 4 and f["R"] == 2.0
+    assert tr.attrs["pb"] == {"ordenes": 1, "llenadas": 1, "caducadas": 0, "cruce_contrario": 0}
+
+
+def test_pullback_caduca_a_las_n_velas_y_libera_para_la_siguiente_señal():
+    h = [101, 103, 105, 106, 107, 108, 109, 110]
+    l = [99, 101, 103, 104, 105, 106, 107, 108]            # nunca baja a la EMA (100)
+    P = _P_pb(h, l)
+    tr, ign = eng.simular(P, [(2, 1)], 2.0, 0.0, {"pct": 100, "ema": "corta", "velas": 3})
+    assert len(tr) == 0 and tr.attrs["pb"]["caducadas"] == 1 and tr.attrs["pb"]["llenadas"] == 0
+
+
+def test_pullback_se_cancela_por_cruce_contrario_y_la_señal_contraria_se_procesa():
+    h = [101, 103, 105, 106, 107, 108]
+    l = [99, 101, 103, 104, 90, 88]
+    # largo en 2 con nivel 100 (100 % de la EMA); en la vela 4 hay cruce bajista -> se cancela; el corto de la vela 4 entra
+    P = _P_pb(h, l, baja=[0, 0, 0, 0, 1, 0])
+    P.l[4] = 103                                            # la vela 4 no llega al nivel 100: no se llena el largo
+    tr, _ = eng.simular(P, [(2, 1), (4, -1)], 2.0, 0.0, {"pct": 100, "ema": "corta", "velas": 10})
+    assert tr.attrs["pb"]["cruce_contrario"] == 1
+    assert tr.attrs["pb"]["ordenes"] == 2
+
+
+def test_pullback_en_la_vela_de_entrada_si_toca_sl_cuenta_sl_y_no_mira_tp():
+    P = _P_pb([101, 103, 105, 109, 109], [99, 101, 103, 100, 108])
+    tr, _ = eng.simular(P, [(2, 1)], 2.0, 0.0, {"pct": 50, "ema": "corta", "velas": 10})
+    f = tr.iloc[0]       # nivel 102,5 ; SL 100,5 ; la vela 3 baja a 100: SL (ambigua) aunque luego sube
+    assert f["res"] == "SL" and f["amb"] and f["salida"] == 3 and f["R"] == -1.0
+
+
+def test_pullback_corto_y_filtro_de_sesion_al_ejecutar():
+    # corto: extremo (minimo) 95, EMA 100 -> con 50 % el nivel es 97,5
+    h = [99, 97, 96, 98, 94, 93]
+    l = [97, 95, 95, 96, 92, 90]
+    P = _P_pb(h, l)
+    tr, _ = eng.simular(P, [(2, -1)], 2.0, 0.0, {"pct": 50, "ema": "corta", "velas": 10})
+    assert tr.iloc[0]["i"] == 3 and abs(tr.iloc[0]["entrada"] - 97.5) < 1e-9
+    P2 = _P_pb(h, l, ok_ses=np.array([1, 1, 1, 0, 1, 1], bool))   # fuera de sesion en la vela 3: no ejecuta ahi
+    tr2, _ = eng.simular(P2, [(2, -1)], 2.0, 0.0, {"pct": 50, "ema": "corta", "velas": 10})
+    assert len(tr2) == 0 or tr2.iloc[0]["i"] != 3
+
+
+def test_pullback_config_y_opcionalidad():
+    assert eng.pb_de(eng.Config()) is None                                   # apagado por defecto
+    assert eng.pb_de(eng.Config(pullback_activo=True, pullback_pct=0)) is None   # 0 % = entrada al cierre
+    assert eng.pb_de(eng.Config(pullback_activo=True, pullback_pct=40, pullback_ema="larga"))["ema"] == "larga"
+    for mal in (dict(pullback_pct=101), dict(pullback_ema="x"), dict(pullback_velas=0)):
+        try:
+            eng.Config(**mal).validar()
+            assert False
+        except ValueError:
+            pass
+
+
+def test_pullback_integracion_apagado_no_cambia_y_encendido_filtra_operaciones():
+    df = dt.sintetico(n=12000, tendencia=0.6, seed=3)
+    base = eng.Config(sl_modo="precio", sl_valor=10.0, rr=2.0)
+    r0 = met.evaluar(df, base, 0.3, 10, 1)
+    r1 = met.evaluar(df, replace(base, pullback_activo=True, pullback_pct=0), 0.3, 10, 1)   # 0 % = igual que apagado
+    assert r0["tabla"].loc["Todo", "resueltas"] == r1["tabla"].loc["Todo", "resueltas"]
+    r2 = met.evaluar(df, replace(base, pullback_activo=True, pullback_pct=60, pullback_velas=10), 0.3, 10, 1)
+    pb = r2["tabla"].loc["Todo", "pb"]
+    assert pb["ordenes"] >= pb["llenadas"] > 0 and pb["ordenes"] == pb["llenadas"] + pb["caducadas"] + pb["cruce_contrario"]
+    assert (r2["trades"]["i"] >= r2["trades"]["señal"]).all()
+    ab, _ = met.ablacion(df, replace(base, pullback_activo=True, pullback_pct=60), azar_veces=5)
+    assert "+ Pullback" in ab.index and "Cruce solo" in ab.index
+
+
 if __name__ == "__main__":
     tests = [(k, v) for k, v in sorted(globals().items()) if k.startswith("test_")]
     for nombre, f in tests:

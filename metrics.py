@@ -47,7 +47,7 @@ def azar(P, cfg, lo, hi, n_sig, veces, rng) -> np.ndarray:
     for _ in range(veces):
         idx = np.sort(rng.choice(np.arange(lo, hi), size=n_sig, replace=False))
         sig = list(zip(idx, rng.choice(lados, size=n_sig)))
-        tr, _ = eng.simular(P, sig, cfg.rr, cfg.costo_extra)
+        tr, _ = eng.simular(P, sig, cfg.rr, cfg.costo_extra, eng.pb_de(cfg))
         out.append(resumen(tr, cfg.rr)["exp_R"])
     return np.array([x for x in out if not np.isnan(x)])
 
@@ -70,6 +70,7 @@ def evaluar(df, cfg, oos_pct=0.3, azar_veces=200, semilla=42, contador=None) -> 
         s["mejor_que_%azar"] = (100 * float((base < s["exp_R"]).mean())
                                  if len(base) and not np.isnan(s["exp_R"]) else np.nan)
         s["cruces"], s["tomados"], s["ignoradas"] = r.cruces, r.tomados, r.ignoradas
+        s["pb"] = r.pb
         s["descartes"] = r.descartes
         filas.append({"tramo": nombre, **s})
     tabla = pd.DataFrame(filas).set_index("tramo")
@@ -107,6 +108,8 @@ FILTROS_ABLACION = {
 def ablacion(df, cfg_base, filtros=None, oos_pct=0.3, azar_veces=100, semilla=42, contador=None):
     """Cruce solo y luego cada filtro de a uno (mas todos juntos). Devuelve un DataFrame."""
     filtros = FILTROS_ABLACION if filtros is None else filtros
+    if filtros is FILTROS_ABLACION and cfg_base.pb_efectivo():     # el pullback elegido entra como un paso mas
+        filtros = {**FILTROS_ABLACION, "Pullback": dict(pullback_activo=True)}
     base = replace(cfg_base, **eng.FILTROS_APAGADOS)
     configs = [("Cruce solo", base)]
     omitidos = []

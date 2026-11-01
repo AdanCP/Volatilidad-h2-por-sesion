@@ -1,7 +1,7 @@
 ### Cómo leer esta guía
 Cada campo cambia **qué operaciones se toman** o **cómo se miden**. Cambiá de a uno y anotá qué pasa. Cuantas más combinaciones probás, más probable es que alguna salga bien por azar (por eso existe el contador de pruebas).
 
-## 1. Datos
+## Fuente de datos, 1. Instrumento a operar y 2. Datos
 - **Fuente.** *MT5 directo*: lee el historial del terminal de FTMO (solo corriendo la app en tu PC con Windows y MT5 abierto). *CSV exportado*: archivos generados con `exportar_mt5.py`, uno por símbolo. *Sintéticos*: series inventadas para probar la interfaz; no dicen nada del mercado real.
 - **Símbolos.** Podés elegir varios (metales, cripto, forex, índices). Con uno hacés el análisis detallado; con dos o más se habilita *Comparar símbolos*.
 - **Temporalidad.** Tamaño de cada vela (M1, M5, H1...). Define cada cuánto se mira el cruce. Velas chicas dan más operaciones, más ruido y un spread que pesa más respecto del SL.
@@ -11,7 +11,7 @@ Cada campo cambia **qué operaciones se toman** o **cómo se miden**. Cambiá de
 - **Point (solo CSV).** Tamaño del punto del símbolo (0,01 en oro; 0,00001 en EURUSD). Sirve para pasar el spread de puntos a precio, y solo hace falta si el CSV no trae la columna `point`.
 - **Tendencia / cantidad de series (sintéticos).** Con 0 la serie es azar puro: ninguna estrategia debería ganar ahí. Es una buena prueba de que el sistema no inventa ventaja.
 
-## 2. Señal y gestión
+## 3. Señal y gestión
 - **EMA corta y larga.** La señal es el cruce, evaluado al cierre de la vela: la corta por encima de la larga da una compra y por debajo una venta. La entrada es al cierre de esa vela. La corta debe ser menor que la larga.
 - **Dirección.** Largos y cortos, solo largos o solo cortos.
 - **SL en.** Cómo se calcula la distancia del stop:
@@ -23,7 +23,13 @@ Cada campo cambia **qué operaciones se toman** o **cómo se miden**. Cambiá de
 - **SL y TP en dólares.** Con *Dólares fijos* podés indicar el TP como ratio o también en dólares. La relación TP/SL pasa a ser libre (por ejemplo TP de 50 y SL de 100 da 0,5).
 - **Período ATR.** Ventana del ATR (14 por defecto). Se usa para el SL por ATR, para la distancia a la SMA y para el filtro de ATR.
 
-## 3. Lotaje y dinero
+**Entrar en pullback a la EMA (opcional).** Por defecto la entrada se hace al cierre de la vela del cruce. Si lo activás, el cruce sigue siendo la señal, pero se deja una orden pendiente y se entra cuando el precio retrocede hacia la EMA, a favor de la tendencia del cruce.
+- **Retroceso hacia la EMA (%):** qué parte de la distancia entre el extremo posterior al cruce y la EMA tiene que devolver el precio. 0 = entrar al cierre (igual que apagado); 100 = entrar recién cuando toca la EMA. El nivel se mueve a medida que el precio hace nuevos extremos.
+- **EMA de referencia:** corta (retrocesos más chicos, más entradas) o larga (más profundos, menos entradas).
+- **Caducidad (velas):** si en ese plazo no hubo retroceso, la orden se cancela. También se cancela si aparece un cruce contrario.
+- **Cómo leerlo:** mirá el porcentaje de órdenes ejecutadas y comparalo contra la versión sin pullback **por mes**, no solo por operación: el pullback suele mejorar el R por operación pero deja pasar las tendencias fuertes que no retroceden. El backtest supone que la orden se ejecuta cuando el precio toca el nivel, algo optimista en la práctica.
+
+## 4. Lotaje y dinero
 - **Lotes.** Tamaño de la posición (1, 0,5, 0,1...). Tiene que respetar el mínimo y el paso del símbolo.
 - **tick_size y tick_value.** Datos del contrato. Con MT5 directo se leen solos de cada símbolo. Con CSV o sintéticos los cargás a mano (en MT5: clic derecho en el símbolo → Especificación).
 - **Comisión por lote.** Se resta de cada operación.
@@ -31,12 +37,12 @@ Cada campo cambia **qué operaciones se toman** o **cómo se miden**. Cambiá de
 - **Fórmula.** Dinero por cada 1,00 de precio = tick_value / tick_size × lotes. En oro con 0,10 lotes son 10 US$ por cada 1,00.
 - **Qué cambia y qué no.** En SL por ATR o por porcentaje, el lote solo escala los resultados en dinero (R y % no cambian). Con SL en dólares, el lote **sí** cambia las operaciones, porque define qué tan lejos queda el stop en precio.
 
-## 4. Costos
+## 5. Costos
 - **Spread.** *De la vela*: el spread de cierre de cada vela (en historial viejo suele venir en 0, lo que subestima el costo). *Ceros → mediana*: reemplaza los ceros por la mediana. *Valor fijo*: el que indiques. *Sin spread*: solo para comparar.
 - **Cómo se aplica.** Los largos entran al precio de venta (ask). En los cortos, el SL y el TP se activan con el ask.
 - **Costo extra por operación.** Unidades de precio que se restan a cada operación resuelta (slippage, comisión). En R equivale a costo / distancia del SL.
 
-## 5. Filtros
+## 6. Filtros
 Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los filtros activos.
 - **SMA.** Compra solo si el cierre está por encima de la SMA y venta solo si está por debajo.
   - *Distancia mínima*: pide que el cierre esté a por lo menos N × ATR de la SMA, para evitar cruces pegados a ella (0 = sin condición).
@@ -53,7 +59,7 @@ Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los
   - *El servidor cambia con EE.UU.*: casi todos los brokers pasan de GMT+2 a GMT+3 con el verano de EE.UU.
   - En BTC el filtro se desactiva solo (opera 24/7).
 
-## 6. Control de sobreajuste
+## 7. Control de sobreajuste
 - **Out-of-sample reservado (%).** El último tramo del historial, que se mide aparte. Si el modelo funciona en el tramo de ajuste (in-sample) pero no en este, probablemente era azar o sobreajuste.
 - **Repeticiones del azar.** Cuántas veces se simulan entradas aleatorias con la misma cantidad de operaciones y las mismas reglas de SL, TP y spread. Sirve de vara de comparación.
 - **Pruebas en la sesión.** Cuenta cuántas configuraciones evaluaste. Con muchas pruebas, un buen resultado puede ser casualidad.
