@@ -43,3 +43,22 @@ inline std::string IntegerToString(int v){return std::to_string(v);}
 #define MathRound std::round
 inline datetime TimeTradeServer(){return 0;} inline datetime TimeGMT(){return 0;}
 inline std::string EnumToString(int v){return std::to_string(v);}
+
+#define MQL_TESTER 1
+#define MQL_TRADE_ALLOWED 2
+inline long MQLInfoInteger(int){return 1;} inline bool SendNotification(const std::string&){return true;} inline int GetLastError(){return 0;}
+inline std::string StringSubstr(const std::string&s,int a,int b=-1){return s.substr(a,b<0?std::string::npos:b);}
+inline std::string DoubleToString(double v,int){return std::to_string(v);}
+struct MqlTradeTransaction{int type;unsigned long deal;};
+enum{TRADE_TRANSACTION_DEAL_ADD=100,DEAL_MAGIC,DEAL_ENTRY,DEAL_ENTRY_IN,DEAL_TYPE,DEAL_TYPE_BUY,DEAL_PRICE,DEAL_VOLUME,DEAL_POSITION_ID,POSITION_SL,POSITION_TP};
+inline bool HistoryDealSelect(unsigned long){return false;} inline long HistoryDealGetInteger(unsigned long,int){return 0;} inline double HistoryDealGetDouble(unsigned long,int){return 0;}
+inline bool PositionSelectByTicket(unsigned long){return false;}
+
+inline void EventSetTimer(int){} inline void EventKillTimer(){}
+inline long TerminalInfoInteger(int){return 1;} inline long AccountInfoInteger(int){return 1;}
+inline datetime TimeLocal(){return 0;}
+inline std::string TimeToString(datetime,int=0){return "";}
+enum{TERMINAL_CONNECTED=300,TERMINAL_TRADE_ALLOWED,ACCOUNT_TRADE_EXPERT,TIME_MINUTES,REASON_INITFAILED,REASON_REMOVE,REASON_CHARTCLOSE,REASON_CLOSE,REASON_PROGRAM,REASON_RECOMPILE,REASON_CHARTCHANGE,REASON_TEMPLATE,REASON_ACCOUNT};
+
+enum{DEAL_ENTRY_OUT=400,DEAL_ENTRY_OUT_BY,DEAL_ENTRY_INOUT,DEAL_REASON,DEAL_REASON_TP,DEAL_REASON_SL,DEAL_REASON_SO,DEAL_REASON_EXPERT,DEAL_REASON_CLIENT,DEAL_REASON_MOBILE,DEAL_REASON_WEB,DEAL_PROFIT,DEAL_SWAP,DEAL_COMMISSION,ACCOUNT_CURRENCY,DEAL_TYPE_SELL};
+inline std::string AccountInfoString(int){return "USD";}

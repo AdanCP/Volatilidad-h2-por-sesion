@@ -227,6 +227,13 @@ int      g_pbSide   = 0;
 int      g_pbBars   = 0;
 double   g_pbExt    = 0.0;
 
+// vigilancia (aviso diario, conexion, trading algoritmico)
+int      g_hbKey     = 0;              // ultimo dia (hora Argentina) en que se aviso "activo"
+datetime g_offSince  = 0;              // desde cuando no hay conexion con el servidor (hora de la PC)
+bool     g_offAvisado = false;
+datetime g_noAlgoSince = 0;
+bool     g_noAlgoAvisado = false;
+
 bool     g_stopTotal = false;
 int      g_blockDay  = 0;
 int      g_dayKey    = 0;
@@ -235,6 +242,22 @@ double   g_dayBal    = 0.0;
 string   g_gv        = "";
 
 bool V(const double x) { return x > -1.0e299; }
+
+string TfName(const ENUM_TIMEFRAMES tf) { return StringSubstr(EnumToString(tf), 7); }
+
+// Mensaje al registro de MT5 y, si hay push configurado (Herramientas > Opciones > Notificaciones), al celular.
+bool Avisar(const string msg)
+{
+   const string txt = "Bot " + _Symbol + " " + TfName(InpExpectedTF) + ": " + msg;
+   Print(txt);
+   if(MQLInfoInteger(MQL_TESTER)) return true;
+   if(!SendNotification(StringSubstr(txt, 0, 255)))
+   {
+      Print("No se pudo enviar la notificacion push (error ", GetLastError(), "). Revisa Herramientas > Opciones > Notificaciones.");
+      return false;
+   }
+   return true;
+}
 
 // ============================ indicadores =====================================
 // Mismas formulas que el backtester (suavizados recursivos con semilla en el primer valor).
@@ -722,8 +745,7 @@ bool GuardsOK()
    const double eq = AccountInfoDouble(ACCOUNT_EQUITY);
    if(eq <= g_initBal * (1.0 - InpMaxTotalLossPct / 100.0))
    {
-      Print("PROTECCION: perdida total maxima alcanzada. Se cierra todo y el bot queda detenido. ",
-            "Para reanudarlo, borra la variable global ", g_gv, "STOP (F3 en MT5) y reinicia el bot.");
+      Avisar("FRENO TOTAL: perdida total del " + DoubleToString(InpMaxTotalLossPct, 1) + " %. Se cerro todo. Bot detenido: no opera hasta que lo reactives (variable global " + g_gv + "STOP, F3 en MT5).");
       CloseAll();
       g_stopTotal = true;
       GlobalVariableSet(g_gv + "STOP", 1.0);
@@ -741,7 +763,7 @@ bool GuardsOK()
    if(g_blockDay == key) return false;
    if(eq <= g_dayBal * (1.0 - InpMaxDailyLossPct / 100.0))
    {
-      Print("PROTECCION: perdida diaria maxima alcanzada. Se cierra todo hasta el proximo dia.");
+      Avisar("FRENO DIARIO: la perdida del dia llego al " + DoubleToString(InpMaxDailyLossPct, 1) + " %. Se cerro todo; retoma manana solo.");
       CloseAll();
       g_pbActive = false;
       g_blockDay = key;
@@ -807,27 +829,27 @@ void OnNewBar()
 // ============================ eventos =========================================
 int OnInit()
 {
-   if(!InpVerdictOK) { Print("RECHAZADO: el backtest no respalda esta estrategia. El bot no opera."); return INIT_FAILED; }
-   if(InpEmaFast >= InpEmaSlow) { Print("RECHAZADO: la EMA corta debe ser menor que la larga."); return INIT_PARAMETERS_INCORRECT; }
-   if(InpPBPct < 0.0 || InpPBPct > 100.0) { Print("RECHAZADO: el pullback debe estar entre 0 y 100."); return INIT_PARAMETERS_INCORRECT; }
+   if(!InpVerdictOK) { Avisar("RECHAZADO: el backtest no respalda esta estrategia. No opera."); return INIT_FAILED; }
+   if(InpEmaFast >= InpEmaSlow) { Avisar("RECHAZADO: la EMA corta debe ser menor que la larga."); return INIT_PARAMETERS_INCORRECT; }
+   if(InpPBPct < 0.0 || InpPBPct > 100.0) { Avisar("RECHAZADO: el pullback debe estar entre 0 y 100."); return INIT_PARAMETERS_INCORRECT; }
    if(InpExpectedSymbol != _Symbol)
    {
-      Print("RECHAZADO: el bot es para ", InpExpectedSymbol, " y este grafico es ", _Symbol, ".");
+      Avisar("RECHAZADO: el bot es para " + InpExpectedSymbol + " y este grafico es " + _Symbol + ".");
       return INIT_FAILED;
    }
    if(InpExpectedTF != _Period)
    {
-      Print("RECHAZADO: el bot es para otra temporalidad. Ponelo en un grafico ", EnumToString(InpExpectedTF), ".");
+      Avisar("RECHAZADO: el grafico es de otra temporalidad. Ponelo en un grafico " + TfName(InpExpectedTF) + ".");
       return INIT_FAILED;
    }
    if(!VolumenValido())
    {
-      Print("RECHAZADO: el lote ", InpLots, " no es operable en este simbolo (minimo/maximo/paso).");
+      Avisar("RECHAZADO: el lote " + DoubleToString(InpLots, 2) + " no es operable en este simbolo (minimo/maximo/paso).");
       return INIT_FAILED;
    }
    if(InpSLMode == BOT_SL_USD && (SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE) <= 0.0 || SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE) <= 0.0))
    {
-      Print("RECHAZADO: no se puede convertir el SL en dolares (sin tick size/value).");
+      Avisar("RECHAZADO: no se puede convertir el SL en dolares (sin tick size/value).");
       return INIT_FAILED;
    }
    if(InpSesOn)
@@ -837,8 +859,7 @@ int OnInit()
       const double esperado = InpServerOffset + ((InpServerDST && UsDstServidor(srv) == 1) ? 1.0 : 0.0);
       if(MathAbs(medido - esperado) > 0.01)
       {
-         Print("RECHAZADO: el desfase del servidor medido (", medido, " h) no coincide con el del backtest (", esperado, " h). ",
-               "Las sesiones quedarian corridas. Revisa el desfase en la app y regenera el bot.");
+         Avisar("RECHAZADO: el desfase del servidor (" + DoubleToString(medido, 0) + " h) no coincide con el del backtest (" + DoubleToString(esperado, 0) + " h). Revisa el desfase en la app y regenera el bot.");
          return INIT_FAILED;
       }
    }
@@ -857,8 +878,163 @@ int OnInit()
       GlobalVariableSet(g_gv + "DAYKEY", (double)g_dayKey);
       GlobalVariableSet(g_gv + "DAYBAL", g_dayBal);
    }
+   if(InpGuards && !g_stopTotal)
+   {
+      const double eq0 = AccountInfoDouble(ACCOUNT_EQUITY);
+      const double lim = g_initBal * (1.0 - InpMaxTotalLossPct / 100.0);
+      if(eq0 <= lim)
+      {
+         Avisar("RECHAZADO: el equity de la cuenta (" + DoubleToString(eq0, 2) + ") ya esta por debajo del limite de perdida total ("
+                + DoubleToString(lim, 2) + ") calculado con un capital inicial de " + DoubleToString(g_initBal, 2)
+                + ". Revisa que el 'Capital de la cuenta' de la app coincida con tu cuenta y regenera el bot.");
+         return INIT_FAILED;
+      }
+   }
    Print("Bot iniciado. Balance inicial para la proteccion: ", g_initBal);
+   // si la vez anterior no se detuvo con aviso (apagado, suspension, caida de MT5), se informa el hueco
+   if(GlobalVariableCheck(g_gv + "ALIVE") && !(GlobalVariableCheck(g_gv + "CLEAN") && GlobalVariableGet(g_gv + "CLEAN") > 0.5))
+   {
+      const long hueco = (long)TimeGMT() - (long)GlobalVariableGet(g_gv + "ALIVE");
+      if(hueco > 300)
+         Avisar("REINICIO: el bot estuvo sin funcionar unos " + IntegerToString((int)(hueco / 60))
+                + " min. Causa probable: PC apagada o suspendida, o MT5 cerrado.");
+   }
+   GlobalVariableSet(g_gv + "CLEAN", 0.0);
+   GlobalVariableSet(g_gv + "ALIVE", (double)TimeGMT());
+   g_hbKey = GlobalVariableCheck(g_gv + "HB") ? (int)GlobalVariableGet(g_gv + "HB") : 0;
+   EventSetTimer(30);
+   Avisar("INICIADO. Operando con los parametros del backtest.");
    return INIT_SUCCEEDED;
+}
+
+// ============================ vigilancia ======================================
+int OwnPositions()
+{
+   int n = 0;
+   for(int k = PositionsTotal() - 1; k >= 0; k--)
+      if(PositionGetSymbol(k) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagic) n++;
+   return n;
+}
+
+string Hora(const datetime t) { return TimeToString(t, TIME_MINUTES); }
+
+bool AlgoOK()
+{
+   return TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 && MQLInfoInteger(MQL_TRADE_ALLOWED) != 0
+          && AccountInfoInteger(ACCOUNT_TRADE_EXPERT) != 0;
+}
+
+// cada 30 s (corre aunque no haya ticks, p. ej. de noche o en fin de semana)
+void OnTimer()
+{
+   const datetime ahora = TimeLocal();
+   GlobalVariableSet(g_gv + "ALIVE", (double)TimeGMT());
+
+   // 1) conexion con el servidor del broker
+   if(TerminalInfoInteger(TERMINAL_CONNECTED) == 0)
+   {
+      if(g_offSince == 0) g_offSince = ahora;
+      else if(!g_offAvisado && ahora - g_offSince >= 120)
+         g_offAvisado = Avisar("SIN CONEXION con el servidor del broker desde las " + Hora(g_offSince)
+                               + " (hora de la PC). Las posiciones abiertas siguen protegidas con su SL y TP en el servidor.");
+   }
+   else
+   {
+      if(g_offSince != 0 && ahora - g_offSince >= 120)
+         Avisar("CONEXION RECUPERADA tras " + IntegerToString((int)((ahora - g_offSince) / 60)) + " min sin conexion.");
+      g_offSince = 0;
+      g_offAvisado = false;
+   }
+
+   // 2) trading algoritmico habilitado
+   if(!AlgoOK())
+   {
+      if(g_noAlgoSince == 0) g_noAlgoSince = ahora;
+      else if(!g_noAlgoAvisado && ahora - g_noAlgoSince >= 60)
+         g_noAlgoAvisado = Avisar("TRADING ALGORITMICO DESACTIVADO: el bot no puede operar. Activa el boton verde 'Trading algoritmico' de MT5.");
+   }
+   else
+   {
+      if(g_noAlgoAvisado) Avisar("Trading algoritmico reactivado: el bot vuelve a operar.");
+      g_noAlgoSince = 0;
+      g_noAlgoAvisado = false;
+   }
+
+   // 3) aviso diario a las 19:00 de Argentina (UTC-3, sin horario de verano)
+   MqlDateTime ar;
+   TimeToStruct(TimeGMT() - 3 * 3600, ar);
+   const int keyAr = ar.year * 10000 + ar.mon * 100 + ar.day;
+   if(ar.hour == 19 && keyAr != g_hbKey)
+   {
+      string estado = "operando normal";
+      if(g_stopTotal) estado = "DETENIDO por freno de perdida total";
+      else if(g_blockDay == DayKeyOf(TimeCurrent())) estado = "freno diario activo hoy";
+      else if(!AlgoOK()) estado = "SIN trading algoritmico habilitado";
+      else if(TerminalInfoInteger(TERMINAL_CONNECTED) == 0) estado = "SIN conexion con el servidor";
+      if(Avisar("ACTIVO (" + estado + "). Posiciones abiertas: " + IntegerToString(OwnPositions())
+                + ". Equity " + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2) + "."))
+      {
+         g_hbKey = keyAr;
+         GlobalVariableSet(g_gv + "HB", (double)keyAr);
+      }
+   }
+}
+
+void OnDeinit(const int reason)
+{
+   EventKillTimer();
+   if(reason == REASON_INITFAILED) return;               // el rechazo ya se aviso
+   string motivo = "se detuvo por otra causa";
+   if(reason == REASON_REMOVE) motivo = "se quito el bot del grafico";
+   else if(reason == REASON_CHARTCLOSE) motivo = "se cerro el grafico";
+   else if(reason == REASON_CLOSE) motivo = "se cerro MetaTrader 5";
+   else if(reason == REASON_PROGRAM) motivo = "el programa se detuvo solo";
+   else if(reason == REASON_RECOMPILE) motivo = "se recompilo el bot";
+   else if(reason == REASON_CHARTCHANGE) motivo = "se cambio el simbolo o la temporalidad del grafico";
+   else if(reason == REASON_TEMPLATE) motivo = "se aplico una plantilla al grafico";
+   else if(reason == REASON_ACCOUNT) motivo = "se cambio de cuenta";
+   if(Avisar("BOT DETENIDO: " + motivo + ". Ya no opera hasta que lo vuelvas a cargar."))
+      GlobalVariableSet(g_gv + "CLEAN", 1.0);            // si el aviso salio, no se repite al reiniciar
+}
+
+// avisos de operacion abierta (a mercado o por orden limite de pullback) y de cierre (TP, SL u otro motivo)
+void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
+{
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if(HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != InpMagic) return;
+   const long entrada = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   const int dig = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   const long tipo = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
+   const double precio = HistoryDealGetDouble(trans.deal, DEAL_PRICE);
+
+   if(entrada == DEAL_ENTRY_IN)
+   {
+      double sl = 0.0, tp = 0.0;
+      if(PositionSelectByTicket((ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID)))
+      {
+         sl = PositionGetDouble(POSITION_SL);
+         tp = PositionGetDouble(POSITION_TP);
+      }
+      Avisar(string(tipo == DEAL_TYPE_BUY ? "COMPRA" : "VENTA") + " abierta a " + DoubleToString(precio, dig)
+             + " | SL " + DoubleToString(sl, dig) + " | TP " + DoubleToString(tp, dig)
+             + " | " + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 2) + " lotes");
+      return;
+   }
+   if(entrada == DEAL_ENTRY_OUT || entrada == DEAL_ENTRY_OUT_BY || entrada == DEAL_ENTRY_INOUT)
+   {
+      const long motivo = HistoryDealGetInteger(trans.deal, DEAL_REASON);
+      string que = "CIERRE";
+      if(motivo == DEAL_REASON_TP) que = "TP ALCANZADO";
+      else if(motivo == DEAL_REASON_SL) que = "SL ALCANZADO";
+      else if(motivo == DEAL_REASON_SO) que = "CIERRE FORZADO POR EL BROKER (stop out)";
+      else if(motivo == DEAL_REASON_EXPERT) que = "CIERRE POR EL BOT (freno de perdida)";
+      else if(motivo == DEAL_REASON_CLIENT || motivo == DEAL_REASON_MOBILE || motivo == DEAL_REASON_WEB) que = "CIERRE MANUAL";
+      const double res = HistoryDealGetDouble(trans.deal, DEAL_PROFIT) + HistoryDealGetDouble(trans.deal, DEAL_SWAP)
+                         + HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
+      Avisar(que + ": " + string(tipo == DEAL_TYPE_SELL ? "compra" : "venta") + " cerrada a " + DoubleToString(precio, dig)
+             + " | resultado " + (res >= 0.0 ? "+" : "") + DoubleToString(res, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY));
+   }
 }
 
 void OnTick()

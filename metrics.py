@@ -285,6 +285,38 @@ def frecuencia(tr: pd.DataFrame, indice) -> dict:
             "dias_mercado": dias_mercado, "max_sin_op": int(mejor), "sin_op_desde": ini, "sin_op_hasta": fin}
 
 
+def fmt_duracion(minutos: float) -> str:
+    """Duracion legible: minutos, horas o dias segun el tamano."""
+    if minutos != minutos:
+        return "–"
+    if minutos < 90:
+        return f"{minutos:.0f} min"
+    if minutos < 60 * 48:
+        h = minutos / 60
+        return f"{h:.1f} h".replace(".", ",")
+    return f"{minutos / 1440:.1f} d".replace(".", ",")
+
+
+def duraciones(tr: pd.DataFrame, indice) -> dict:
+    """Tasa de acierto y duracion de las operaciones resueltas (TP y SL), en el periodo analizado.
+    La duracion se cuenta en velas desde la entrada hasta la vela de salida (la propia vela de salida cuenta
+    entera) y se pasa a tiempo con el paso de la temporalidad: no incluye los fines de semana sin mercado."""
+    res = tr[tr["res"].isin(["TP", "SL"])]
+    n_tp, n_sl = int((res["res"] == "TP").sum()), int((res["res"] == "SL").sum())
+    out = {"n": n_tp + n_sl, "n_tp": n_tp, "n_sl": n_sl, "win_rate": (100.0 * n_tp / (n_tp + n_sl)) if n_tp + n_sl else float("nan")}
+    idx = pd.DatetimeIndex(indice)
+    paso_min = float(idx.to_series().diff().dt.total_seconds().median() / 60.0) if len(idx) > 1 else float("nan")
+    velas = (res["salida"].to_numpy() - res["i"].to_numpy()).clip(min=1) if len(res) else res["i"].to_numpy()
+    for nombre, mascara in (("todas", slice(None)), ("tp", (res["res"] == "TP").to_numpy()), ("sl", (res["res"] == "SL").to_numpy())):
+        v = velas[mascara] if len(res) else velas
+        out[f"velas_{nombre}"] = float(v.mean()) if len(v) else float("nan")
+        out[f"mediana_{nombre}"] = float(pd.Series(v).median()) if len(v) else float("nan")
+        out[f"min_{nombre}"] = out[f"velas_{nombre}"] * paso_min
+        out[f"min_mediana_{nombre}"] = out[f"mediana_{nombre}"] * paso_min
+    out["paso_min"] = paso_min
+    return out
+
+
 def extremos_diarios(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comision_por_lote=0.0) -> dict:
     """Peor y mejor día en dinero y en R. Cada operación cuenta en el día en que se cerró (salida).
     Es sobre operaciones cerradas: no ve el flotante intradía."""

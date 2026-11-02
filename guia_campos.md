@@ -107,3 +107,5 @@ El botón **Generar bot (.mq5)** descarga un Expert Advisor de MetaTrader 5 con 
 - **Sesiones:** el bot necesita el desfase horario de tu servidor (el mismo campo de la app).
 - **Veredicto:** si el backtest no respalda la estrategia, la app lo advierte y el archivo lo indica en su cabecera. No se bloquea la descarga.
 - **Límites:** una operación a la vez por magic number; no incluye slippage ni gaps, y los resultados reales pueden diferir del backtest.
+
+**Avisos al celular (notificaciones push de MT5).** El bot avisa: operación abierta (a mercado o por pullback), cierre por TP, por SL o por otro motivo (con el resultado en dinero), freno diario, freno total, rechazo al arrancar, bot iniciado, bot detenido (con el motivo), trading algorítmico desactivado o reactivado, pérdida y recuperación de la conexión con el servidor, reinicio tras un hueco (PC apagada, suspendida o MT5 cerrado) y un aviso diario a las 19:00 de Argentina diciendo que sigue activo. Si un día no llega el aviso de las 19:00, el bot o la PC no están funcionando. Requiere configurar el MetaQuotes ID en Herramientas → Opciones → Notificaciones.

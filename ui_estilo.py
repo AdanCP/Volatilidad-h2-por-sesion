@@ -97,6 +97,9 @@ _CSS_SIDEBAR = """
 [data-testid="stSidebar"] :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button :is(p,span,div){
   color:#fff !important;font-weight:700;}
 [data-testid="stSidebar"] [data-testid="stButton"] button:disabled{opacity:.45;box-shadow:none;cursor:not-allowed;}
+[data-testid="stSidebar"] :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button:not(:disabled):hover{
+  filter:brightness(1.2) saturate(1.12);transform:translateY(-2px);
+  box-shadow:0 0 0 3px rgba(255,255,255,.95),0 0 22px 6px rgba(255,255,255,.55);}
 [data-testid="stSidebarNav"] a{border-radius:10px;}
 [data-testid="stSidebarNav"] a span{color:#fff !important;}
 [data-testid="stSidebarNav"] a[aria-current="page"]{background:rgba(255,255,255,.18);}
@@ -118,6 +121,12 @@ button[kind="primary"],[data-testid="stBaseButton-primary"]{background:linear-gr
 button[kind="secondary"],[data-testid="stBaseButton-secondary"]{border-radius:12px;border:1px solid @INBD@;
   background:@CARD@;color:@ACC@;font-weight:600;}
 .stButton>button{width:100%;padding:.55rem 1rem;}
+.stButton>button,.stDownloadButton>button{transition:filter .15s,transform .15s,box-shadow .15s,background .15s,border-color .15s;}
+button[kind="primary"]:hover,[data-testid="stBaseButton-primary"]:hover{filter:brightness(1.18) saturate(1.12);transform:translateY(-2px);
+  box-shadow:0 0 0 3px #fff,0 0 0 6px rgba(255,79,163,.65),0 12px 26px rgba(124,92,240,.55);}
+button[kind="secondary"]:hover,[data-testid="stBaseButton-secondary"]:hover{background:@HEAD@;border-color:@ACC@;color:@ACC@;
+  transform:translateY(-2px);box-shadow:0 0 0 3px @CARD@,0 0 0 5px @ACC@,0 10px 22px @SHADOW@;}
+button:active{transform:translateY(0);filter:brightness(.97);}
 [data-testid="stDataFrame"]{border-radius:12px;overflow:hidden;}
 [data-testid="stExpander"]{background:@CARD@;border-radius:14px;border:0;box-shadow:0 4px 16px @SHADOW2@;}
 /* componentes propios */
@@ -208,9 +217,11 @@ def barra_superior(titulo: str, subtitulo: str, chips: list) -> str:
             f'<div class="chips">{cs}</div></div>')
 
 
-def kpi(etiqueta: str, valor: str, sub: str = "", color: str = None) -> str:
+def kpi(etiqueta: str, valor: str, sub: str = "", color: str = None, min_alto: int = 0) -> str:
+    """min_alto (px): para que las tarjetas de una misma fila queden del mismo alto aunque el texto cambie de largo."""
     color = color or INDIGO
-    return (f'<div class="card kpi"><div class="bar" style="background:{color}"></div>'
+    est = f' style="min-height:{int(min_alto)}px"' if min_alto else ""
+    return (f'<div class="card kpi"{est}><div class="bar" style="background:{color}"></div>'
             f'<div class="lab">{_e(etiqueta)}</div><div class="val" style="color:{color}">{_e(valor)}</div>'
             f'<div class="sub">{_e(sub)}</div></div>')
 

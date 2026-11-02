@@ -681,24 +681,24 @@ if len(res):
         dinero = met.resumen_dinero(tr, tick_size, tick_value, lotes_u, comision_u)
         m1, m2, m3, m4 = st.columns(4)
         with m1:
-            html(vis.kpi("Resultado neto", vis.n(dinero["neto"], 2, True), f"con {vis.n(lotes_u)} lotes, después de comisiones", vis.tono(dinero["neto"])))
+            html(vis.kpi("Resultado neto", vis.n(dinero["neto"], 2, True), f"con {vis.n(lotes_u)} lotes, tras comisiones", vis.tono(dinero["neto"]), 140))
         with m2:
-            html(vis.kpi("Ganancia media (TP)", vis.n(dinero["ganancia_media_TP"], 2, True), "por operación ganadora", vis.INDIGO))
+            html(vis.kpi("Ganancia media (TP)", vis.n(dinero["ganancia_media_TP"], 2, True), "por operación ganadora", vis.INDIGO, 140))
         with m3:
-            html(vis.kpi("Pérdida media (SL)", vis.n(dinero["perdida_media_SL"], 2, True), "por operación perdedora", vis.ROSA))
+            html(vis.kpi("Pérdida media (SL)", vis.n(dinero["perdida_media_SL"], 2, True), "por operación perdedora", vis.ROSA, 140))
         with m4:
-            html(vis.kpi("Máx. drawdown", vis.n(dinero["max_drawdown"], 2), f"riesgo medio por operación: {vis.n(dinero['riesgo_medio_por_operacion'], 2)}", vis.ROSA))
+            html(vis.kpi("Máx. drawdown", vis.n(dinero["max_drawdown"], 2), f"riesgo medio por operación: {vis.n(dinero['riesgo_medio_por_operacion'], 2)}", vis.ROSA, 140))
         _ex = met.extremos_diarios(tr, r["P"].indice, tick_size, tick_value, lotes_u, comision_u)
         if _ex:
             d1, d2 = st.columns(2)
             with d1:
                 html(vis.kpi("Máx. drawdown diario", vis.n(min(_ex["peor_usd"], 0), 2),
                              f"{_ex['peor_dia']:%d/%m/%Y} · {_ex['peor_ops']} op. · {vis.n(_ex['peor_R'], 1, True)} R "
-                             "(peor día, operaciones cerradas)", vis.ROSA))
+                             "(peor día, operaciones cerradas)", vis.ROSA, 140))
             with d2:
                 html(vis.kpi("Máx. ganancia diaria (TP)", vis.n(max(_ex["mejor_usd"], 0), 2, True),
                              f"{_ex['mejor_dia']:%d/%m/%Y} · {_ex['mejor_ops']} op. · {vis.n(_ex['mejor_R'], 1, True)} R "
-                             "(mejor día)", vis.INDIGO))
+                             "(mejor día)", vis.INDIGO, 140))
         st.caption(f"Fórmula: (diferencia de precio / {tick_size}) × {tick_value} × {lotes_u} lotes "
                    f"= {met.valor_por_unidad(tick_size, tick_value, lotes_u):.2f} por cada 1,00 de precio. "
                    "Valores teóricos: el slippage y los gaps pueden hacer que una pérdida real supere la calculada.")
@@ -712,19 +712,40 @@ if len(res):
     _fr = met.frecuencia(tr, r["P"].indice)
     f1, f2, f3, f4, f5 = st.columns(5)
     with f1:
-        html(vis.kpi("Por día", vis.n(_fr["por_dia"], 2), f"promedio por día con mercado ({_fr.get('dias_mercado', 0)} días)", vis.INDIGO))
+        html(vis.kpi("Por día", vis.n(_fr["por_dia"], 2), f"promedio por día con mercado ({_fr.get('dias_mercado', 0)} días)", vis.INDIGO, 165))
     with f2:
-        html(vis.kpi("Por semana", vis.n(_fr["por_semana"], 1), "promedio por semana calendario", vis.VIOLETA))
+        html(vis.kpi("Por semana", vis.n(_fr["por_semana"], 1), "promedio por semana calendario", vis.VIOLETA, 165))
     with f3:
-        html(vis.kpi("Por mes", vis.n(_fr["por_mes"], 1), "promedio por mes calendario", vis.ROSA))
+        html(vis.kpi("Por mes", vis.n(_fr["por_mes"], 1), "promedio por mes calendario", vis.ROSA, 165))
     with f4:
-        html(vis.kpi("Máx. en un día", str(_fr["max_dia"]), f"operaba en {_fr['dias_con_op']} días del período", vis.AZUL))
+        html(vis.kpi("Máx. en un día", str(_fr["max_dia"]), f"operaba en {_fr['dias_con_op']} días del período", vis.AZUL, 165))
     with f5:
-        _sub = (f"entre el {_fr['sin_op_desde']:%d/%m/%Y} y el {_fr['sin_op_hasta']:%d/%m/%Y}"
+        _sub = (f"del {_fr['sin_op_desde']:%d/%m/%Y} al {_fr['sin_op_hasta']:%d/%m/%Y}"
                 if _fr["sin_op_desde"] is not None else "sin lapsos")
-        html(vis.kpi("Mayor lapso sin operar", f"{_fr['max_sin_op']} d", _sub, vis.MAGENTA))
+        html(vis.kpi("Máx. sin operar", f"{_fr['max_sin_op']} d", _sub, vis.MAGENTA, 165))
     st.caption(f"Total: {_fr['n']} operaciones tomadas (incluye las que no llegaron a TP ni SL). "
                "Con pocas operaciones por mes, los porcentajes tardan más en volverse confiables.")
+
+# ------------------------------------------------------------- tasa de acierto y duración
+if len(res):
+    st.write("")
+    html(vis.titulo_seccion("Tasa de acierto y duración", "Cuántas operaciones ganan y cuánto dura cada una, en el período analizado"))
+    _du = met.duraciones(tr, r["P"].indice)
+    d1, d2, d3, d4 = st.columns(4)
+    with d1:
+        html(vis.kpi("Win rate", f"{vis.n(_du['win_rate'], 1)}%",
+                     f"{_du['n_tp']} TP y {_du['n_sl']} SL · equilibrio {vis.n(float(tt['%equilibrio']), 1)}%", vis.VIOLETA, 165))
+    with d2:
+        html(vis.kpi("Duración media", met.fmt_duracion(_du["min_todas"]),
+                     f"{vis.n(_du['velas_todas'], 1)} velas · mediana {met.fmt_duracion(_du['min_mediana_todas'])}", vis.INDIGO, 165))
+    with d3:
+        html(vis.kpi("Media en TP", met.fmt_duracion(_du["min_tp"]),
+                     f"{vis.n(_du['velas_tp'], 1)} velas · mediana {met.fmt_duracion(_du['min_mediana_tp'])}", vis.AZUL, 165))
+    with d4:
+        html(vis.kpi("Media en SL", met.fmt_duracion(_du["min_sl"]),
+                     f"{vis.n(_du['velas_sl'], 1)} velas · mediana {met.fmt_duracion(_du['min_mediana_sl'])}", vis.ROSA, 165))
+    st.caption("El win rate es sobre las operaciones resueltas (TP o SL). La duración va desde la entrada hasta la vela en que se "
+               "cerró, contada en velas (la vela de salida cuenta entera) y pasada a tiempo con la temporalidad; no incluye fines de semana.")
 
 # ------------------------------------------------------------- rachas
 if len(res):

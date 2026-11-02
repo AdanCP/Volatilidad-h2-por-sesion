@@ -701,3 +701,19 @@ if __name__ == "__main__":
         f()
         print("OK ", nombre)
     print(f"\n{len(tests)} tests pasaron.")
+
+
+def test_duraciones_y_win_rate():
+    import numpy as np
+    import pandas as pd
+    import metrics as met_
+    idx = pd.date_range("2024-01-01", periods=100, freq="h")
+    tr = pd.DataFrame({"res": ["TP", "TP", "SL", "SL", "SL", "NO"], "i": [0, 10, 20, 30, 40, 50],
+                       "salida": [2, 14, 21, 33, 41, 60]})
+    d = met_.duraciones(tr, idx)
+    assert d["n_tp"] == 2 and d["n_sl"] == 3 and abs(d["win_rate"] - 40.0) < 1e-9
+    assert d["velas_tp"] == 3.0 and abs(d["velas_sl"] - (1 + 3 + 1) / 3) < 1e-9
+    assert abs(d["min_tp"] - 180.0) < 1e-9                 # 3 velas de 1 h
+    assert met_.fmt_duracion(45) == "45 min" and met_.fmt_duracion(180) == "3,0 h" and met_.fmt_duracion(5000) == "3,5 d"
+    vacio = met_.duraciones(tr.iloc[0:0], idx)
+    assert vacio["n"] == 0 and np.isnan(vacio["win_rate"])
