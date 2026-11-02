@@ -285,7 +285,11 @@ with st.sidebar:
                 rel_n, rel_min, rel_max = 0, 0.0, 0.0
         else:
             atr_min = atr_max = rel_n = rel_min = rel_max = 0
-        ses_on = st.checkbox("Filtro de sesión")
+        _ses_modo = st.radio("Sesión", ["24/5 (todo el mercado)", "Elegir sesiones"],
+                             help="24/5 toma cruces a cualquier hora en que el mercado esté abierto, sin filtro de sesión "
+                                  "y sin necesitar el desfase del servidor. Tokio + Londres + Nueva York juntas dejan "
+                                  "afuera unas 2-3 horas por día (después del cierre de Nueva York y antes de Tokio).")
+        ses_on = _ses_modo == "Elegir sesiones"
         if ses_on:
             sesiones = st.multiselect("Sesiones permitidas", SESIONES, SESIONES)
             offset = st.number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)

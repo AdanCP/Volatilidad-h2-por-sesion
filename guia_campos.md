@@ -55,7 +55,7 @@ Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los
 - **ATR.** Mide la volatilidad.
   - *Mínimo / máximo (% del precio)*: ATR dividido el cierre, por cien.
   - *Modo relativo*: compara el ATR actual con su promedio de las últimas N velas. Con mínimo 0,8 descarta el mercado dormido y con máximo 2,0 descarta la volatilidad extrema.
-- **Sesión.** Solo toma cruces dentro de Tokio (09-18), Londres (08-17) o Nueva York (08-17), en horario local, con el horario de verano de cada plaza. Se pueden elegir varias.
+- **Sesión.** Por defecto está en **24/5 (todo el mercado)**: toma cruces a cualquier hora en que el mercado esté abierto, sin filtro y sin necesitar el desfase del servidor. Con **Elegir sesiones** solo toma cruces dentro de Tokio (09-18), Londres (08-17) o Nueva York (08-17), en horario local, con el horario de verano de cada plaza. Se pueden elegir varias. Ojo: las tres juntas no equivalen a 24/5, porque dejan afuera unas 2-3 horas por día (entre el cierre de Nueva York y la apertura de Tokio).
   - *Desfase del servidor*: diferencia entre la hora de las velas del broker y UTC en invierno (GMT+2 → 2). **Hay que medirlo con el mercado abierto**, porque si está mal las sesiones quedan corridas.
   - *El servidor cambia con EE.UU.*: casi todos los brokers pasan de GMT+2 a GMT+3 con el verano de EE.UU.
   - En BTC el filtro se desactiva solo (opera 24/7).
