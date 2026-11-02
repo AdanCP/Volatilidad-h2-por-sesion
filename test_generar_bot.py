@@ -161,7 +161,7 @@ def test_sesiones_coinciden(sess, off, dst):
 
 def test_avisos_de_vigilancia_presentes():
     t = _gen(_cfg(), "XAUUSD", "H1", 0.1)
-    for frag in ["void OnTimer()", "EventSetTimer(30)", "ar.hour == 19", "TimeGMT() - 3 * 3600",
+    for frag in ["void OnTimer()", "EventSetTimer(30)", "ar.hour == InpAvisoHoraAR", "InpAvisoHoraAR    = 20", "TimeGMT() - 3 * 3600",
                  "SIN CONEXION", "CONEXION RECUPERADA", "TRADING ALGORITMICO DESACTIVADO", "BOT DETENIDO",
-                 "REINICIO:", "ACTIVO (", "INICIADO.", "FRENO DIARIO", "FRENO TOTAL", "abierta a", "TP ALCANZADO", "SL ALCANZADO", "cerrada a", "ya esta por debajo del limite de perdida total"]:
+                 "REINICIO:", "CHEQUEO DIARIO OK", "CHEQUEO DIARIO CON PROBLEMAS", '"INICIADO"', '"RECARGADO"', "que + \" pero DETENIDO", "FRENO DIARIO", "FRENO TOTAL", "abierta a", "TP ALCANZADO", "SL ALCANZADO", "cerrada a", "ya esta por debajo del limite de perdida total", "FiltrosTxt", "Senal descartada por los filtros", "Pullback caduco sin ejecutarse"]:
         assert frag in t, frag

@@ -211,6 +211,7 @@ const bool            InpServerDST      = @@SRV_DST@@;    // El servidor cambia 
 const bool            InpGuards         = true;           // Activar proteccion de cuenta
 const double          InpMaxDailyLossPct = @@GUARD_DIA@@;           // Perdida diaria maxima (% del balance al inicio del dia)
 const double          InpMaxTotalLossPct = @@GUARD_TOT@@;           // Perdida total maxima (% del balance inicial)
+const int             InpAvisoHoraAR    = 20;             // Hora (Argentina) del aviso diario "activo": 20 queda despues de la pausa diaria del mercado todo el ano
 const double          InpInitialBalance = @@CAPITAL@@;            // Balance inicial de la cuenta (0 = el de la primera vez que arranca)
 
 // ============================ estado ==========================================
@@ -561,6 +562,32 @@ bool PassFilters(const int i, const int side, const bool withSession)
    return true;
 }
 
+string Sep(const string r) { return r == "" ? "" : " | "; }
+
+// Resultado de cada filtro activo, para el registro (pestana "Expertos"). Usa las mismas funciones que la decision real.
+string FiltrosTxt(const int i, const int side, const bool withSession)
+{
+   string r = "";
+   if(InpSesOn)
+   {
+      if(withSession) r += (InSession(g_time[i]) ? "sesion ok" : "sesion RECHAZA");
+      else r += "sesion (se mira al ejecutar)";
+   }
+   if(InpSmaOn)
+      r += Sep(r) + "SMA " + (OkSma(i, side) ? "ok" : "RECHAZA") + " (cierre " + DoubleToString(g_c[i], 2)
+           + " vs SMA " + (V(g_sma[i]) ? DoubleToString(g_sma[i], 2) : "n/d") + ")";
+   if(InpVwapOn)
+      r += Sep(r) + "VWAP " + (OkVwap(i, side) ? "ok" : "RECHAZA") + " (cierre " + DoubleToString(g_c[i], 2)
+           + " vs VWAP " + DoubleToString(g_vwap[i], 2) + ")";
+   if(InpAdxOn)
+      r += Sep(r) + "ADX " + DoubleToString(g_adx[i], 1) + " (min " + DoubleToString(InpAdxMin, 0) + ") "
+           + (OkAdx(i) ? "ok" : "RECHAZA");
+   if(InpAtrOn)
+      r += Sep(r) + "ATR " + (OkAtr(i) ? "ok" : "RECHAZA") + " (" + DoubleToString(g_atr[i] / g_c[i] * 100.0, 3) + " % del precio)";
+   if(r == "") r = "sin filtros activos";
+   return r;
+}
+
 bool DirectionAllows(const int side)
 {
    if(InpDir == BOT_AMBAS) return true;
@@ -690,7 +717,11 @@ bool MarketEntry(const int side, const double d)
 void PlacePullback(const int i)
 {
    DeletePending();
-   if(InpSesOn && !InSession(iTime(_Symbol, _Period, 0))) return;       // fuera de sesion no se deja orden (sigue contando la caducidad)
+   if(InpSesOn && !InSession(iTime(_Symbol, _Period, 0)))             // fuera de sesion no se deja orden (sigue contando la caducidad)
+   {
+      Print("Pullback: fuera de sesion, no se deja orden en esta vela (vela ", g_pbBars, " de ", InpPBBars, ").");
+      return;
+   }
    const double d = SlDistance(i);
    if(d <= 0.0) return;
    const double ema  = (InpPBEma == BOT_PB_CORTA) ? g_ef[i] : g_es[i];
@@ -735,6 +766,9 @@ void PlacePullback(const int i)
    rq.type_time = ORDER_TIME_GTC;
    if(!OrderSend(rq, rs) || (rs.retcode != TRADE_RETCODE_DONE && rs.retcode != TRADE_RETCODE_PLACED))
       Print("Orden de pullback rechazada (", rs.retcode, ")");
+   else
+      Print("Pullback: orden limite en ", DoubleToString(Px(price), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+            " (vela ", g_pbBars, " de ", InpPBBars, ").");
 }
 
 // ============================ proteccion de la cuenta =========================
@@ -786,6 +820,11 @@ void OnNewBar()
    }
 
    const int cr = CrossAt(i);
+   const bool conPullback = (InpPB && InpPBPct > 0.0);
+   if(cr != 0)
+      Print("Cruce ", (cr == 1 ? "alcista" : "bajista"), " en la vela ", TimeToString(g_time[i], TIME_DATE | TIME_MINUTES),
+            " (hora servidor). ", (DirectionAllows(cr) ? "Direccion permitida. " : "Direccion NO permitida: no se opera. "),
+            FiltrosTxt(i, cr, !conPullback));
 
    if(g_pbActive)                              // orden de pullback en espera
    {
@@ -795,11 +834,13 @@ void OnNewBar()
       {
          g_pbActive = false;                   // cruce contrario: se descarta y puede ser una senal nueva
          DeletePending();
+         Print("Pullback cancelado por cruce contrario.");
       }
       else if(g_pbBars >= InpPBBars)
       {
          g_pbActive = false;                   // caduco
          DeletePending();
+         Print("Pullback caduco sin ejecutarse (", InpPBBars, " velas).");
          return;
       }
       else
@@ -811,14 +852,19 @@ void OnNewBar()
    }
 
    if(cr == 0 || !DirectionAllows(cr)) return;
-   const bool conPullback = (InpPB && InpPBPct > 0.0);
-   if(!PassFilters(i, cr, !conPullback)) return;   // con pullback la sesion se mira al ejecutar
+   if(!PassFilters(i, cr, !conPullback))        // con pullback la sesion se mira al ejecutar
+   {
+      Print("Senal descartada por los filtros: no se opera.");
+      return;
+   }
 
    if(!conPullback)
    {
+      Print("Senal valida: entrada a mercado.");
       MarketEntry(cr, SlDistance(i));
       return;
    }
+   Print("Senal valida: se arma el pullback del ", DoubleToString(InpPBPct, 0), " % (caduca en ", InpPBBars, " velas).");
    g_pbActive = true;
    g_pbSide = cr;
    g_pbBars = 0;
@@ -891,6 +937,7 @@ int OnInit()
       }
    }
    Print("Bot iniciado. Balance inicial para la proteccion: ", g_initBal);
+   const bool primeraVez = !GlobalVariableCheck(g_gv + "ALIVE");      // nunca se habia corrido este bot en esta cuenta
    // si la vez anterior no se detuvo con aviso (apagado, suspension, caida de MT5), se informa el hueco
    if(GlobalVariableCheck(g_gv + "ALIVE") && !(GlobalVariableCheck(g_gv + "CLEAN") && GlobalVariableGet(g_gv + "CLEAN") > 0.5))
    {
@@ -903,7 +950,12 @@ int OnInit()
    GlobalVariableSet(g_gv + "ALIVE", (double)TimeGMT());
    g_hbKey = GlobalVariableCheck(g_gv + "HB") ? (int)GlobalVariableGet(g_gv + "HB") : 0;
    EventSetTimer(30);
-   Avisar("INICIADO. Operando con los parametros del backtest.");
+   const string que = primeraVez ? "INICIADO" : "RECARGADO";      // INICIADO = primera puesta en marcha; RECARGADO = vuelve a cargarse
+   if(g_stopTotal)
+      Avisar(que + " pero DETENIDO: el freno de perdida total quedo activado antes y NO opera. Para reactivarlo, borra la variable global "
+             + g_gv + "STOP (F3 en MT5) y volve a cargar el bot.");
+   else
+      Avisar(que + ". Operando con los parametros del backtest.");
    return INIT_SUCCEEDED;
 }
 
@@ -960,19 +1012,25 @@ void OnTimer()
       g_noAlgoAvisado = false;
    }
 
-   // 3) aviso diario a las 19:00 de Argentina (UTC-3, sin horario de verano)
+   // 3) aviso diario a las 20:00 de Argentina (UTC-3, sin horario de verano)
    MqlDateTime ar;
    TimeToStruct(TimeGMT() - 3 * 3600, ar);
    const int keyAr = ar.year * 10000 + ar.mon * 100 + ar.day;
-   if(ar.hour == 19 && keyAr != g_hbKey)
+   if(ar.hour == InpAvisoHoraAR && keyAr != g_hbKey)
    {
-      string estado = "operando normal";
-      if(g_stopTotal) estado = "DETENIDO por freno de perdida total";
-      else if(g_blockDay == DayKeyOf(TimeCurrent())) estado = "freno diario activo hoy";
-      else if(!AlgoOK()) estado = "SIN trading algoritmico habilitado";
-      else if(TerminalInfoInteger(TERMINAL_CONNECTED) == 0) estado = "SIN conexion con el servidor";
-      if(Avisar("ACTIVO (" + estado + "). Posiciones abiertas: " + IntegerToString(OwnPositions())
-                + ". Equity " + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2) + "."))
+      string problema = "";
+      if(g_stopTotal) problema = "DETENIDO por freno de perdida total";
+      else if(g_blockDay == DayKeyOf(TimeCurrent())) problema = "freno diario activo hoy";
+      else if(!AlgoOK()) problema = "SIN trading algoritmico habilitado";
+      else if(TerminalInfoInteger(TERMINAL_CONNECTED) == 0) problema = "SIN conexion con el servidor";
+      string msg;
+      if(problema == "")
+         msg = "CHEQUEO DIARIO OK: el bot esta en funcionamiento. Posiciones abiertas: " + IntegerToString(OwnPositions())
+               + ". Equity " + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2) + ".";
+      else
+         msg = "CHEQUEO DIARIO CON PROBLEMAS: " + problema + ". Posiciones abiertas: " + IntegerToString(OwnPositions())
+               + ". Equity " + DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2) + ".";
+      if(Avisar(msg))
       {
          g_hbKey = keyAr;
          GlobalVariableSet(g_gv + "HB", (double)keyAr);
