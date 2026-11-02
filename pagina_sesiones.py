@@ -3,6 +3,7 @@ from datetime import date
 import streamlit as st
 
 import ui_estilo as vis
+import ui_helpers as ui
 
 from xauusd_sesiones import (
     TICKER,
@@ -56,7 +57,7 @@ if st.sidebar.button("Calcular Movimientos", type="primary"):
             "aviso": ("error", "❌ La fecha de inicio no puede ser posterior a la de fin.")
         }
     else:
-        with st.spinner("Descargando datos y procesando rangos..."):
+        with ui.cargando("Descargando datos y procesando rangos..."):
             df = descargar_cacheado(fecha_inicio, fecha_fin)
         if df.empty:
             st.session_state["calculo"] = {

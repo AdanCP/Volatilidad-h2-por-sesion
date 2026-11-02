@@ -129,3 +129,11 @@ if __name__ == "__main__":
         f()
         print("OK ", nombre)
     print(f"\n{len(pruebas)} tests pasaron.")
+
+
+def test_circulo_de_carga():
+    import ui_estilo as v
+    h = v.cargando("Calculando <b>")
+    assert "anillo-carga" in h and "&lt;b&gt;" in h
+    c = v.css()
+    assert "giro-carga" in c and "@NEG@" not in c and "@VIO@" not in c

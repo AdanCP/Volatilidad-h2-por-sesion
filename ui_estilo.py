@@ -145,6 +145,14 @@ button:active{transform:translateY(0);filter:brightness(.97);}
 .kpi .val{font-size:1.85rem;font-weight:800;line-height:1.15;margin:4px 0 2px;}
 .kpi .sub{color:@MUTED@;font-size:.78rem;}
 .kpi .bar{position:absolute;left:0;top:0;bottom:0;width:5px;}
+.cargando{display:flex;align-items:center;gap:14px;padding:14px 6px;}
+.cargando .txt{color:@TXT@;font-weight:600;font-size:.95rem;}
+.anillo-carga{width:34px;height:34px;border-radius:50%;flex:none;
+  background:conic-gradient(from 0deg,rgba(255,79,163,0),@NEG@ 40%,@VIO@ 85%,@ACC@);
+  -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 5px),#000 calc(100% - 4px));
+  mask:radial-gradient(farthest-side,transparent calc(100% - 5px),#000 calc(100% - 4px));
+  animation:giro-carga 1.2s linear infinite;}
+@keyframes giro-carga{to{transform:rotate(360deg);}}
 .ring{display:flex;flex-direction:column;align-items:center;text-align:center;}
 .ring .t{font-weight:700;font-size:.85rem;margin-top:4px;color:@TXT@;}
 .ring .s{font-size:.74rem;color:@MUTED@;margin-top:2px;line-height:1.35;}
@@ -215,6 +223,11 @@ def barra_superior(titulo: str, subtitulo: str, chips: list) -> str:
     cs = "".join(f'<span class="chip">{_e(k)}: <b>{_e(str(v))}</b></span>' for k, v in chips)
     return (f'<div class="tb"><div><h1>{_e(titulo)}</h1><div class="sub">{_e(subtitulo)}</div></div>'
             f'<div class="chips">{cs}</div></div>')
+
+
+def cargando(texto: str) -> str:
+    """Circulo de carga (anillo degradado) con un texto al lado."""
+    return f'<div class="cargando"><div class="anillo-carga"></div><div class="txt">{_e(texto)}</div></div>'
 
 
 def kpi(etiqueta: str, valor: str, sub: str = "", color: str = None, min_alto: int = 0) -> str:

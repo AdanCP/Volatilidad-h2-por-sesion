@@ -415,7 +415,7 @@ comp = b3.button("Comparar símbolos", disabled=len(datos) < 2)
 if correr:
     try:
         cfg = construir_config()
-        with st.spinner("Calculando..."):
+        with ui.cargando("Calculando..."):
             st.session_state.res = (met.evaluar(df, cfg, oos / 100, int(azar_n), 42,
                                                 st.session_state.contador), cfg, activo,
                                     {"lotes": float(lotes), "comision": float(comision), "capital": float(capital),
@@ -455,7 +455,7 @@ with st.sidebar:
 if comp:
     try:
         cfgs = {s: construir_config(s) for s in datos}
-        with st.spinner("Comparando símbolos..."):
+        with ui.cargando("Comparando símbolos..."):
             _tabla, _notas = met.comparar_simbolos(
                 datos, cfgs, oos / 100, int(azar_n), 42, st.session_state.contador, recortar)
             _gest = (f"SL US${vis.n(sl_usd, 0)} · TP US${vis.n(sl_usd * rr, 0)}" if sl_modo == SL_USD
@@ -468,7 +468,7 @@ if comp:
 if abl:
     try:
         cfg = construir_config()
-        with st.spinner("Corriendo la ablación..."):
+        with ui.cargando("Corriendo la ablación..."):
             tabla_abl, omitidos = met.ablacion(df, cfg, oos_pct=oos / 100,
                                                azar_veces=min(int(azar_n), 100),
                                                contador=st.session_state.contador)

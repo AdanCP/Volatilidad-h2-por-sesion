@@ -36,3 +36,19 @@ def unir_simbolos(elegidos, otros_texto: str = "") -> list:
 def simbolo_desde_archivo(nombre: str) -> str:
     """'XAUUSD_H1.csv' -> 'XAUUSD_H1' (el nombre del archivo identifica al simbolo)."""
     return os.path.splitext(os.path.basename(nombre))[0].strip() or "SIMBOLO"
+
+
+import contextlib
+
+
+@contextlib.contextmanager
+def cargando(texto: str = "Calculando..."):
+    """Muestra el circulo de carga de la app mientras corre el bloque y lo borra al terminar (o si falla)."""
+    import streamlit as st
+    import ui_estilo as vis
+    lugar = st.empty()
+    lugar.html(vis.cargando(texto))
+    try:
+        yield
+    finally:
+        lugar.empty()
