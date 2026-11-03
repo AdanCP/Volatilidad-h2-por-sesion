@@ -27,6 +27,10 @@ def resumen(tr: pd.DataFrame, rr: float) -> dict:
     for x in (res["res"] if n else []):
         racha = racha + 1 if x == "SL" else 0
         mejor = max(mejor, racha)
+    if n and "motivo" in res and (res["motivo"] == "senal").any():      # sin TP fijo: el equilibrio sale del pago medio observado
+        g_, p_ = res.loc[res["res"] == "TP", "R"], res.loc[res["res"] == "SL", "R"]
+        if len(g_) and len(p_) and g_.mean() > 0 and p_.mean() < 0:
+            rr = float(g_.mean() / -p_.mean())
     return {"resueltas": n, "TP": tp, "SL": sl,
             "abiertas": int((tr["res"] == "ABIERTA").sum()) if len(tr) else 0,
             "ambiguas": int(tr["amb"].sum()) if len(tr) else 0,
@@ -47,7 +51,7 @@ def azar(P, cfg, lo, hi, n_sig, veces, rng) -> np.ndarray:
     for _ in range(veces):
         idx = np.sort(rng.choice(np.arange(lo, hi), size=n_sig, replace=False))
         sig = list(zip(idx, rng.choice(lados, size=n_sig)))
-        tr, _ = eng.simular(P, sig, cfg.rr, cfg.costo_extra, eng.pb_de(cfg))
+        tr, _ = eng.simular(P, sig, cfg.rr, cfg.costo_extra, eng.pb_de(cfg), cfg.salida_modo)
         out.append(resumen(tr, cfg.rr)["exp_R"])
     return np.array([x for x in out if not np.isnan(x)])
 

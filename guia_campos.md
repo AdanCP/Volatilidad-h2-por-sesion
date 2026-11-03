@@ -29,6 +29,14 @@ Cada campo cambia **qué operaciones se toman** o **cómo se miden**. Cambiá de
 - **Caducidad (velas):** si en ese plazo no hubo retroceso, la orden se cancela. También se cancela si aparece un cruce contrario.
 - **Cómo leerlo:** mirá el porcentaje de órdenes ejecutadas y comparalo contra la versión sin pullback **por mes**, no solo por operación: el pullback suele mejorar el R por operación pero deja pasar las tendencias fuertes que no retroceden. El backtest supone que la orden se ejecuta cuando el precio toca el nivel, algo optimista en la práctica.
 
+### Salida (Take Profit): objetivo fijo o cambio de lado de la media
+En "3. Señal y gestión", el campo **Salida (Take Profit)** permite elegir:
+- **Objetivo fijo (RR o US$)**: como siempre, el TP está a una distancia fija del SL.
+- **Cuando el precio cambia de lado de la media**: no hay TP. Un largo se cierra al cierre de la primera vela que queda **por debajo** de la media; un corto, al cierre de la primera vela que queda **por encima**. Ejemplo: una vela M5 cierra sobre la SMA 200 y se compra; se vende cuando una vela cierre por primera vez debajo de la SMA 200. Con el cruce de dos medias, "cambio de lado" significa que el cruce se invierte.
+- El **SL sigue activo** y se revisa antes en cada vela. La salida por señal se evalúa recién desde la vela siguiente a la de la entrada.
+- En los resultados, «TP» son las operaciones que cerraron con ganancia y «SL» las que cerraron con pérdida (por SL o por la señal). La tabla de operaciones trae la columna «motivo» (tp / sl / senal) y el R de cada una es el real, no uno fijo; el % de equilibrio se calcula con el pago medio observado.
+- El **bot de MT5** respeta esta salida: abre sin TP y cierra a mercado cuando una vela cerrada queda del otro lado de la media (también lo detecta si el PC estuvo apagado), y avisa «SALIDA POR SENAL» al celular.
+
 ## 4. Lotaje y dinero
 - **Lotes.** Tamaño de la posición (1, 0,5, 0,1...). Tiene que respetar el mínimo y el paso del símbolo.
 - **tick_size y tick_value.** Datos del contrato. Con MT5 directo se leen solos de cada símbolo. Con CSV o sintéticos los cargás a mano (en MT5: clic derecho en el símbolo → Especificación).
@@ -118,3 +126,11 @@ Muestra cuánto tarda la estrategia en ganar un porcentaje del balance inicial (
 - **Ciclo en curso:** cuánto lleva ganado el tramo final, que todavía no llegó al objetivo.
 - *Objetivo por retiro:* lo podés cambiar (por ejemplo 8 o 10 %). Se calcula sobre el **capital** cargado en la sección 4.
 - Las caídas cuentan: si el ciclo baja de cero, hay que recuperarlas antes de llegar al objetivo. El tiempo es calendario (incluye fines de semana) y es teórico: no cuenta la ganancia flotante.
+
+## Backtester SMA (página aparte en el menú)
+Es el mismo backtester que el de EMA, con todos los campos y resultados iguales. Lo único que cambia está en "3. Señal y gestión":
+- **Señal = Cruce de dos SMA**: entra cuando la SMA corta cruza a la larga (valores por defecto 20/50).
+- **Señal = Precio cruza una SMA**: una sola media; compra cuando el cierre cruza hacia arriba de la SMA y vende cuando cruza hacia abajo. Se carga solo el período.
+- Con pullback, el nivel de referencia es la misma media (la SMA única, o la corta/larga elegida).
+- El botón "Generar bot (.mq5)" arma un bot con el mismo tipo de media y la misma señal; se aplican las mismas reglas de veredicto y la protección de cuenta.
+- Es independiente de la página EMA: los valores que cargues en una no se mezclan con la otra.

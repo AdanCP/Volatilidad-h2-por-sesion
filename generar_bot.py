@@ -37,6 +37,10 @@ def nombre_archivo(simbolo: str, tf: str) -> str:
 def _magic(cfg, simbolo: str) -> int:
     """Magic number estable: mismos parametros -> mismo numero (sirve para distinguir bots en la cuenta)."""
     clave = f"{simbolo}|{cfg.ema_corta}|{cfg.ema_larga}|{cfg.direccion}|{cfg.rr}|{cfg.sl_modo}|{cfg.sl_valor}"
+    if cfg.media_tipo != "ema" or cfg.modo_senal != "cruce":      # los bots EMA de cruce conservan su magic de siempre
+        clave += f"|{cfg.media_tipo}|{cfg.modo_senal}|{cfg.media_unica}"
+    if cfg.salida_modo != "rr":
+        clave += f"|{cfg.salida_modo}"
     h = 0
     for ch in clave:
         h = (h * 31 + ord(ch)) % 90000
@@ -55,6 +59,13 @@ def motivo_rechazo(veredicto: Optional[dict], tf: str) -> Optional[str]:
     if veredicto.get("nivel") not in NIVELES_APTOS:
         return "El veredicto no respalda la estrategia (" + veredicto.get("titulo", "") + "): no se genera el bot."
     return None
+
+
+def _senal_cab(cfg) -> str:
+    t = cfg.media_tipo.upper()
+    if cfg.modo_senal == "precio":
+        return f"Senal: precio cruza la {t} {cfg.media_unica}"
+    return f"{t}s {cfg.ema_corta}/{cfg.ema_larga}"
 
 
 def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float] = None,
@@ -79,7 +90,7 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
     cab = [
         "//--------------------------------------------------------------------",
         f"// Generado: {fecha:%Y-%m-%d %H:%M}   Simbolo del backtest: {_sin_ascii(simbolo)}   Temporalidad: {tf or 'no indicada'}",
-        f"// EMAs {cfg.ema_corta}/{cfg.ema_larga} | direccion: {cfg.direccion} | RR {_f(cfg.rr, 2)} | lotes {_f(lotes, 2)}",
+        f"// {_senal_cab(cfg)} | direccion: {cfg.direccion} | {'salida por cambio de lado (sin TP)' if cfg.salida_modo == 'senal' else 'RR ' + _f(cfg.rr, 2)} | lotes {_f(lotes, 2)}",
     ]
     if sl_modo == "usd":
         cab.append(f"// SL: US${_f(usd, 2)} por operacion (se convierte a precio con el valor del tick del broker)")
@@ -106,6 +117,10 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "SIMBOLO": _sin_ascii(simbolo).replace('"', ""),
         "TF": _TF.get(tf, "PERIOD_CURRENT"),
         "EMA_C": str(int(cfg.ema_corta)), "EMA_L": str(int(cfg.ema_larga)),
+        "SAL_SENAL": "1" if cfg.salida_modo == "senal" else "0",
+        "MA_TIPO": "1" if cfg.media_tipo == "sma" else "0",
+        "SIG_MODO": "1" if cfg.modo_senal == "precio" else "0",
+        "MA_UNICA": str(int(cfg.media_unica)),
         "DIR": _DIR[cfg.direccion], "RR": _f(cfg.rr, 4),
         "SL_MODO": _SL[sl_modo], "SL_VALOR": _f(sl_valor, 6), "SL_USD": _f(usd, 4),
         "ATR_PER": str(int(cfg.atr_periodo)), "LOTES": _f(lotes, 4),
@@ -163,8 +178,12 @@ const int             InpDeviation      = 20;             // Deslizamiento maxim
 // ---------------------------- senal y gestion -------------------------------
 const int             InpEmaFast        = @@EMA_C@@;      // EMA corta
 const int             InpEmaSlow        = @@EMA_L@@;      // EMA larga
+const int             InpMaType         = @@MA_TIPO@@;      // Tipo de media: 0 = EMA, 1 = SMA
+const int             InpSigMode        = @@SIG_MODO@@;      // Senal: 0 = cruce de dos medias, 1 = precio cruza una media
+const int             InpMaSingle       = @@MA_UNICA@@;      // Periodo de la media unica (modo precio)
 const ENUM_BOT_DIR    InpDir            = @@DIR@@;        // Direccion
-const double          InpRR             = @@RR@@;         // Relacion TP/SL (TP = SL x RR)
+const double          InpRR             = @@RR@@;         // Relacion TP/SL (TP = SL x RR); no se usa con salida por senal
+const int             InpExitSignal     = @@SAL_SENAL@@;      // Salida: 0 = TP fijo, 1 = sin TP (cierra cuando una vela cierra del otro lado de la media)
 const ENUM_BOT_SL     InpSLMode         = @@SL_MODO@@;    // SL en: ATR / % del precio / dolares fijos
 const double          InpSLValue        = @@SL_VALOR@@;   // Valor del SL (multiplo de ATR o % del precio)
 const double          InpSLUsd          = @@SL_USD@@;     // SL en dolares por operacion (con SL en dolares)
@@ -447,7 +466,7 @@ bool InSession(const datetime t_servidor)
 // ============================ datos y senal ===================================
 int MaxWarm()
 {
-   int w = InpEmaSlow + 1;
+   int w = (InpSigMode == 1 ? InpMaSingle : InpEmaSlow) + 1;
    if(InpSmaOn) w = MathMax(w, InpSmaPeriod + MathMax(InpSmaSlopeN, 0));
    if(InpAdxOn) w = MathMax(w, 2 * InpAdxPeriod + MathMax(InpAdxRisingN, 0) + 1);
    if(InpAtrOn && InpAtrRelN > 0) w = MathMax(w, InpAtrRelN + InpAtrPeriod);
@@ -478,8 +497,22 @@ bool LoadData()
       g_c[t] = r[t].close;
       g_tv[t] = (double)r[t].tick_volume;
    }
-   CalcEMA(g_c, g_m, InpEmaFast, g_ef);
-   CalcEMA(g_c, g_m, InpEmaSlow, g_es);
+   if(InpSigMode == 1)
+   {
+      if(InpMaType == 1) CalcSMA(g_c, g_m, InpMaSingle, g_ef);
+      else               CalcEMA(g_c, g_m, InpMaSingle, g_ef);
+      ArrayCopy(g_es, g_ef);
+   }
+   else if(InpMaType == 1)
+   {
+      CalcSMA(g_c, g_m, InpEmaFast, g_ef);
+      CalcSMA(g_c, g_m, InpEmaSlow, g_es);
+   }
+   else
+   {
+      CalcEMA(g_c, g_m, InpEmaFast, g_ef);
+      CalcEMA(g_c, g_m, InpEmaSlow, g_es);
+   }
    double tr[];
    CalcTR(tr);
    CalcWilder(tr, g_m, InpAtrPeriod, g_atr);
@@ -494,8 +527,8 @@ bool LoadData()
 int CrossAt(const int i)
 {
    if(i < MaxWarm() || i < 1) return 0;
-   const double d  = g_ef[i] - g_es[i];
-   const double dp = g_ef[i - 1] - g_es[i - 1];
+   const double d  = (InpSigMode == 1) ? g_c[i] - g_ef[i] : g_ef[i] - g_es[i];
+   const double dp = (InpSigMode == 1) ? g_c[i - 1] - g_ef[i - 1] : g_ef[i - 1] - g_es[i - 1];
    if(d > 0.0 && dp <= 0.0) return 1;
    if(d < 0.0 && dp >= 0.0) return -1;
    return 0;
@@ -684,6 +717,45 @@ void CloseAll()
    }
 }
 
+// Salida por senal (igual que el backtester): sin TP. Se cierra cuando una vela CERRADA, posterior a la de entrada, cierra del
+// otro lado de la media (largo: debajo; corto: encima). Entrada a mercado: cuenta desde la vela en que se abrio (la de la
+// vela siguiente al cruce); entrada por pullback: desde la vela siguiente a la del llenado. Revisa todas las velas cerradas
+// desde la entrada, asi que tambien lo detecta si el bot o el PC estuvo parado.
+bool SalidaPorSenal(const int side, const datetime abierta, const bool esPullback)
+{
+   const int per = PeriodSeconds();
+   const datetime velaEntrada = abierta - (abierta % per);
+   for(int i = g_m - 1; i >= 1; i--)
+   {
+      if(esPullback ? (g_time[i] <= velaEntrada) : (g_time[i] < velaEntrada)) break;
+      const double d = (InpSigMode == 1) ? g_c[i] - g_ef[i] : g_ef[i] - g_es[i];
+      if(!V(g_ef[i]) || !V(g_es[i])) continue;
+      if(side == 1 && d < 0.0) return true;
+      if(side == -1 && d > 0.0) return true;
+   }
+   return false;
+}
+
+bool g_salidaSenal = false;                       // el cierre en curso lo pide la senal (para el aviso)
+
+void RevisarSalidaPorSenal()
+{
+   for(int k = PositionsTotal() - 1; k >= 0; k--)
+   {
+      if(PositionGetSymbol(k) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+      const int side = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+      const datetime abierta = (datetime)PositionGetInteger(POSITION_TIME);
+      const bool pb = StringFind(PositionGetString(POSITION_COMMENT), "pullback") >= 0;
+      if(SalidaPorSenal(side, abierta, pb))
+      {
+         Print("Salida por senal: una vela cerro del otro lado de la media. Se cierra la operacion.");
+         g_salidaSenal = true;
+         CloseAll();
+      }
+      return;
+   }
+}
+
 // entrada a mercado: largo al ask, corto al bid; SL/TP desde ese precio (igual que el backtester)
 bool MarketEntry(const int side, const double d)
 {
@@ -699,7 +771,7 @@ bool MarketEntry(const int side, const double d)
    rq.type      = (side == 1) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    rq.price     = Px(price);
    rq.sl        = Px(price - side * d);
-   rq.tp        = Px(price + side * d * InpRR);
+   rq.tp        = (InpExitSignal == 1) ? 0.0 : Px(price + side * d * InpRR);
    rq.deviation = InpDeviation;
    rq.magic     = InpMagic;
    rq.comment   = "EMA bot";
@@ -759,7 +831,7 @@ void PlacePullback(const int i)
    rq.type   = (g_pbSide == 1) ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
    rq.price  = Px(price);
    rq.sl     = Px(price - g_pbSide * d);
-   rq.tp     = Px(price + g_pbSide * d * InpRR);
+   rq.tp     = (InpExitSignal == 1) ? 0.0 : Px(price + g_pbSide * d * InpRR);
    rq.magic  = InpMagic;
    rq.comment = "EMA bot pullback";
    rq.type_filling = ORDER_FILLING_RETURN;
@@ -816,6 +888,7 @@ void OnNewBar()
    {
       g_pbActive = false;
       DeletePending();
+      if(InpExitSignal == 1) RevisarSalidaPorSenal();
       return;
    }
 
@@ -876,7 +949,9 @@ void OnNewBar()
 int OnInit()
 {
    if(!InpVerdictOK) { Avisar("RECHAZADO: el backtest no respalda esta estrategia. No opera."); return INIT_FAILED; }
-   if(InpEmaFast >= InpEmaSlow) { Avisar("RECHAZADO: la EMA corta debe ser menor que la larga."); return INIT_PARAMETERS_INCORRECT; }
+   if(InpSigMode == 0 && InpEmaFast >= InpEmaSlow) { Avisar("RECHAZADO: la media corta debe ser menor que la larga."); return INIT_PARAMETERS_INCORRECT; }
+   if(InpSigMode == 1 && InpMaSingle < 2) { Avisar("RECHAZADO: el periodo de la media debe ser de al menos 2."); return INIT_PARAMETERS_INCORRECT; }
+   if(InpMaType != 0 && InpMaType != 1) { Avisar("RECHAZADO: tipo de media invalido."); return INIT_PARAMETERS_INCORRECT; }
    if(InpPBPct < 0.0 || InpPBPct > 100.0) { Avisar("RECHAZADO: el pullback debe estar entre 0 y 100."); return INIT_PARAMETERS_INCORRECT; }
    if(InpExpectedSymbol != _Symbol)
    {
@@ -1075,7 +1150,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
          tp = PositionGetDouble(POSITION_TP);
       }
       Avisar(string(tipo == DEAL_TYPE_BUY ? "COMPRA" : "VENTA") + " abierta a " + DoubleToString(precio, dig)
-             + " | SL " + DoubleToString(sl, dig) + " | TP " + DoubleToString(tp, dig)
+             + " | SL " + DoubleToString(sl, dig) + (tp > 0.0 ? " | TP " + DoubleToString(tp, dig) : " | sin TP (sale por senal)")
              + " | " + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 2) + " lotes");
       return;
    }
@@ -1086,10 +1161,11 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       if(motivo == DEAL_REASON_TP) que = "TP ALCANZADO";
       else if(motivo == DEAL_REASON_SL) que = "SL ALCANZADO";
       else if(motivo == DEAL_REASON_SO) que = "CIERRE FORZADO POR EL BROKER (stop out)";
-      else if(motivo == DEAL_REASON_EXPERT) que = "CIERRE POR EL BOT (freno de perdida)";
+      else if(motivo == DEAL_REASON_EXPERT) que = g_salidaSenal ? "SALIDA POR SENAL (el precio cambio de lado de la media)" : "CIERRE POR EL BOT (freno de perdida)";
       else if(motivo == DEAL_REASON_CLIENT || motivo == DEAL_REASON_MOBILE || motivo == DEAL_REASON_WEB) que = "CIERRE MANUAL";
       const double res = HistoryDealGetDouble(trans.deal, DEAL_PROFIT) + HistoryDealGetDouble(trans.deal, DEAL_SWAP)
                          + HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
+      g_salidaSenal = false;
       Avisar(que + ": " + string(tipo == DEAL_TYPE_SELL ? "compra" : "venta") + " cerrada a " + DoubleToString(precio, dig)
              + " | resultado " + (res >= 0.0 ? "+" : "") + DoubleToString(res, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY));
    }

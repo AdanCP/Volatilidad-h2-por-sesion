@@ -80,6 +80,21 @@ def proyectar(par: Optional[dict], tasa_mes: float, usd_por_R: Optional[float] =
 
 
 # ------------------------------------------------------------------ descripción
+def _senal_txt(cfg) -> str:
+    """'el cruce de EMA 13/34' (igual que siempre), 'el cruce de SMA 20/50' o 'el cruce del precio con la SMA 50'."""
+    tipo = getattr(cfg, "media_tipo", "ema").upper()
+    if getattr(cfg, "modo_senal", "cruce") == "precio":
+        return f"el cruce del precio con la {tipo} <b>{cfg.media_unica}</b>"
+    return f"el cruce de {tipo} <b>{cfg.ema_corta}/{cfg.ema_larga}</b>"
+
+
+def _ref_pullback(cfg) -> str:
+    tipo = getattr(cfg, "media_tipo", "ema").upper()
+    if getattr(cfg, "modo_senal", "cruce") == "precio":
+        return f"la {tipo}"
+    return f"la {tipo} {cfg.pullback_ema}"
+
+
 def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, neto: Optional[float],
               n_res: int, tp: int, sl: int, exp_R: float, dd_usd: Optional[float],
               sl_usd: float = 0.0, tp_usd: float = 0.0) -> str:
@@ -89,7 +104,20 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         return s
 
     dir_txt = {"ambas": "largos y cortos", "largos": "solo largos", "cortos": "solo cortos"}[cfg.direccion]
-    if cfg.sl_modo == "precio" and sl_usd > 0:
+    if cfg.salida_modo == "senal":
+        if cfg.modo_senal == "precio":
+            sal = f"sin TP fijo: se sale al cierre de la primera vela que cierra del otro lado de la media {cfg.media_unica}"
+        else:
+            sal = "sin TP fijo: se sale al cierre de la primera vela en que el cruce se invierte"
+        if cfg.sl_modo == "precio" and sl_usd > 0:
+            gestion = f"SL de US${n(sl_usd)} y {sal}"
+        elif cfg.sl_modo == "atr":
+            gestion = f"SL de {n(cfg.sl_valor, 1)}×ATR({cfg.atr_periodo}) y {sal}"
+        elif cfg.sl_modo == "pct":
+            gestion = f"SL de {n(cfg.sl_valor, 2)}% del precio y {sal}"
+        else:
+            gestion = f"SL fijo de {n(cfg.sl_valor, 2)} de precio y {sal}"
+    elif cfg.sl_modo == "precio" and sl_usd > 0:
         gestion = f"SL de US${n(sl_usd)} y TP de US${n(tp_usd if tp_usd else sl_usd * cfg.rr)}"
     elif cfg.sl_modo == "atr":
         gestion = f"SL de {n(cfg.sl_valor, 1)}×ATR({cfg.atr_periodo}) y TP a 1:{n(cfg.rr, 1)}"
@@ -130,14 +158,14 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         filtros.append("sesión " + " + ".join(cfg.sesiones))
     filtros_txt = ("filtros: " + "; ".join(filtros)) if filtros else "sin filtros"
     if cfg.pb_efectivo():
-        filtros_txt += (f", entrando en pullback del {n(cfg.pullback_pct, 0)}% hacia la EMA {cfg.pullback_ema} "
+        filtros_txt += (f", entrando en pullback del {n(cfg.pullback_pct, 0)}% hacia {_ref_pullback(cfg)} "
                         f"(caduca a las {cfg.pullback_velas} velas)")
     costos = {"vela": "spread de cada vela", "mediana": "spread de cada vela (ceros reemplazados por la mediana)",
               "fijo": f"spread fijo de {n(cfg.spread_fijo, 2)}", "ninguno": "sin spread"}[cfg.spread]
     if cfg.costo_extra:
         costos += f" y costo extra de {n(cfg.costo_extra, 2)} por operación"
     base = (f"En el período <b>{pd.Timestamp(ini):%d/%m/%Y} → {pd.Timestamp(fin):%d/%m/%Y}</b> ({n(meses, 1)} meses) "
-            f"sobre <b>{simbolo}</b>{f' en velas <b>{tf}</b>' if tf else ''}, usando el cruce de EMA <b>{cfg.ema_corta}/{cfg.ema_larga}</b> "
+            f"sobre <b>{simbolo}</b>{f' en velas <b>{tf}</b>' if tf else ''}, usando {_senal_txt(cfg)} "
             f"({dir_txt}), con {gestion}, {filtros_txt}, {costos}")
     if neto is not None:
         verbo = "ganado" if neto >= 0 else "perdido"

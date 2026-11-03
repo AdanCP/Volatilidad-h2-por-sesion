@@ -1,4 +1,7 @@
-"""Interfaz Streamlit del backtester de cruce de EMAs con filtros opcionales.
+"""Interfaz Streamlit del backtester de cruce de medias (EMA o SMA) con filtros opcionales.
+
+La misma pantalla sirve para dos paginas: la de EMA (app_backtest.py) y la de SMA (app_backtest_sma.py, que define
+TIPO_MEDIA = "sma" antes de ejecutar este archivo). La de SMA suma el modo "precio cruza una sola media".
 
 Usa solo los módulos del backtester (data, engine, metrics, ui_helpers). No toca app.py ni los bots.
 
@@ -23,6 +26,32 @@ import metrics as met
 import ui_estilo as vis
 import veredicto as vd
 import ui_helpers as ui
+
+TIPO = globals().get("TIPO_MEDIA", "ema")       # "sma" lo define app_backtest_sma.py antes de ejecutar este archivo
+ES_SMA = TIPO == "sma"
+MEDIA = TIPO.upper()                            # "EMA" o "SMA", para los textos
+_PFX = "" if TIPO == "ema" else TIPO + "_"
+
+
+class _Estado:
+    """Estado de ESTA página: las dos páginas de backtester no comparten resultados. El contador de pruebas sí es único."""
+    def _k(self, k):
+        return k if k == "contador" else _PFX + k
+
+    def setdefault(self, k, v):
+        return st.session_state.setdefault(self._k(k), v)
+
+    def get(self, k, d=None):
+        return st.session_state.get(self._k(k), d)
+
+    def __getattr__(self, k):
+        return st.session_state[self._k(k)]
+
+    def __setattr__(self, k, v):
+        st.session_state[self._k(k)] = v
+
+
+estado = _Estado()
 
 try:
     import MetaTrader5  # noqa: F401
@@ -75,11 +104,12 @@ def _simbolos_mt5() -> list:
     return data.listar_simbolos_mt5()
 
 
-st.session_state.setdefault("contador", met.ContadorPruebas())
-st.session_state.setdefault("res", None)
-st.session_state.setdefault("comp", None)
-st.session_state.setdefault("abl", None)
-st.session_state.setdefault("vista", "bt")      # pantalla: bt = backtest, abl = ablación, comp = comparación
+TITULO_PAGINA = "Backtester: SMA con filtros" if ES_SMA else "Backtester: cruce de EMAs con filtros"
+estado.setdefault("contador", met.ContadorPruebas())
+estado.setdefault("res", None)
+estado.setdefault("comp", None)
+estado.setdefault("abl", None)
+estado.setdefault("vista", "bt")      # pantalla: bt = backtest, abl = ablación, comp = comparación
 
 st.markdown(vis.css(), unsafe_allow_html=True)
 
@@ -181,12 +211,37 @@ with st.sidebar:
             st.caption("Cargá archivos o datos de demo en «Instrumento a operar».")
 
     with st.expander("3. Señal y gestión", expanded=False):
-        c1, c2 = st.columns(2)
-        ema_c = c1.number_input("EMA corta", 2, 500, 13)
-        ema_l = c2.number_input("EMA larga", 3, 1000, 34)
+        modo_senal, media_unica = "cruce", 50
+        if ES_SMA:
+            modo_senal = {"Cruce de dos SMA": "cruce", "Precio cruza una SMA": "precio"}[st.radio(
+                "Señal", ["Cruce de dos SMA", "Precio cruza una SMA"],
+                help="Cruce de dos SMA: la corta cruza a la larga. Precio cruza una SMA: el cierre de la vela pasa de un lado "
+                     "al otro de la media (alcista si pasa a estar encima). En los dos casos se entra al cierre de esa vela.")]
+        if modo_senal == "precio":
+            media_unica = st.number_input("Período de la SMA", 2, 1000, 50)
+            ema_c, ema_l = 20, 50                   # no intervienen en este modo
+        else:
+            c1, c2 = st.columns(2)
+            ema_c = c1.number_input(f"{MEDIA} corta", 2, 500, 20 if ES_SMA else 13)
+            ema_l = c2.number_input(f"{MEDIA} larga", 3, 1000, 50 if ES_SMA else 34)
         direccion = DIRECCIONES[st.selectbox("Dirección", list(DIRECCIONES))]
+        salida_txt = "Objetivo fijo (RR o US$)" if not ES_SMA else st.radio(      # solo en la página SMA: la de EMA no cambia
+            "Salida (Take Profit)", ["Objetivo fijo (RR o US$)", "Cuando el precio cambia de lado de la media"],
+            help="Objetivo fijo: TP a una distancia fija del SL, como siempre. Cambio de lado: no hay TP; se cierra al cierre "
+                 "de la primera vela que queda del otro lado de la media (un largo sale cuando una vela cierra por debajo, un "
+                 "corto cuando cierra por encima). El SL sigue activo y se revisa antes en cada vela.")
+        salida_modo = "senal" if salida_txt.startswith("Cuando") else "rr"
         sl_modo = st.selectbox("SL en", [SL_ATR, SL_PCT, SL_USD])
-        if sl_modo == SL_USD:
+        if salida_modo == "senal":
+            st.caption("Sin TP fijo: la operación dura hasta que una vela cierra del otro lado de la media o toca el SL.")
+            rr, tp_usd, tp_modo = 2.0, 0.0, TP_RR            # el RR no interviene
+            if sl_modo == SL_USD:
+                sl_usd = st.number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
+                sl_valor = sl_usd
+            else:
+                sl_usd = 0.0
+                sl_valor = st.number_input("Valor del SL", 0.01, 100.0, 1.5 if sl_modo == SL_ATR else 0.5, 0.1)
+        elif sl_modo == SL_USD:
             sl_usd = st.number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
             tp_modo = st.radio("Take Profit en", [TP_RR, TP_USD], horizontal=True)
             if tp_modo == TP_USD:
@@ -210,15 +265,16 @@ with st.sidebar:
                                   help="Se usa en el SL en múltiplos de ATR, en el filtro ATR y en la distancia mínima a la SMA o al VWAP.")
         if not usa_atr:
             st.caption("Desactivado: con SL en dólares o en % del precio y sin filtros que usen ATR, este valor no interviene.")
-        pb_on = st.checkbox("Entrar en pullback a la EMA (opcional)",
+        pb_on = st.checkbox(f"Entrar en pullback a la {MEDIA} (opcional)",
                             help="Apagado: se entra al cierre de la vela del cruce, como siempre. Encendido: el cruce sigue "
-                                 "siendo la señal, pero la entrada se hace cuando el precio retrocede hacia la EMA.")
+                                 f"siendo la señal, pero la entrada se hace cuando el precio retrocede hacia la {MEDIA}.")
         pb_pct, pb_ema, pb_velas = 50, "corta", 10
         if pb_on:
-            pb_pct = st.number_input("Retroceso hacia la EMA (%)", 0, 100, 50, 5,
+            pb_pct = st.number_input(f"Retroceso hacia la {MEDIA} (%)", 0, 100, 50, 5,
                                      help="0 = entrar al cierre (igual que sin pullback). 100 = entrar recién cuando el precio "
-                                          "toca la EMA. Se mide sobre la distancia entre el extremo posterior al cruce y la EMA.")
-            pb_ema = {"Corta": "corta", "Larga": "larga"}[st.radio("EMA de referencia", ["Corta", "Larga"], horizontal=True)]
+                                          f"toca la {MEDIA}. Se mide sobre la distancia entre el extremo posterior al cruce y la {MEDIA}.")
+            if modo_senal == "cruce":
+                pb_ema = {"Corta": "corta", "Larga": "larga"}[st.radio(f"{MEDIA} de referencia", ["Corta", "Larga"], horizontal=True)]
             pb_velas = st.number_input("Caducidad (velas)", 1, 200, 10,
                                        help="Si en estas velas el precio no hizo el retroceso, la orden se cancela. También "
                                             "se cancela si aparece un cruce en sentido contrario.")
@@ -330,7 +386,8 @@ def construir_config(simbolo: str = None) -> eng.Config:
     else:
         modo, valor = ("pct" if sl_modo == SL_PCT else "atr"), float(sl_valor)
     return eng.Config(
-        ema_corta=int(ema_c), ema_larga=int(ema_l), rr=float(rr),
+        ema_corta=int(ema_c), ema_larga=int(ema_l), rr=float(rr), salida_modo=salida_modo,
+        media_tipo=TIPO, modo_senal=modo_senal, media_unica=int(media_unica),
         sl_modo=modo, sl_valor=valor, atr_periodo=int(atr_per),
         pullback_activo=bool(pb_on), pullback_pct=float(pb_pct), pullback_ema=pb_ema, pullback_velas=int(pb_velas),
         direccion=direccion, spread=spread, spread_fijo=float(spread_fijo), costo_extra=float(costo_extra),
@@ -354,7 +411,7 @@ def tarjeta_html(titulo: str, cuerpo: str, nota: str = "", derecha: str = "", mi
 
 
 if not datos:
-    html(vis.barra_superior("Backtester: cruce de EMAs con filtros",
+    html(vis.barra_superior(TITULO_PAGINA,
                             "Medí si una idea tiene ventaja demostrable, no cuál combinación gana.", []))
     html(vis.tarjeta("Para empezar", "<div class='note' style='font-size:.9rem'>Cargá datos en la barra lateral. "
                      "Para probar la interfaz sin datos reales, elegí <b>Datos sintéticos (demo)</b>.</div>"))
@@ -372,10 +429,10 @@ df, spec = datos[activo], specs.get(activo)
 
 cal = data.calidad(df)
 html(vis.barra_superior(
-    "Backtester: cruce de EMAs con filtros",
+    TITULO_PAGINA,
     "Medí si una idea tiene ventaja demostrable, no cuál combinación gana: con muchas pruebas, "
     "un buen resultado puede ser azar.",
-    [("Símbolo", activo), ("Pruebas en la sesión", st.session_state.contador.n)]))
+    [("Símbolo", activo), ("Pruebas en la sesión", estado.contador.n)]))
 k1, k2, k3, k4 = st.columns(4)
 with k1:
     html(vis.kpi("Velas analizadas", vis.n(cal["velas"], 0), "después de recortar y remuestrear", vis.VIOLETA))
@@ -395,9 +452,11 @@ if sl_modo == SL_USD:
         conv = []
         for s_ in list(datos)[:8]:
             c_ = construir_config(s_)
-            conv.append((s_, f"SL {vis.n(c_.sl_valor, 5 if c_.sl_valor < 1 else 2)} · TP {vis.n(c_.sl_valor * c_.rr, 5 if c_.sl_valor < 1 else 2)}"))
+            conv.append((s_, f"SL {vis.n(c_.sl_valor, 5 if c_.sl_valor < 1 else 2)}" + ("" if salida_modo == "senal" else
+                        f" · TP {vis.n(c_.sl_valor * c_.rr, 5 if c_.sl_valor < 1 else 2)}")))
         st.write("")
-        html(vis.tarjeta(f"SL de US${vis.n(sl_usd)} y TP de US${vis.n(sl_usd * rr)} con {vis.n(lotes)} lotes: en puntos de precio",
+        html(vis.tarjeta(f"SL de US${vis.n(sl_usd)}" + ("" if salida_modo == "senal" else f" y TP de US${vis.n(sl_usd * rr)}")
+                         + f" con {vis.n(lotes)} lotes: en puntos de precio",
                          vis.chips(conv), "Se recalcula por símbolo con su tick_size y tick_value. Con otro lote cambia la distancia, "
                          "y por lo tanto las operaciones."))
     except ValueError as e:
@@ -414,7 +473,7 @@ st.write("")
 b1, b2, b3 = st.columns(3)
 correr = b1.button("Correr backtest", type="primary")
 if correr:
-    st.session_state.vista = "bt"
+    estado.vista = "bt"
 abl = b2.button("Modo ablación (cruce solo + cada filtro)")
 comp = b3.button("Comparar símbolos", disabled=len(datos) < 2)
 
@@ -422,8 +481,8 @@ if correr:
     try:
         cfg = construir_config()
         with ui.cargando("Calculando..."):
-            st.session_state.res = (met.evaluar(df, cfg, oos / 100, int(azar_n), 42,
-                                                st.session_state.contador), cfg, activo,
+            estado.res = (met.evaluar(df, cfg, oos / 100, int(azar_n), 42,
+                                                estado.contador), cfg, activo,
                                     {"lotes": float(lotes), "comision": float(comision), "capital": float(capital),
                                      "limite_pct": float(limite_pct), **params_dinero(activo)})
     except (ValueError, data.ErrorDatos) as e:
@@ -437,7 +496,7 @@ with st.sidebar:
         _cfg_bot = construir_config()
         _tf_bot = _REGLA_TF.get(regla, "") if regla != "No" else (globals().get("tf") or "")
         _vd_bot = None
-        _g = st.session_state.get("veredicto_bot")      # (config, veredicto, símbolo, lotes, temporalidad)
+        _g = estado.get("veredicto_bot")      # (config, veredicto, símbolo, lotes, temporalidad)
         if _g and _g[0] == _cfg_bot and _g[2] == activo and _g[3] == float(lotes) and _g[4] == _tf_bot:
             _vd_bot = _g[1]
         _motivo = ("Con datos sintéticos no se genera bot." if fuente == ETQ_SINT
@@ -463,11 +522,14 @@ if comp:
         cfgs = {s: construir_config(s) for s in datos}
         with ui.cargando("Comparando símbolos..."):
             _tabla, _notas = met.comparar_simbolos(
-                datos, cfgs, oos / 100, int(azar_n), 42, st.session_state.contador, recortar)
-            _gest = (f"SL US${vis.n(sl_usd, 0)} · TP US${vis.n(sl_usd * rr, 0)}" if sl_modo == SL_USD
-                     else f"SL {vis.n(sl_valor, 1)}{'×ATR' if sl_modo == SL_ATR else '%'} · TP 1:{vis.n(rr, 1)}")
-            st.session_state.comp = (_tabla, _notas, f"EMA {int(ema_c)}/{int(ema_l)} · {_gest}")
-            st.session_state.vista = "comp"
+                datos, cfgs, oos / 100, int(azar_n), 42, estado.contador, recortar)
+            _gest = (f"SL US${vis.n(sl_usd, 0)}" if sl_modo == SL_USD
+                     else f"SL {vis.n(sl_valor, 1)}{'×ATR' if sl_modo == SL_ATR else '%'}")
+            _gest += " · salida por cambio de lado" if salida_modo == "senal" else (
+                f" · TP US${vis.n(sl_usd * rr, 0)}" if sl_modo == SL_USD else f" · TP 1:{vis.n(rr, 1)}")
+            _sen = (f"Precio vs SMA {int(media_unica)}" if modo_senal == "precio" else f"{MEDIA} {int(ema_c)}/{int(ema_l)}")
+            estado.comp = (_tabla, _notas, f"{_sen} · {_gest}")
+            estado.vista = "comp"
     except (ValueError, data.ErrorDatos) as e:
         st.error(str(e))
 
@@ -477,17 +539,17 @@ if abl:
         with ui.cargando("Corriendo la ablación..."):
             tabla_abl, omitidos = met.ablacion(df, cfg, oos_pct=oos / 100,
                                                azar_veces=min(int(azar_n), 100),
-                                               contador=st.session_state.contador)
-        st.session_state.abl = (tabla_abl, omitidos, activo)
-        st.session_state.vista = "abl"
+                                               contador=estado.contador)
+        estado.abl = (tabla_abl, omitidos, activo)
+        estado.vista = "abl"
     except (ValueError, data.ErrorDatos) as e:
         st.error(str(e))
 
-if st.session_state.vista == "abl" and st.session_state.abl is not None:
-    tabla_abl, omitidos, act_abl = st.session_state.abl
+if estado.vista == "abl" and estado.abl is not None:
+    tabla_abl, omitidos, act_abl = estado.abl
     st.write("")
     if st.button("← Volver al backtest", key="volver_abl"):
-        st.session_state.vista = "bt"
+        estado.vista = "bt"
         st.rerun()
     html(vis.titulo_seccion("Modo ablación", "El cruce solo y el efecto de cada filtro, uno por uno"))
     filas = []
@@ -502,12 +564,12 @@ if st.session_state.vista == "abl" and st.session_state.abl is not None:
         st.warning(f"Omitidos: {', '.join(omitidos)}. (Sesión necesita el desfase del servidor; VWAP necesita velas menores a D1.)")
     st.stop()
 
-if st.session_state.comp is not None and len(st.session_state.comp) != 3:      # versión anterior: se descarta
-    st.session_state.comp = None
-if st.session_state.comp is not None and st.session_state.vista == "comp":
-    tabla_c, notas_c, estrategia_c = st.session_state.comp
+if estado.comp is not None and len(estado.comp) != 3:      # versión anterior: se descarta
+    estado.comp = None
+if estado.comp is not None and estado.vista == "comp":
+    tabla_c, notas_c, estrategia_c = estado.comp
     if st.button("← Volver al backtest", key="volver_comp"):
-        st.session_state.vista = "bt"
+        estado.vista = "bt"
         st.rerun()
     vc = vd.evaluar_comparabilidad(tabla_c)
     rb = vc["robustez"]
@@ -583,17 +645,21 @@ if st.session_state.comp is not None and st.session_state.vista == "comp":
         html(vis.tabla_df(tabla_c, dec=3, nombre_indice="Símbolo"))
     st.stop()
 
-if st.session_state.res is None:
+if estado.res is None:
     st.stop()
 
 # ------------------------------------------------------------------ resultado
-if len(st.session_state.res) != 4:      # resultado de una versión anterior: se descarta
-    st.session_state.res = None
+if len(estado.res) != 4:      # resultado de una versión anterior: se descarta
+    estado.res = None
     st.stop()
-r, cfg_usada, act_res, pdin = st.session_state.res
+r, cfg_usada, act_res, pdin = estado.res
 t = r["tabla"]
 tt, ti, to = t.loc["Todo"], t.loc["In-sample"], t.loc["Out-of-sample"]
 tr = r["trades"]
+if cfg_usada.salida_modo == "senal":
+    st.caption("Salida por cambio de lado: aquí «TP» son las operaciones que cerraron con ganancia y «SL» las que cerraron con "
+               "pérdida (ya sea por el SL o por la señal de salida). La columna «motivo» de la tabla dice cómo cerró cada una; "
+               "el R de cada operación es el real, no uno fijo.")
 res = tr[tr["res"].isin(["TP", "SL"])] if len(tr) else tr
 dinero = None
 
@@ -833,7 +899,7 @@ html(vis.insight(
     "Lectura del resultado",
     "Hay " + " y ".join(lineas) + f". Frente al azar, el out-of-sample quedó en el percentil "
     f"<b>{vis.n(to['mejor_que_%azar'], 0)}</b>." + aviso_muestra +
-    f"<br><br>Llevás <b>{st.session_state.contador.n}</b> pruebas en esta sesión: cuantas más probás, "
+    f"<br><br>Llevás <b>{estado.contador.n}</b> pruebas en esta sesión: cuantas más probás, "
     "más probable es que alguna salga bien solo por azar. Esto no demuestra una ventaja por sí solo."))
 
 # ------------------------------------------------------------- conclusión final
@@ -841,18 +907,18 @@ st.write("")
 meses_datos = max((r["P"].indice[-1] - r["P"].indice[0]).days / 30.44, 0.1)
 usd_R = dinero["riesgo_medio_por_operacion"] if dinero else None
 veredicto = vd.evaluar_veredicto(r, cfg_usada, meses_datos, usd_R, pdin.get("capital", 0.0),
-                                 pdin.get("limite_pct", 10.0), st.session_state.contador.n)
+                                 pdin.get("limite_pct", 10.0), estado.contador.n)
 sl_usd_u = tp_usd_u = 0.0
 if cfg_usada.sl_modo == "precio":
     sl_usd_u = cfg_usada.sl_valor * met.valor_por_unidad(pdin["tick_size"], pdin["tick_value"], pdin["lotes"])
-    tp_usd_u = sl_usd_u * cfg_usada.rr
+    tp_usd_u = 0.0 if cfg_usada.salida_modo == "senal" else sl_usd_u * cfg_usada.rr
 _tf = globals().get("tf")
 tf_txt = regla if regla != "No" else (_tf or "")
 _vd_clave = (cfg_usada, act_res, float(pdin["lotes"]), _REGLA_TF.get(regla, "") if regla != "No" else (_tf or ""),
              veredicto["nivel"], veredicto["titulo"])
-if st.session_state.get("veredicto_bot_clave") != _vd_clave:
-    st.session_state.veredicto_bot = (cfg_usada, veredicto, act_res, float(pdin["lotes"]), _vd_clave[3])
-    st.session_state.veredicto_bot_clave = _vd_clave
+if estado.get("veredicto_bot_clave") != _vd_clave:
+    estado.veredicto_bot = (cfg_usada, veredicto, act_res, float(pdin["lotes"]), _vd_clave[3])
+    estado.veredicto_bot_clave = _vd_clave
     st.rerun()          # la barra lateral ya se dibujó: se repite para que el botón del bot vea el veredicto nuevo
 relato = vd.describir(cfg_usada, act_res, tf_txt, r["P"].indice[0], r["P"].indice[-1], meses_datos, pdin["lotes"],
                       dinero["neto"] if dinero else None, int(tt["resueltas"]), int(tt["TP"]), int(tt["SL"]),
@@ -913,9 +979,10 @@ with st.expander("Ver tabla completa de resultados"):
 if len(res):
     with st.expander("Ver operaciones"):
         _d = 5 if float(tr["entrada"].abs().median()) < 10 else 2      # forex: 5 decimales; oro e índices: 2
-        html(vis.tabla_df(tr.drop(columns=["i", "salida"]), decs={c: _d for c in ("entrada", "sl", "tp", "dist")},
+        _trv = tr if cfg_usada.salida_modo == "senal" else tr.drop(columns=["motivo"], errors="ignore")
+        html(vis.tabla_df(_trv.drop(columns=["i", "salida"]), decs={c: _d for c in ("entrada", "sl", "tp", "dist")},
                           nombre_indice="n.º"))
-        st.download_button("Descargar operaciones (CSV)", tr.to_csv(index=False).encode("utf-8"),
+        st.download_button("Descargar operaciones (CSV)", _trv.to_csv(index=False).encode("utf-8"),
                            "operaciones.csv", "text/csv")
 
 _entrada_txt = ("- Con pullback: tras el cruce se deja una orden límite en el nivel de retroceso elegido y la operación se "

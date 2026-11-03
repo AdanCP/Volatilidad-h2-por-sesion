@@ -1,4 +1,8 @@
-"""Motor del backtest de cruce de EMAs con filtros opcionales (sesion, SMA, ADX, ATR).
+"""Motor del backtest de cruce de medias moviles (EMA o SMA) con filtros opcionales (sesion, SMA, ADX, ATR).
+
+Señal (config.media_tipo y config.modo_senal):
+  - modo "cruce" (por defecto): la media corta cruza a la larga. media_tipo "ema" (por defecto) o "sma".
+  - modo "precio": el CIERRE cruza una sola media (config.media_unica). Alcista = el cierre pasa de debajo a encima.
 
 Reglas (ver prompt):
   - Entrada al CIERRE de la vela del cruce (alcista = largo, bajista = corto).
@@ -25,9 +29,13 @@ import sessions as ses
 @dataclass
 class Config:
     # señal y gestion
-    ema_corta: int = 13
+    ema_corta: int = 13             # media corta del modo "cruce" (el nombre se mantiene aunque sea SMA)
     ema_larga: int = 34
+    media_tipo: str = "ema"         # "ema" | "sma": tipo de media de la señal (el FILTRO SMA es aparte)
+    modo_senal: str = "cruce"       # "cruce" (dos medias) | "precio" (el cierre cruza una sola media)
+    media_unica: int = 50           # periodo de la media en el modo "precio"
     rr: float = 2.0
+    salida_modo: str = "rr"         # "rr" (TP fijo a RR) | "senal" (sin TP: sale al cierre de la 1ª vela del otro lado de la media)
     sl_modo: str = "atr"            # "atr" (multiplo), "pct" (% del precio) o "precio" (distancia fija en unidades de precio)
     sl_valor: float = 1.5
     atr_periodo: int = 14
@@ -84,11 +92,21 @@ class Config:
             raise ValueError("La EMA del pullback debe ser 'corta' o 'larga'.")
         if self.pullback_velas < 1:
             raise ValueError("La caducidad del pullback debe ser de al menos 1 vela.")
-        if self.ema_corta >= self.ema_larga:
-            raise ValueError("La EMA corta debe ser menor que la larga.")
+        if self.media_tipo not in ("ema", "sma"):
+            raise ValueError("El tipo de media debe ser 'ema' o 'sma'.")
+        if self.modo_senal not in ("cruce", "precio"):
+            raise ValueError("El modo de señal debe ser 'cruce' o 'precio'.")
+        if self.modo_senal == "cruce" and self.ema_corta >= self.ema_larga:
+            raise ValueError(f"La {self.media_tipo.upper()} corta debe ser menor que la larga.")
+        if self.modo_senal == "precio" and self.media_unica < 2:
+            raise ValueError("El período de la media debe ser de al menos 2.")
+        if self.salida_modo not in ("rr", "senal"):
+            raise ValueError("Modo de salida invalido: 'rr' o 'senal'.")
         if self.sl_modo not in ("atr", "pct", "precio") or self.sl_valor <= 0:
             raise ValueError("SL invalido: modo 'atr', 'pct' o 'precio' y valor mayor que 0.")
-        if self.sl_modo == "precio":        # SL y TP fijos (p. ej. en dolares): la relacion TP/SL es libre
+        if self.salida_modo == "senal":     # sin TP: el RR no interviene
+            pass
+        elif self.sl_modo == "precio":        # SL y TP fijos (p. ej. en dolares): la relacion TP/SL es libre
             if not 0.05 <= self.rr <= 50:
                 raise ValueError("La relacion TP/SL debe estar entre 0,05 y 50.")
         elif not 1 <= self.rr <= 10:
@@ -122,6 +140,7 @@ class Preparado:
     sube: Optional[np.ndarray] = None       # cruces alcistas/bajistas de TODA la serie (cancelan ordenes pendientes)
     baja: Optional[np.ndarray] = None
     ok_ses: Optional[np.ndarray] = None     # sesion al EJECUTAR la entrada (solo con pullback)
+    diff: Optional[np.ndarray] = None       # lado de la media por vela: >0 arriba (alcista), <0 abajo; base de la salida por señal
 
 
 def es_intradia(df: pd.DataFrame) -> bool:
@@ -155,7 +174,8 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     else:                                   # "precio": la misma distancia en todas las operaciones
         dist = np.full(n, float(cfg.sl_valor))
 
-    warm = cfg.ema_larga + 1        # sin filtros: igual que cruce_minimo.py
+    modo_precio = cfg.modo_senal == "precio"
+    warm = (cfg.media_unica if modo_precio else cfg.ema_larga) + 1        # sin filtros: igual que cruce_minimo.py
     if cfg.sma_activo:
         warm = max(warm, cfg.sma_periodo + max(cfg.sma_pendiente_n, 0))
     if cfg.adx_activo:
@@ -163,7 +183,11 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     if cfg.atr_activo and cfg.atr_rel_n:
         warm = max(warm, cfg.atr_rel_n + cfg.atr_periodo)
 
-    ema_c, ema_l = ind.ema(c, cfg.ema_corta), ind.ema(c, cfg.ema_larga)
+    media = ind.sma if cfg.media_tipo == "sma" else ind.ema
+    if modo_precio:                         # una sola media: el pullback la usa como referencia (corta = larga)
+        ema_c = ema_l = media(c, cfg.media_unica)
+    else:
+        ema_c, ema_l = media(c, cfg.ema_corta), media(c, cfg.ema_larga)
     vwap = vwap_min = None
     if cfg.vwap_activo:
         if not es_intradia(df):
@@ -174,7 +198,7 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
         # minutos transcurridos desde el inicio del dia hasta el CIERRE de cada vela
         vwap_min = ((df.index - df.index.normalize()) + paso) / pd.Timedelta(minutes=1)
         vwap_min = np.asarray(vwap_min, float)
-    diff = ema_c - ema_l
+    diff = (c - ema_c) if modo_precio else (ema_c - ema_l)
     prev = np.r_[np.nan, diff[:-1]]
     sube, baja = (diff > 0) & (prev <= 0), (diff < 0) & (prev >= 0)
 
@@ -242,7 +266,7 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     sp = _spread(df, cfg)
     raw = df["Spread"].to_numpy(float) if "Spread" in df else np.zeros(n)
     return Preparado(h, l, c, sp, atr, dist, df.index, cruces, 100 * float((raw == 0).mean()),
-                     ema_c, ema_l, sube, baja, ok_ses if (cfg.pb_efectivo() and cfg.sesion_activo) else None)
+                     ema_c, ema_l, sube, baja, ok_ses if (cfg.pb_efectivo() and cfg.sesion_activo) else None, diff)
 
 
 def pb_de(cfg: Config):
@@ -252,18 +276,32 @@ def pb_de(cfg: Config):
     return {"pct": float(cfg.pullback_pct), "ema": cfg.pullback_ema, "velas": int(cfg.pullback_velas)}
 
 
-def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None):
+def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr"):
     """señales: lista de (indice, lado). Devuelve (DataFrame de operaciones, ignoradas).
 
     pb=None: entrada al cierre de la vela de la señal. pb={"pct","ema","velas"}: la señal deja una orden pendiente.
     El resultado trae en .attrs["pb"] cuantas ordenes se llenaron, caducaron o se cancelaron por cruce contrario.
+    salida="senal": no hay TP. Se sale al CIERRE de la primera vela (posterior a la de entrada) que cierra del otro lado de
+    la media (diff de signo contrario al del lado); el SL sigue vigente y se revisa antes en cada vela. La tabla trae
+    "motivo" (tp / sl / senal): una salida por señal se rotula TP si gana y SL si pierde, con su R real.
     En la tabla, "i" es la vela de ENTRADA real y "señal" la vela del cruce (iguales sin pullback)."""
     h, l, c, sp, dist = P.h, P.l, P.c, P.sp, P.dist
     n = len(c)
     filas, libre, ignoradas = [], 0, 0
     st = {"ordenes": 0, "llenadas": 0, "caducadas": 0, "cruce_contrario": 0}
 
+    por_senal = salida == "senal"
+    if por_senal and P.diff is None:
+        raise ValueError("La salida por señal necesita el lado de la media (preparar() con esta version).")
+
     def recorrer(desde, lado, sl, tp):
+        if por_senal:
+            for j in range(desde, n):
+                if (l[j] <= sl) if lado == 1 else (h[j] + sp[j] >= sl):
+                    return "SL", False, j
+                if (P.diff[j] < 0) if lado == 1 else (P.diff[j] > 0):
+                    return "SEN", False, j
+            return "ABIERTA", False, n - 1
         for j in range(desde, n):
             if lado == 1:
                 hit_sl, hit_tp = l[j] <= sl, h[j] >= tp
@@ -287,7 +325,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             if not d > 0:
                 continue
             entrada = c[i] + sp[i] if lado == 1 else c[i]
-            sl, tp = entrada - lado * d, entrada + lado * d * rr
+            sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
             res, amb, j_out = recorrer(i + 1, lado, sl, tp)
         else:
             st["ordenes"] += 1
@@ -322,22 +360,28 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 continue
             st["llenadas"] += 1
             entrada = px + sp[k] if lado == 1 else px
-            sl, tp = entrada - lado * d, entrada + lado * d * rr
+            sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
             # en la vela de entrada no se sabe que paso primero: si toca el SL, cuenta como SL; el TP recien desde la siguiente
             toca_sl = l[k] <= sl if lado == 1 else h[k] + sp[k] >= sl
             if toca_sl:
                 res, amb, j_out = "SL", True, k
             else:
                 res, amb, j_out = recorrer(k + 1, lado, sl, tp)
-        r = rr if res == "TP" else (-1.0 if res == "SL" else 0.0)
+        motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal"}.get(res, "")
+        if res == "SEN":                                # sale al cierre: el largo vende al bid, el corto compra al ask
+            salida_px = c[j_out] if lado == 1 else c[j_out] + sp[j_out]
+            r = lado * (salida_px - entrada) / d
+            res = "TP" if r > 0 else "SL"
+        else:
+            r = rr if res == "TP" else (-1.0 if res == "SL" else 0.0)
         if res != "ABIERTA" and costo_extra:
             r -= costo_extra / d
         filas.append({"i": k, "señal": i, "lado": lado, "entrada": entrada, "sl": sl, "tp": tp, "dist": d,
-                      "res": res, "amb": amb, "salida": j_out, "R": r})
+                      "res": res, "amb": amb, "salida": j_out, "R": r, "motivo": motivo_sal})
         if res == "ABIERTA":
             break
         libre = j_out + 1
-    cols = ["i", "señal", "lado", "entrada", "sl", "tp", "dist", "res", "amb", "salida", "R"]
+    cols = ["i", "señal", "lado", "entrada", "sl", "tp", "dist", "res", "amb", "salida", "R", "motivo"]
     out = pd.DataFrame(filas, columns=cols)
     out.attrs["pb"] = st
     return out, ignoradas
@@ -362,5 +406,5 @@ def ejecutar(P: Preparado, cfg: Config, lo: int = 0, hi: Optional[int] = None) -
             descartes[m] = descartes.get(m, 0) + 1
     señales = [(i, lado) for i, lado, m in en_rango if m is None]
     pb = pb_de(cfg)
-    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb)
+    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo)
     return Resultado(tr, descartes, len(en_rango), len(señales), ign, dict(tr.attrs.get("pb", {})) if pb else {})

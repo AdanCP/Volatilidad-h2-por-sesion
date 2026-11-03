@@ -750,3 +750,150 @@ def test_ciclos_objetivo_retiros():
     # sin operaciones o capital 0
     assert met_.ciclos_objetivo(tr.iloc[0:0], idx, 1.0, 1.0, 1.0, 0.0, 10_000.0)["ciclos"] == []
     assert met_.ciclos_objetivo(tr, idx, 1.0, 1.0, 1.0, 0.0, 0.0)["ciclos"] == []
+
+
+# ------------------------------------------------- SMA y modo "precio"
+def _cruces_manual(c, a, b, warm):
+    """Cruces de 'a' sobre 'b' (alcista) calculados aparte, solo con numpy."""
+    d = a - b
+    out = []
+    for i in range(warm, len(c)):
+        if np.isnan(d[i]) or np.isnan(d[i - 1]):
+            continue
+        if d[i] > 0 and d[i - 1] <= 0:
+            out.append((i, 1))
+        elif d[i] < 0 and d[i - 1] >= 0:
+            out.append((i, -1))
+    return out
+
+
+def test_cruce_de_sma_contra_calculo_manual():
+    df = _df()
+    c = df["Close"].to_numpy(float)
+    cfg = eng.Config(media_tipo="sma", ema_corta=20, ema_larga=50)
+    P = eng.preparar(df, cfg)
+    esperado = _cruces_manual(c, ind.sma(c, 20), ind.sma(c, 50), 51)
+    assert [(i, l) for i, l, _ in P.cruces] == esperado and len(esperado) > 20
+    assert np.allclose(P.ema_c[50:], ind.sma(c, 20)[50:]) and np.allclose(P.ema_l[50:], ind.sma(c, 50)[50:])
+
+
+def test_modo_precio_cruza_una_sola_media():
+    df = _df()
+    c = df["Close"].to_numpy(float)
+    for tipo, fn in (("sma", ind.sma), ("ema", ind.ema)):
+        cfg = eng.Config(media_tipo=tipo, modo_senal="precio", media_unica=40)
+        P = eng.preparar(df, cfg)
+        m = fn(c, 40)
+        assert [(i, l) for i, l, _ in P.cruces] == _cruces_manual(c, c, m, 41), tipo
+        assert P.ema_c is P.ema_l                      # el pullback usa la misma media como referencia
+    # el cierre de la vela del cruce queda del lado correcto de la media
+    P = eng.preparar(df, eng.Config(media_tipo="sma", modo_senal="precio", media_unica=40))
+    m = ind.sma(c, 40)
+    assert all((c[i] - m[i]) * lado > 0 for i, lado, _ in P.cruces)
+
+
+def test_modos_nuevos_no_cambian_el_comportamiento_por_defecto():
+    df = _df()
+    base = eng.Config(sma_activo=True, adx_activo=True)
+    a = eng.ejecutar(eng.preparar(df, base), base).trades
+    b_cfg = replace(base, media_tipo="ema", modo_senal="cruce", media_unica=99)      # media_unica no interviene en "cruce"
+    b = eng.ejecutar(eng.preparar(df, b_cfg), b_cfg).trades
+    pd.testing.assert_frame_equal(a, b)
+    assert len(a) > 10
+
+
+def test_modo_precio_con_pullback_filtros_y_sin_look_ahead():
+    df = _df(5000)
+    cfg = eng.Config(media_tipo="sma", modo_senal="precio", media_unica=30, sma_activo=True, sma_periodo=100,
+                     adx_activo=True, pullback_activo=True, pullback_pct=40.0, pullback_velas=8)
+    full = eng.preparar(df, cfg)
+    r = eng.ejecutar(full, cfg)
+    assert r.cruces == r.tomados + sum(r.descartes.values()) and r.cruces > 20
+    assert r.pb["ordenes"] > 0 and r.pb["llenadas"] > 0
+    for k in (1500, 3000):
+        pref = eng.preparar(df.iloc[:k], cfg)
+        assert pref.cruces == [x for x in full.cruces if x[0] < k], k
+
+
+def test_validacion_de_media_y_modo():
+    import pytest
+    with pytest.raises(ValueError, match="SMA corta"):
+        eng.Config(media_tipo="sma", ema_corta=50, ema_larga=20).validar()
+    with pytest.raises(ValueError, match="EMA corta"):
+        eng.Config(ema_corta=50, ema_larga=20).validar()
+    eng.Config(modo_senal="precio", ema_corta=50, ema_larga=20).validar()       # en "precio" no importa corta < larga
+    with pytest.raises(ValueError):
+        eng.Config(modo_senal="precio", media_unica=1).validar()
+    with pytest.raises(ValueError):
+        eng.Config(media_tipo="wma").validar()
+    with pytest.raises(ValueError):
+        eng.Config(modo_senal="otro").validar()
+
+
+# ---------------------------------------------------------------- salida por señal (sin TP)
+def _P_senal(c, diff, sp=None, h=None, l=None, dist=2.0):
+    n = len(c)
+    c = np.asarray(c, float)
+    h = c + 0.5 if h is None else np.asarray(h, float)
+    l = c - 0.5 if l is None else np.asarray(l, float)
+    return eng.Preparado(h, l, c, np.zeros(n) if sp is None else np.asarray(sp, float), np.full(n, 1.0), np.full(n, dist),
+                         pd.date_range("2024-01-01", periods=n, freq="5min"), [], 0.0, diff=np.asarray(diff, float))
+
+
+def test_salida_senal_largo_sale_al_cierre_del_otro_lado():
+    P = _P_senal([100, 101, 103, 105, 104, 99], [1, 1, 1, 1, 1, -1])
+    tr, _ = eng.simular(P, [(0, 1)], 2.0, 0.0, None, "senal")
+    f = tr.iloc[0]
+    assert f["motivo"] == "senal" and f["salida"] == 5 and f["res"] == "SL"
+    assert abs(f["R"] - (99 - 100) / 2.0) < 1e-9 and np.isnan(f["tp"])
+
+
+def test_salida_senal_ganadora_y_corto_con_spread():
+    P = _P_senal([100, 99, 97, 95, 96, 101], [-1, -1, -1, -1, -1, 1], sp=[0.2] * 6)
+    tr, _ = eng.simular(P, [(0, -1)], 2.0, 0.0, None, "senal")
+    f = tr.iloc[0]
+    assert f["res"] == "SL" and f["salida"] == 5      # sale a 101+0.2: pierde
+    P2 = _P_senal([100, 99, 97, 95, 96], [-1, -1, -1, -1, 1], sp=[0.2] * 5, dist=10.0)
+    f2 = eng.simular(P2, [(0, -1)], 2.0, 0.0, None, "senal")[0].iloc[0]
+    assert f2["res"] == "TP" and abs(f2["R"] - (100 - 96.2) / 10.0) < 1e-9
+
+
+def test_salida_senal_el_sl_tiene_prioridad_en_la_misma_vela():
+    P = _P_senal([100, 101, 99], [1, 1, -1], l=[99.5, 100.5, 90.0], dist=2.0)
+    f = eng.simular(P, [(0, 1)], 2.0, 0.0, None, "senal")[0].iloc[0]
+    assert f["motivo"] == "sl" and f["R"] == -1.0 and f["salida"] == 2
+
+
+def test_salida_senal_no_mira_la_vela_de_entrada_y_sigue_abierta():
+    P = _P_senal([100, 101, 102, 103], [-1, 1, 1, 1])     # la vela 0 (entrada) ya estaba del otro lado: no cuenta
+    f = eng.simular(P, [(0, 1)], 2.0, 0.0, None, "senal")[0].iloc[0]
+    assert f["res"] == "ABIERTA"
+
+
+def test_salida_senal_extremo_a_extremo_con_config_precio():
+    idx = pd.date_range("2024-01-01", periods=600, freq="5min")
+    rng = np.random.default_rng(5)
+    c = 2000 + np.cumsum(rng.normal(0, 1.5, 600))
+    df = pd.DataFrame({"Open": c, "High": c + 1, "Low": c - 1, "Close": c, "Volume": 1.0}, index=idx)
+    cfg = eng.Config(media_tipo="sma", modo_senal="precio", media_unica=50, salida_modo="senal", sl_valor=3.0,
+                     spread="ninguno")
+    r = eng.ejecutar(eng.preparar(df, cfg), cfg)
+    t = r.trades
+    assert len(t) > 3 and set(t["motivo"]) <= {"senal", "sl", ""}
+    assert (t.loc[t["motivo"] == "sl", "R"] == -1.0).all()
+    s = t[t["motivo"] == "senal"]
+    assert len(s) and (s["R"] > -1.0 - 1e-9).all()
+    cfg2 = eng.Config(media_tipo="sma", modo_senal="precio", media_unica=50, salida_modo="rr", sl_valor=3.0, spread="ninguno")
+    r2 = eng.ejecutar(eng.preparar(df, cfg2), cfg2)
+    assert set(r2.trades["motivo"]) <= {"tp", "sl", ""}
+
+
+def test_salida_senal_valida_y_resumen_usa_pago_observado():
+    try:
+        eng.Config(salida_modo="x").validar()
+        assert False, "debia rechazar"
+    except ValueError:
+        pass
+    eng.Config(salida_modo="senal", rr=0.5).validar()
+    tr = pd.DataFrame({"res": ["TP", "TP", "SL"], "R": [3.0, 1.0, -1.0], "amb": [False] * 3, "motivo": ["senal"] * 3})
+    assert abs(met.resumen(tr, 5.0)["%equilibrio"] - 100 / (1 + 2.0)) < 1e-9

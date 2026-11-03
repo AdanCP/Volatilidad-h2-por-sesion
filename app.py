@@ -64,5 +64,6 @@ components.html(
 pagina = st.navigation([
     st.Page("pagina_sesiones.py", title="Sesiones XAU/USD", icon="📈", default=True),
     st.Page("app_backtest.py", title="Backtester EMA", icon="🧪"),
+    st.Page("app_backtest_sma.py", title="Backtester SMA", icon="📐"),
 ])
 pagina.run()

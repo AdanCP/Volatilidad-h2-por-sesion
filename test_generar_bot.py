@@ -165,3 +165,102 @@ def test_avisos_de_vigilancia_presentes():
                  "SIN CONEXION", "CONEXION RECUPERADA", "TRADING ALGORITMICO DESACTIVADO", "BOT DETENIDO",
                  "REINICIO:", "CHEQUEO DIARIO OK", "CHEQUEO DIARIO CON PROBLEMAS", '"INICIADO"', '"RECARGADO"', "que + \" pero DETENIDO", "FRENO DIARIO", "FRENO TOTAL", "abierta a", "TP ALCANZADO", "SL ALCANZADO", "cerrada a", "ya esta por debajo del limite de perdida total", "FiltrosTxt", "Senal descartada por los filtros", "Pullback caduco sin ejecutarse"]:
         assert frag in t, frag
+
+
+def _serie(n=1500, seed=3):
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2024-01-01", periods=n, freq="h")
+    cl = 2000 + np.cumsum(rng.normal(0, 2, n))
+    return idx, cl
+
+
+@pytest.mark.skipif(not HAY_GPP, reason="sin g++")
+@pytest.mark.parametrize("tipo,modo", [("sma", "cruce"), ("sma", "precio"), ("ema", "precio"), ("ema", "cruce")])
+def test_senal_sma_y_precio_coincide_con_python(tipo, modo):
+    c = _cfg(media_tipo=tipo, modo_senal=modo, ema_corta=9, ema_larga=21, media_unica=30)
+    t = _gen(c, "XAUUSD", "H1", 0.1)
+    assert "@@" not in t and t.count("{") == t.count("}")
+    main = '''int main(){int n;std::cin>>n;g_m=n;g_time.resize(n);g_h.resize(n);g_l.resize(n);g_c.resize(n);g_tv.resize(n);
+ for(int i=0;i<n;i++){long long tt;std::cin>>tt>>g_c[i];g_time[i]=tt;g_h[i]=g_c[i];g_l[i]=g_c[i];g_tv[i]=1;}
+ if(InpSigMode==1){ if(InpMaType==1)CalcSMA(g_c,g_m,InpMaSingle,g_ef); else CalcEMA(g_c,g_m,InpMaSingle,g_ef); ArrayCopy(g_es,g_ef);}
+ else if(InpMaType==1){CalcSMA(g_c,g_m,InpEmaFast,g_ef);CalcSMA(g_c,g_m,InpEmaSlow,g_es);}
+ else {CalcEMA(g_c,g_m,InpEmaFast,g_ef);CalcEMA(g_c,g_m,InpEmaSlow,g_es);}
+ for(int i=0;i<n;i++)printf("%d\\n",CrossAt(i));}'''
+    idx, cl = _serie()
+    n = len(cl)
+    with tempfile.TemporaryDirectory() as d:
+        exe = _compilar(t, main, d)
+        inp = f"{n}\n" + "\n".join(f"{int(ts.timestamp())} {float(x)!r}" for ts, x in zip(idx, cl))
+        out = subprocess.run([exe], input=inp, capture_output=True, text=True).stdout.split()
+    got = np.array([int(x) for x in out])
+    med = ind.sma if tipo == "sma" else ind.ema
+    if modo == "precio":
+        m = med(cl, 30); diff = cl - m; warm = 31
+    else:
+        diff = med(cl, 9) - med(cl, 21); warm = 22
+    dp = np.r_[np.nan, diff[:-1]]
+    exp = np.where((diff > 0) & (dp <= 0), 1, np.where((diff < 0) & (dp >= 0), -1, 0))
+    exp[:warm] = 0
+    assert (got == exp).all()
+    assert (got != 0).sum() > 5
+
+
+def test_magic_ema_cruce_no_cambia_y_sma_distinto():
+    a = gb._magic(_cfg(), "XAUUSD")
+    assert gb._magic(_cfg(media_tipo="sma"), "XAUUSD") != a
+    assert gb._magic(_cfg(modo_senal="precio"), "XAUUSD") != a
+
+
+def test_cabecera_y_rechazos_modo_precio():
+    t = _gen(_cfg(media_tipo="sma", modo_senal="precio", media_unica=50), "XAUUSD", "H1", 0.1)
+    assert "precio cruza la SMA 50" in t and "InpMaSingle       = 50" in t and "InpMaType         = 1" in t
+    with pytest.raises(ValueError):
+        _gen(_cfg(media_tipo="sma", modo_senal="cruce", ema_corta=30, ema_larga=20), "X", "H1", 0.1)
+
+
+def test_salida_por_senal_en_la_plantilla():
+    t = _gen(_cfg(salida_modo="senal", media_tipo="sma", modo_senal="precio", media_unica=200), "XAUUSD", "M5", 0.1)
+    assert "@@" not in t and t.count("{") == t.count("}")
+    assert "InpExitSignal     = 1" in t and "salida por cambio de lado (sin TP)" in t and "SalidaPorSenal" in t
+    t0 = _gen(_cfg(), "XAUUSD", "M5", 0.1)
+    assert "InpExitSignal     = 0" in t0 and "RR 2.0 " in t0
+    assert gb._magic(_cfg(salida_modo="senal"), "XAUUSD") != gb._magic(_cfg(), "XAUUSD")
+
+
+@pytest.mark.skipif(not HAY_GPP, reason="sin g++")
+@pytest.mark.parametrize("pb", [False, True])
+@pytest.mark.parametrize("modo,tipo", [("precio", "sma"), ("cruce", "ema")])
+def test_salida_por_senal_coincide_con_el_backtester(pb, modo, tipo):
+    idx = pd.date_range("2024-01-01", periods=1200, freq="5min")
+    rng = np.random.default_rng(11)
+    c = 2000 + np.cumsum(rng.normal(0, 1.5, 1200))
+    df = pd.DataFrame({"Open": c, "High": c + 1, "Low": c - 1, "Close": c, "Volume": 1.0}, index=idx)
+    cfg = _cfg(media_tipo=tipo, modo_senal=modo, media_unica=40, ema_corta=9, ema_larga=21, salida_modo="senal",
+               sl_valor=4.0, spread="ninguno", pullback_activo=pb, pullback_pct=50, pullback_velas=6)
+    tr = eng.ejecutar(eng.preparar(df, cfg), cfg).trades
+    tr = tr[tr["motivo"] == "senal"]
+    assert len(tr) >= 3
+    t = _gen(cfg, "XAUUSD", "M5", 0.1)
+    main = '''int main(){int n;std::cin>>n;std::vector<double> cc(n);std::vector<long long> tt(n);
+ for(int i=0;i<n;i++)std::cin>>tt[i]>>cc[i];
+ g_psec=300;int q;std::cin>>q;
+ while(q--){int side,m,pbk;long long ab;std::cin>>side>>ab>>pbk>>m;
+  g_m=m;g_time.assign(tt.begin(),tt.begin()+m);g_c.assign(cc.begin(),cc.begin()+m);
+  if(InpSigMode==1){ if(InpMaType==1)CalcSMA(g_c,g_m,InpMaSingle,g_ef); else CalcEMA(g_c,g_m,InpMaSingle,g_ef); g_es=g_ef;}
+  else {CalcEMA(g_c,g_m,InpEmaFast,g_ef);CalcEMA(g_c,g_m,InpEmaSlow,g_es);}
+  printf("%d\\n",SalidaPorSenal(side,ab,pbk==1)?1:0);}}'''
+    qs = []
+    for _, f in tr.iterrows():
+        k, j = int(f["i"]), int(f["salida"])
+        ab = int(idx[k].timestamp()) + (60 if pb else 5 * 60)       # pullback: se llena dentro de la vela k; mercado: abre la vela siguiente
+        if not pb:
+            ab = int(idx[k + 1].timestamp()) + 1
+        for m in (j, j + 1):
+            qs.append((int(f["lado"]), ab, int(pb), m))
+    with tempfile.TemporaryDirectory() as d:
+        exe = _compilar(t, main, d)
+        inp = f"{len(c)}\n" + "\n".join(f"{int(ts.timestamp())} {float(x)!r}" for ts, x in zip(idx, c)) \
+              + f"\n{len(qs)}\n" + "\n".join(" ".join(map(str, q)) for q in qs)
+        out = subprocess.run([exe], input=inp, capture_output=True, text=True).stdout.split()
+    got = [int(x) for x in out]
+    assert got == [0, 1] * len(tr)
