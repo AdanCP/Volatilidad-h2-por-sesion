@@ -317,6 +317,45 @@ def duraciones(tr: pd.DataFrame, indice) -> dict:
     return out
 
 
+def ciclos_objetivo(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comision_por_lote, capital,
+                    objetivo_pct: float = 5.0) -> dict:
+    """Cuanto tarda la estrategia en ganar el objetivo (% del balance inicial) y, si se retirara cada vez, en volver a ganarlo.
+
+    El primer ciclo arranca al inicio del periodo con el balance inicial. Cuando la ganancia acumulada de las
+    operaciones cerradas del ciclo llega al objetivo, se supone que se retira todo lo ganado (el balance vuelve al
+    inicial) y arranca otro ciclo en ese momento. Las caidas cuentan: si el ciclo baja de cero hay que recuperarlas.
+    El tiempo es calendario (incluye fines de semana) y llega hasta la vela de salida de la operacion que cruzo el
+    objetivo. El ultimo tramo, si no llego al objetivo, se devuelve como 'en_curso'.
+    Devuelve {"objetivo_usd", "objetivo_pct", "ciclos": [{"n","desde","hasta","min","ops","ganado"}], "en_curso": {...} o None}."""
+    objetivo = float(capital) * float(objetivo_pct) / 100.0
+    out = {"objetivo_usd": objetivo, "objetivo_pct": float(objetivo_pct), "ciclos": [], "en_curso": None}
+    res = tr[tr["res"].isin(["TP", "SL"])] if len(tr) else tr
+    if objetivo <= 0 or len(indice) < 2:
+        return out
+    inicio, fin = pd.Timestamp(indice[0]), pd.Timestamp(indice[-1])
+    vu = valor_por_unidad(tick_size, tick_value, lotes)
+    pnl = res["R"].to_numpy() * res["dist"].to_numpy() * vu - comision_por_lote * lotes if len(res) else np.array([])
+    salidas = [pd.Timestamp(indice[int(s)]) for s in res["salida"]] if len(res) else []
+    ini, acum, ops = inicio, 0.0, 0
+    for p, t in zip(pnl, salidas):
+        acum += float(p)
+        ops += 1
+        if acum >= objetivo - 1e-9:
+            out["ciclos"].append({"n": len(out["ciclos"]) + 1, "desde": ini, "hasta": t,
+                                  "min": (t - ini).total_seconds() / 60.0, "ops": ops, "ganado": acum})
+            ini, acum, ops = t, 0.0, 0
+    out["en_curso"] = {"desde": ini, "hasta": fin, "min": max((fin - ini).total_seconds() / 60.0, 0.0), "ops": ops,
+                       "avance": acum, "avance_pct": 100.0 * acum / float(capital), "falta_usd": objetivo - acum}
+    mins = [c["min"] for c in out["ciclos"]]
+    out["resumen"] = {"n": len(mins), "primero": mins[0] if mins else float("nan"),
+                      "medio": float(np.mean(mins)) if mins else float("nan"),
+                      "mediana": float(np.median(mins)) if mins else float("nan"),
+                      "minimo": float(min(mins)) if mins else float("nan"),
+                      "maximo": float(max(mins)) if mins else float("nan"),
+                      "retirado": float(sum(c["ganado"] for c in out["ciclos"]))}
+    return out
+
+
 def extremos_diarios(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comision_por_lote=0.0) -> dict:
     """Peor y mejor día en dinero y en R. Cada operación cuenta en el día en que se cerró (salida).
     Es sobre operaciones cerradas: no ve el flotante intradía."""

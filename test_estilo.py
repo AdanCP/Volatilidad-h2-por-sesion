@@ -137,3 +137,14 @@ def test_circulo_de_carga():
     assert "anillo-carga" in h and "&lt;b&gt;" in h
     c = v.css()
     assert "giro-carga" in c and "@NEG@" not in c and "@VIO@" not in c
+
+
+def test_campo_numerico_del_area_principal():
+    import ui_estilo as ui
+    for t in ("claro", "oscuro"):
+        ui.set_tema(t)
+        c = ui.css()
+        assert '[data-testid="stMain"] [data-testid="stNumberInput"] button{background:linear-gradient(135deg,' in c
+        assert "@ACC@" not in c and "@VIO@" not in c and "\n\n" not in c
+        assert ui.TEMAS[t]["VIOLETA"] in c        # el borde usa el violeta del tema
+    ui.set_tema("claro")

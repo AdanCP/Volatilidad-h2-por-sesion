@@ -55,7 +55,7 @@ Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los
 - **ATR.** Mide la volatilidad.
   - *Mínimo / máximo (% del precio)*: ATR dividido el cierre, por cien.
   - *Modo relativo*: compara el ATR actual con su promedio de las últimas N velas. Con mínimo 0,8 descarta el mercado dormido y con máximo 2,0 descarta la volatilidad extrema.
-- **Sesión.** Por defecto está en **24/5 (todo el mercado)**: toma cruces a cualquier hora en que el mercado esté abierto, sin filtro y sin necesitar el desfase del servidor. Con **Elegir sesiones** solo toma cruces dentro de Tokio (09-18), Londres (08-17) o Nueva York (08-17), en horario local, con el horario de verano de cada plaza. Se pueden elegir varias. Ojo: las tres juntas no equivalen a 24/5, porque dejan afuera unas 2-3 horas por día (entre el cierre de Nueva York y la apertura de Tokio).
+- **Sesión.** Con el casillero **sin marcar** (por defecto) opera **24/5, todo el mercado**: toma cruces a cualquier hora en que el mercado esté abierto, sin filtro y sin necesitar el desfase del servidor. Con el casillero **marcado** solo toma cruces dentro de Tokio (09-18), Londres (08-17) o Nueva York (08-17), en horario local, con el horario de verano de cada plaza. Se pueden elegir varias. Ojo: las tres juntas no equivalen a 24/5, porque dejan afuera unas 2-3 horas por día (entre el cierre de Nueva York y la apertura de Tokio).
   - *Desfase del servidor*: diferencia entre la hora de las velas del broker y UTC en invierno (GMT+2 → 2). **Hay que medirlo con el mercado abierto**, porque si está mal las sesiones quedan corridas.
   - *El servidor cambia con EE.UU.*: casi todos los brokers pasan de GMT+2 a GMT+3 con el verano de EE.UU.
   - En BTC el filtro se desactiva solo (opera 24/7).
@@ -109,3 +109,12 @@ El botón **Generar bot (.mq5)** descarga un Expert Advisor de MetaTrader 5 con 
 - **Límites:** una operación a la vez por magic number; no incluye slippage ni gaps, y los resultados reales pueden diferir del backtest.
 
 **Avisos al celular (notificaciones push de MT5).** El bot avisa: operación abierta (a mercado o por pullback), cierre por TP, por SL o por otro motivo (con el resultado en dinero), freno diario, freno total, rechazo al arrancar, bot iniciado (primera puesta en marcha) o recargado (cada vez que se vuelve a cargar), bot detenido (con el motivo), trading algorítmico desactivado o reactivado, pérdida y recuperación de la conexión con el servidor, reinicio tras un hueco (PC apagada, suspendida o MT5 cerrado) y un chequeo diario a las 20:00 de Argentina («CHEQUEO DIARIO OK» si todo anda, o «CON PROBLEMAS» y el motivo). Si un día no llega el chequeo de las 20:00, el bot o la PC no están funcionando. Requiere configurar el MetaQuotes ID en Herramientas → Opciones → Notificaciones.
+
+## Objetivo y retiros
+Muestra cuánto tarda la estrategia en ganar un porcentaje del balance inicial (por defecto 5 %) y, si retiraras cada vez, cuánto tarda en volver a ganarlo, hasta el final del período.
+- **Primer objetivo:** tiempo desde el inicio del período hasta que la ganancia acumulada de las operaciones cerradas llega al objetivo.
+- **Retiros logrados:** cuántas veces lo alcanzó. En cada retiro se supone que retirás todo lo ganado, así que el balance vuelve al inicial y arranca un ciclo nuevo.
+- **Tiempo medio entre retiros:** promedio, mediana, mínimo y máximo de los ciclos.
+- **Ciclo en curso:** cuánto lleva ganado el tramo final, que todavía no llegó al objetivo.
+- *Objetivo por retiro:* lo podés cambiar (por ejemplo 8 o 10 %). Se calcula sobre el **capital** cargado en la sección 4.
+- Las caídas cuentan: si el ciclo baja de cero, hay que recuperarlas antes de llegar al objetivo. El tiempo es calendario (incluye fines de semana) y es teórico: no cuenta la ganancia flotante.

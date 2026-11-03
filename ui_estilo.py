@@ -66,6 +66,11 @@ _CSS_NATIVOS = """/* widgets nativos: colores forzados para que no dependan del 
 [data-baseweb="popover"] ul,[data-baseweb="popover"] [role="listbox"],[data-baseweb="menu"]{background:@CARD@ !important;}
 [data-baseweb="popover"] li,[data-baseweb="popover"] li *{color:@TXT@ !important;}
 [data-testid="stNumberInput"] button{background:@INBG@ !important;color:@TXT@ !important;}
+[data-testid="stMain"] [data-testid="stNumberInput"] :is(input,[data-baseweb="input"],[data-baseweb="base-input"],[data-testid="stNumberInputContainer"]){background:@INBG@ !important;color:@ACC@ !important;-webkit-text-fill-color:@ACC@ !important;font-weight:800;}
+[data-testid="stMain"] [data-testid="stNumberInput"] [data-baseweb="input"]{border:1.5px solid @VIO@ !important;border-radius:12px !important;overflow:hidden;box-shadow:0 2px 10px rgba(124,92,240,.16);}
+[data-testid="stMain"] [data-testid="stNumberInput"] button{background:linear-gradient(135deg,@ACC@,@VIO@) !important;color:#fff !important;border:0 !important;border-left:1px solid rgba(255,255,255,.35) !important;border-radius:0 !important;}
+[data-testid="stMain"] [data-testid="stNumberInput"] button :is(svg,path){fill:#fff !important;color:#fff !important;}
+[data-testid="stMain"] [data-testid="stNumberInput"] button:hover{filter:brightness(1.12) saturate(1.1);}
 [data-testid="stFileUploaderDropzone"]{background:@INBG@ !important;}
 [data-testid="stFileUploaderDropzone"] :is(span,small,p,div){color:@TXT@ !important;}
 [data-testid="stExpander"] summary :is(p,span){color:@TXT@ !important;}

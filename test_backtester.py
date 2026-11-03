@@ -717,3 +717,36 @@ def test_duraciones_y_win_rate():
     assert met_.fmt_duracion(45) == "45 min" and met_.fmt_duracion(180) == "3,0 h" and met_.fmt_duracion(5000) == "3,5 d"
     vacio = met_.duraciones(tr.iloc[0:0], idx)
     assert vacio["n"] == 0 and np.isnan(vacio["win_rate"])
+
+
+def test_ciclos_objetivo_retiros():
+    import numpy as np
+    import pandas as pd
+    import metrics as met_
+    idx = pd.date_range("2024-01-01", periods=200, freq="D")
+    # tick_size 1, tick_value 1, 1 lote -> 1 US$ por unidad de precio; dist=100 -> un SL cuesta 100 US$
+    tr = pd.DataFrame({"res": ["TP", "SL", "TP", "TP", "SL", "TP", "NO"],
+                       "R": [3.0, -1.0, 3.0, 3.0, -1.0, 3.0, 0.0],
+                       "dist": [100.0] * 7,
+                       "i": [0, 10, 20, 30, 40, 50, 60], "salida": [5, 15, 25, 35, 45, 55, 65]})
+    # objetivo 5 % de 10.000 = 500 US$. Acumulado: 300, 200, 500 (dia 25 -> retiro), 300, 200, 500 (dia 55 -> retiro)
+    o = met_.ciclos_objetivo(tr, idx, 1.0, 1.0, 1.0, 0.0, 10_000.0, 5.0)
+    assert o["objetivo_usd"] == 500.0 and len(o["ciclos"]) == 2
+    c1, c2 = o["ciclos"]
+    assert c1["ops"] == 3 and abs(c1["ganado"] - 500.0) < 1e-9 and abs(c1["min"] - 25 * 1440) < 1e-6
+    assert c2["desde"] == idx[25] and c2["hasta"] == idx[55] and abs(c2["min"] - 30 * 1440) < 1e-6
+    assert o["resumen"]["n"] == 2 and abs(o["resumen"]["medio"] - 27.5 * 1440) < 1e-6 and o["resumen"]["retirado"] == 1000.0
+    assert o["en_curso"]["ops"] == 0 and o["en_curso"]["desde"] == idx[55] and o["en_curso"]["hasta"] == idx[-1]
+    # las caidas cuentan: con objetivo del 8 % (800) el acumulado 300, 200, 500, 800 lo alcanza recien en la 4.a operacion
+    o8 = met_.ciclos_objetivo(tr, idx, 1.0, 1.0, 1.0, 0.0, 10_000.0, 8.0)
+    assert len(o8["ciclos"]) == 1 and o8["ciclos"][0]["ops"] == 4 and abs(o8["ciclos"][0]["ganado"] - 800.0) < 1e-9
+    assert o8["en_curso"]["ops"] == 2 and abs(o8["en_curso"]["avance"] - 200.0) < 1e-9
+    # sin llegar al objetivo: no hay ciclos y el avance queda en curso
+    o9 = met_.ciclos_objetivo(tr, idx, 1.0, 1.0, 1.0, 0.0, 10_000.0, 50.0)
+    assert o9["ciclos"] == [] and np.isnan(o9["resumen"]["primero"]) and abs(o9["en_curso"]["avance"] - 1000.0) < 1e-9
+    # comision por lote se descuenta de cada operacion
+    oc = met_.ciclos_objetivo(tr, idx, 1.0, 1.0, 1.0, 10.0, 10_000.0, 5.0)
+    assert oc["ciclos"][0]["ops"] == 4
+    # sin operaciones o capital 0
+    assert met_.ciclos_objetivo(tr.iloc[0:0], idx, 1.0, 1.0, 1.0, 0.0, 10_000.0)["ciclos"] == []
+    assert met_.ciclos_objetivo(tr, idx, 1.0, 1.0, 1.0, 0.0, 0.0)["ciclos"] == []

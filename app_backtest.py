@@ -285,11 +285,13 @@ with st.sidebar:
                 rel_n, rel_min, rel_max = 0, 0.0, 0.0
         else:
             atr_min = atr_max = rel_n = rel_min = rel_max = 0
-        _ses_modo = st.radio("Sesión", ["24/5 (todo el mercado)", "Elegir sesiones"],
-                             help="24/5 toma cruces a cualquier hora en que el mercado esté abierto, sin filtro de sesión "
-                                  "y sin necesitar el desfase del servidor. Tokio + Londres + Nueva York juntas dejan "
-                                  "afuera unas 2-3 horas por día (después del cierre de Nueva York y antes de Tokio).")
-        ses_on = _ses_modo == "Elegir sesiones"
+        ses_on = st.checkbox("Filtro de sesión",
+                             help="Sin marcar, el bot opera 24/5: toma cruces a cualquier hora en que el mercado esté "
+                                  "abierto, sin filtro de sesión y sin necesitar el desfase del servidor. Tokio + Londres + "
+                                  "Nueva York juntas dejan afuera unas 2-3 horas por día (después del cierre de Nueva York "
+                                  "y antes de Tokio).")
+        if not ses_on:
+            st.caption("Sin marcar: 24/5, todo el mercado.")
         if ses_on:
             sesiones = st.multiselect("Sesiones permitidas", SESIONES, SESIONES)
             offset = st.number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)
@@ -750,6 +752,58 @@ if len(res):
                      f"{vis.n(_du['velas_sl'], 1)} velas · mediana {met.fmt_duracion(_du['min_mediana_sl'])}", vis.ROSA, 165))
     st.caption("El win rate es sobre las operaciones resueltas (TP o SL). La duración va desde la entrada hasta la vela en que se "
                "cerró, contada en velas (la vela de salida cuenta entera) y pasada a tiempo con la temporalidad; no incluye fines de semana.")
+
+# ------------------------------------------------------------- objetivo y retiros
+if len(res) and dinero:
+    st.write("")
+    html(vis.titulo_seccion("Objetivo y retiros", "Cuánto tarda en ganar un % del balance inicial y, si retiraras cada vez, en volver a ganarlo"))
+    _cap = float(pdin.get("capital", 0.0))
+    _c_obj, _c_eq = st.columns([1, 3])
+    with _c_obj:
+        _obj_pct = st.number_input("Objetivo por retiro (% del balance inicial)", 0.5, 100.0, 5.0, 0.5, key="obj_retiro")
+    with _c_eq:
+        if _cap > 0:
+            html(f"<div style='padding-top:2.05rem;font-size:.8rem;color:{vis.SUAVE}'>= US$ {vis.n(_cap * _obj_pct / 100, 0)} "
+                 f"sobre un balance inicial de US$ {vis.n(_cap, 0)}</div>")
+    if _cap <= 0:
+        st.info("Cargá el capital de la cuenta (sección 4 de la barra lateral) y volvé a correr para calcular el objetivo.")
+    else:
+        _ob = met.ciclos_objetivo(tr, r["P"].indice, tick_size, tick_value, lotes_u, comision_u, _cap, _obj_pct)
+        _rs, _ec, _cs = _ob["resumen"], _ob["en_curso"], _ob["ciclos"]
+        _meta = f"+{vis.n(_obj_pct, 1)}% (US$ {vis.n(_ob['objetivo_usd'], 0)})"
+        o1, o2, o3, o4 = st.columns(4)
+        with o1:
+            if _cs:
+                html(vis.kpi("Primer objetivo", met.fmt_duracion(_rs["primero"]),
+                             f"{_meta} · del {_cs[0]['desde']:%d/%m/%Y} al {_cs[0]['hasta']:%d/%m/%Y}", vis.INDIGO, 165))
+            else:
+                html(vis.kpi("Primer objetivo", "No llegó",
+                             f"{_meta} · al cierre del período iba en {vis.n(_ec['avance_pct'], 1, True)}%", vis.ROSA, 165))
+        with o2:
+            html(vis.kpi("Retiros logrados", str(_rs["n"]),
+                         f"cada vez que suma {_meta} · retirado en total US$ {vis.n(_rs['retirado'], 0)}", vis.VIOLETA, 165))
+        with o3:
+            if _cs:
+                html(vis.kpi("Tiempo medio entre retiros", met.fmt_duracion(_rs["medio"]),
+                             f"mediana {met.fmt_duracion(_rs['mediana'])} · mín {met.fmt_duracion(_rs['minimo'])} · "
+                             f"máx {met.fmt_duracion(_rs['maximo'])}", vis.AZUL, 165))
+            else:
+                html(vis.kpi("Tiempo medio entre retiros", "–", "todavía no hubo ningún retiro", vis.AZUL, 165))
+        with o4:
+            html(vis.kpi("Ciclo en curso", f"{vis.n(_ec['avance_pct'], 1, True)}%",
+                         f"desde el {_ec['desde']:%d/%m/%Y} · {met.fmt_duracion(_ec['min'])} · {_ec['ops']} op. · "
+                         f"faltan US$ {vis.n(max(_ec['falta_usd'], 0), 0)}", vis.tono(_ec["avance"]), 165))
+        if _cs:
+            with st.expander("Ver cada retiro"):
+                _filas_o = [[str(c["n"]), c["desde"].strftime("%d/%m/%Y %H:%M"), c["hasta"].strftime("%d/%m/%Y %H:%M"),
+                             met.fmt_duracion(c["min"]), str(c["ops"]),
+                             f"{vis.n(c['ganado'], 0, True)} ({vis.n(100 * c['ganado'] / _cap, 1, True)}%)"] for c in _cs]
+                html(vis.tabla_html(["#", "Desde", "Hasta", "Tiempo", "Operaciones", "Ganado (US$)"], _filas_o))
+        st.caption("Cada ciclo arranca con el balance inicial. Cuando la ganancia de las operaciones cerradas llega al objetivo se "
+                   "supone que retirás todo lo ganado (el balance vuelve al inicial) y empieza otro ciclo. Las caídas cuentan: "
+                   "si el ciclo baja de cero, primero hay que recuperarlas. Es tiempo calendario (incluye fines de semana) hasta la "
+                   "vela de salida de la operación que alcanzó el objetivo. Valores teóricos, sin contar la ganancia flotante. "
+                   "Con pocos retiros el promedio no es confiable.")
 
 # ------------------------------------------------------------- rachas
 if len(res):
