@@ -185,6 +185,26 @@ _CSS_SIDEBAR = """
 [data-testid="stSidebar"] :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button:not(:disabled):hover{
   filter:brightness(1.2) saturate(1.12);transform:translateY(-2px);
   box-shadow:0 0 0 3px @SIDETXT@,0 0 22px 6px @GLOW@;}
+/* «Cargar configuración»: el contenedor del selector es el botón (alto fijo, igual al de guardar); el selector real
+   queda encima, invisible, para recibir el clic y los archivos arrastrados */
+[data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"]{
+  position:relative;height:2.5rem !important;min-height:2.5rem !important;box-sizing:border-box;overflow:hidden;
+  padding:0 !important;margin:0 !important;background:@BTNG@ !important;border-radius:12px;box-shadow:0 4px 14px @GLOW@;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  transition:filter .15s,transform .15s,box-shadow .15s;}
+[data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"]::before{
+  content:"📂 Cargar configuración";color:@BTNTXT@;font-family:"Source Sans","Source Sans Pro",sans-serif;
+  font-weight:700;font-size:.9rem;line-height:1.6;pointer-events:none;}
+[data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"]{
+  position:absolute !important;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;}
+[data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"] :is(label,[data-testid="stWidgetLabel"],
+  [data-testid="stFileUploaderFile"],[data-testid="stFileUploaderFileList"]){display:none !important;}
+[data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"]:hover{
+  filter:brightness(1.2) saturate(1.12);transform:translateY(-2px);box-shadow:0 0 0 3px @SIDETXT@,0 0 22px 6px @GLOW@;}
+/* «Generar bot»: es la acción final, va más grande y con más peso */
+[data-testid="stSidebar"] .st-key-bot_gen :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button{
+  min-height:3.8rem;border-radius:14px;box-shadow:0 8px 24px @GLOW@;}
+[data-testid="stSidebar"] .st-key-bot_gen button :is(p,span,div){font-size:1.2rem;font-weight:800;letter-spacing:.01em;}
 [data-testid="stSidebarNav"] a{border-radius:10px;}
 [data-testid="stSidebarNav"] a span{color:@SIDETXT@ !important;}
 [data-testid="stSidebarNav"] a[aria-current="page"]{background:@VEILB@;}
@@ -212,6 +232,17 @@ button[kind="primary"]:hover,[data-testid="stBaseButton-primary"]:hover{filter:b
 button[kind="secondary"]:hover,[data-testid="stBaseButton-secondary"]:hover{background:@HEAD@;border-color:@ACC@;color:@ACC@;
   transform:translateY(-2px);box-shadow:0 0 0 3px @CARD@,0 0 0 5px @ACC@,0 10px 22px @SHADOW@;}
 button:active{transform:translateY(0);filter:brightness(.97);}
+/* fila de acciones del backtester: botones secundarios con borde degradé, a juego con «Correr backtest» */
+.st-key-fila_bt button[kind="secondary"],.st-key-fila_bt [data-testid="stBaseButton-secondary"]{
+  border:1.5px solid transparent !important;border-radius:12px;
+  background:linear-gradient(@CARD@,@CARD@) padding-box,@BTNG@ border-box !important;
+  box-shadow:0 4px 14px @GLOW@;min-height:2.6rem;}
+.st-key-fila_bt button[kind="secondary"] :is(p,span,div){color:@ACC@ !important;font-weight:700;white-space:normal;line-height:1.2;}
+.st-key-fila_bt button[kind="secondary"]:not(:disabled):hover{
+  background:@BTNG@ border-box !important;transform:translateY(-2px);filter:brightness(1.12) saturate(1.1);
+  box-shadow:0 0 0 3px @CARD@,0 0 0 5px @ACC@,0 10px 22px @GLOW@;}
+.st-key-fila_bt button[kind="secondary"]:not(:disabled):hover :is(p,span,div){color:@BTNTXT@ !important;}
+.st-key-fila_bt button[kind="secondary"]:disabled{opacity:.5;box-shadow:none;cursor:not-allowed;}
 [data-testid="stDataFrame"]{border-radius:12px;overflow:hidden;}
 [data-testid="stExpander"]{background:@CARD@;border-radius:14px;border:0;box-shadow:0 4px 16px @SHADOW2@;}
 /* componentes propios */

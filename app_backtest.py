@@ -22,6 +22,7 @@ import streamlit as st
 
 import data
 import engine as eng
+import config_io as cio
 import exportar_ia as xia
 import generar_bot as gb
 import metrics as met
@@ -114,6 +115,75 @@ estado.setdefault("res", None)
 estado.setdefault("comp", None)
 estado.setdefault("abl", None)
 estado.setdefault("vista", "bt")      # pantalla: bt = backtest, abl = ablación, comp = comparación
+
+estado.setdefault("cfg_cargada", {})   # valores de la configuración cargada desde archivo (clave del campo -> valor)
+estado.setdefault("cfg_n", 0)          # cambia con cada carga: renueva el selector de archivo
+estado.setdefault("cfg_wk", {})        # clave del campo -> clave interna del widget (para limpiar al cargar)
+estado.setdefault("cfg_msg", None)
+
+# ------------------------------------------------- guardar / cargar configuración
+# Los campos de las secciones 3 a 7 pasan por _W: cada uno recibe una clave estable (derivada de su título), se anota su
+# valor en _REG para guardarlo, y si hay una configuración cargada se usa su valor como valor inicial.
+_CARGADA = estado.get("cfg_cargada") or {}
+_REG, _WK, _VISTOS = {}, {}, {}
+
+
+def _sv(clave):
+    """Valor actual de un campo con clave propia; si todavía no se dibujó (recién cargada una configuración), el cargado."""
+    return st.session_state.get(clave, _CARGADA.get(clave))
+
+
+def _clave_unica(label):
+    base = cio.slug(label)
+    _VISTOS[base] = _VISTOS.get(base, 0) + 1
+    return base if _VISTOS[base] == 1 else f"{base}_{_VISTOS[base]}"
+
+
+def _envolver(dg, tipo):
+    f = getattr(dg, tipo)
+
+    def g(label, *a, **k):
+        clave = k.get("key") or _clave_unica(label)
+        wk = k.get("key") or f"cfg_{_PFX}{clave}"
+        k0 = {**k, "key": wk}
+        a1, k1, cambio = a, k0, False
+        if clave in _CARGADA:
+            a1, k1 = cio.con_valor(tipo, a, k0, _CARGADA[clave])
+            cambio = (tuple(a1), k1) != (tuple(a), k0)
+        try:
+            val = f(label, *a1, **k1)
+        except Exception:                       # un valor guardado que ya no encaja: se usa el de fábrica
+            if not cambio:
+                raise
+            val = f(label, *a, **k0)
+        _REG[clave], _WK[clave] = val, wk
+        return val
+    return g
+
+
+class _W:
+    """Igual que st (o una columna), pero con los campos de configuración envueltos."""
+    def __init__(self, dg):
+        self._dg = dg
+
+    def __getattr__(self, n):
+        return _envolver(self._dg, n) if n in cio.TIPOS else getattr(self._dg, n)
+
+
+def _cargar_cfg(clave_up):
+    f = st.session_state.get(clave_up)
+    if f is None:
+        return
+    vals, err = cio.leer(f.getvalue(), TIPO)
+    if err:
+        estado.cfg_msg = ("error", err)
+        return
+    for wk in estado.get("cfg_wk", {}).values():      # los campos vuelven a nacer con los valores del archivo
+        st.session_state.pop(wk, None)
+    estado.cfg_cargada = vals
+    estado.cfg_n = estado.cfg_n + 1
+    estado.cfg_msg = ("ok", f"Configuración cargada ({len(vals)} campos). Los que no estaban en el archivo quedaron como de fábrica.")
+
 
 st.markdown(vis.css(), unsafe_allow_html=True)
 
@@ -217,25 +287,25 @@ with st.sidebar:
     with st.expander("3. Señal y gestión", expanded=False):
         modo_senal, media_unica = "cruce", 50
         if ES_SMA:
-            modo_senal = {"Cruce de dos SMA": "cruce", "Precio cruza una SMA": "precio"}[st.radio(
+            modo_senal = {"Cruce de dos SMA": "cruce", "Precio cruza una SMA": "precio"}[_W(st).radio(
                 "Señal", ["Cruce de dos SMA", "Precio cruza una SMA"],
                 help="Cruce de dos SMA: la corta cruza a la larga. Precio cruza una SMA: el cierre de la vela pasa de un lado "
                      "al otro de la media (alcista si pasa a estar encima). En los dos casos se entra al cierre de esa vela.")]
         if modo_senal == "precio":
-            media_unica = st.number_input("Período de la SMA", 2, 1000, 50)
+            media_unica = _W(st).number_input("Período de la SMA", 2, 1000, 50)
             ema_c, ema_l = 20, 50                   # no intervienen en este modo
         else:
             c1, c2 = st.columns(2)
-            ema_c = c1.number_input(f"{MEDIA} corta", 2, 500, 20 if ES_SMA else 13)
-            ema_l = c2.number_input(f"{MEDIA} larga", 3, 1000, 50 if ES_SMA else 34)
-        direccion = DIRECCIONES[st.selectbox("Dirección", list(DIRECCIONES))]
+            ema_c = _W(c1).number_input(f"{MEDIA} corta", 2, 500, 20 if ES_SMA else 13)
+            ema_l = _W(c2).number_input(f"{MEDIA} larga", 3, 1000, 50 if ES_SMA else 34)
+        direccion = DIRECCIONES[_W(st).selectbox("Dirección", list(DIRECCIONES))]
         st.divider()
         _sal_cruce = modo_senal == "cruce"
         _op_sal = "Cuando las medias se cruzan en sentido contrario" if _sal_cruce else "Cuando el precio cambia de lado de la media"
         _k_sal = f"salida_tp_{modo_senal}"
         # Primero va el Stop Loss y después el Take Profit; la salida elegida se lee de session_state (el radio se dibuja más abajo).
-        salida_modo = "senal" if str(st.session_state.get(_k_sal, "")).startswith("Cuando") else "rr"
-        sl_modo = st.radio("Stop Loss (SL) en", [SL_ATR, SL_PCT, SL_USD, SL_EMA],
+        salida_modo = "senal" if str(_sv(_k_sal)).startswith("Cuando") else "rr"
+        sl_modo = _W(st).radio("Stop Loss (SL) en", [SL_ATR, SL_PCT, SL_USD, SL_EMA],
                                help="Distancia a una media: el SL queda fijo en el nivel de la media (al entrar) más o menos una "
                                     "distancia en pips o en dólares de precio. Los otros modos miden el SL desde el precio de entrada.")
         sl_ema_ref, sl_ema_unidad = "larga", "precio"
@@ -245,28 +315,28 @@ with st.sidebar:
             if modo_senal == "precio":
                 st.caption(f"Media de referencia: la {MEDIA} de {int(media_unica)} períodos.")
             else:
-                sl_ema_ref = {f"{MEDIA} corta": "corta", f"{MEDIA} larga": "larga"}[st.radio(
+                sl_ema_ref = {f"{MEDIA} corta": "corta", f"{MEDIA} larga": "larga"}[_W(st).radio(
                     "Media de referencia", [f"{MEDIA} corta", f"{MEDIA} larga"], index=1, horizontal=True)]
-            sl_ema_unidad = {"Pips": "pips", "Dólares (precio)": "precio"}[st.radio(
+            sl_ema_unidad = {"Pips": "pips", "Dólares (precio)": "precio"}[_W(st).radio(
                 "Distancia en", ["Pips", "Dólares (precio)"], horizontal=True,
                 help="Pips: 1 pip = 10 puntos = 10 × tick_size del símbolo (en el oro 0,10; en EURUSD 0,0001). "
                      "Dólares (precio): la distancia en el precio del activo (en el oro, 3 = el precio se mueve 3,00).")]
-            sl_valor = st.number_input("Distancia a la media (pips)" if sl_ema_unidad == "pips" else "Distancia a la media (dólares de precio)",
+            sl_valor = _W(st).number_input("Distancia a la media (pips)" if sl_ema_unidad == "pips" else "Distancia a la media (dólares de precio)",
                                        0.0, 1_000_000.0, 30.0 if sl_ema_unidad == "pips" else 3.0, 1.0 if sl_ema_unidad == "pips" else 0.5)
             st.caption("El SL queda fijo en la media menos la distancia (compras) o más la distancia (ventas), con la media de la "
                        "vela de la señal. Si al entrar la media quedó del lado equivocado del precio, esa señal no se opera.")
         elif sl_modo == SL_USD:
-            sl_usd = st.number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
+            sl_usd = _W(st).number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
             sl_valor = sl_usd
         else:
-            sl_valor = st.number_input("Valor del SL", 0.01, 100.0, 1.5 if sl_modo == SL_ATR else 0.5, 0.1)
+            sl_valor = _W(st).number_input("Valor del SL", 0.01, 100.0, 1.5 if sl_modo == SL_ATR else 0.5, 0.1)
 
         st.divider()
         _OP_RR, _OP_USD = "Objetivo fijo: RR (1:x)", "Objetivo fijo: US$ por operación"
         _opciones = [_OP_RR] + ([_OP_USD] if sl_modo == SL_USD else []) + [_op_sal]   # el TP en US$ pide el SL en dólares fijos
         if st.session_state.get(_k_sal) not in _opciones:
             st.session_state.pop(_k_sal, None)
-        salida_txt = st.radio(
+        salida_txt = _W(st).radio(
             "Take Profit (TP) en", _opciones, key=_k_sal,
             help="Objetivo fijo: TP a una distancia fija del SL (en múltiplos del riesgo, RR, o en US$ por operación; el de US$ "
                  "necesita el SL en dólares fijos). " + (
@@ -283,73 +353,73 @@ with st.sidebar:
                        "Sin TP fijo: la operación dura hasta que una vela cierra del otro lado de la media o toca el SL.")
         elif salida_txt == _OP_USD:
             tp_modo = TP_USD
-            tp_usd = st.number_input("Take Profit (US$ por operación)", 1.0, 10_000_000.0, 200.0, 10.0)
+            tp_usd = _W(st).number_input("Take Profit (US$ por operación)", 1.0, 10_000_000.0, 200.0, 10.0)
             rr = tp_usd / sl_usd
             st.caption(f"Relación TP/SL: {rr:.2f}")
         else:
-            rr = st.number_input("RR (1:x)", 0.1 if sl_modo == SL_EMA else 1.0, 50.0 if sl_modo == SL_EMA else 10.0, 2.0, 0.5)
+            rr = _W(st).number_input("RR (1:x)", 0.1 if sl_modo == SL_EMA else 1.0, 50.0 if sl_modo == SL_EMA else 10.0, 2.0, 0.5)
             if sl_modo != SL_USD:
                 st.caption("El TP en US$ por operación está disponible con el SL en dólares fijos.")
         st.divider()
-        pb_on = st.checkbox(f"Entrar en pullback a la {MEDIA} (opcional)",
+        pb_on = _W(st).checkbox(f"Entrar en pullback a la {MEDIA} (opcional)",
                             help="Apagado: se entra al cierre de la vela del cruce, como siempre. Encendido: el cruce sigue "
                                  f"siendo la señal, pero la entrada se hace cuando el precio retrocede hacia la {MEDIA}.")
         pb_pct, pb_ema, pb_velas = 50, "corta", 10
         if pb_on:
-            pb_pct = st.number_input(f"Retroceso hacia la {MEDIA} (%)", 0, 100, 50, 5,
+            pb_pct = _W(st).number_input(f"Retroceso hacia la {MEDIA} (%)", 0, 100, 50, 5,
                                      help="0 = entrar al cierre (igual que sin pullback). 100 = entrar recién cuando el precio "
                                           f"toca la {MEDIA}. Se mide sobre la distancia entre el extremo posterior al cruce y la {MEDIA}.")
             if modo_senal == "cruce":
-                pb_ema = {"Corta": "corta", "Larga": "larga"}[st.radio(f"{MEDIA} de referencia", ["Corta", "Larga"], horizontal=True)]
-            pb_velas = st.number_input("Caducidad (velas)", 1, 200, 10,
+                pb_ema = {"Corta": "corta", "Larga": "larga"}[_W(st).radio(f"{MEDIA} de referencia", ["Corta", "Larga"], horizontal=True)]
+            pb_velas = _W(st).number_input("Caducidad (velas)", 1, 200, 10,
                                        help="Si en estas velas el precio no hizo el retroceso, la orden se cancela. También "
                                             "se cancela si aparece un cruce en sentido contrario.")
             st.caption("Con pullback, el filtro de sesión se evalúa cuando se ejecuta la entrada.")
         st.divider()
         # El ATR solo interviene si el SL va en múltiplos de ATR o si algún filtro lo usa (los filtros se definen más abajo:
         # sus valores ya están en session_state al comienzo de cada ejecución).
-        usa_atr = (sl_modo == SL_ATR or bool(st.session_state.get("f_atr"))
-                   or (bool(st.session_state.get("f_sma")) and float(st.session_state.get("f_sma_dist", 0) or 0) > 0)
-                   or (bool(st.session_state.get("f_vwap")) and float(st.session_state.get("f_vwap_dist", 0) or 0) > 0))
-        atr_per = st.number_input("Período ATR (compartido)", 2, 200, 14, disabled=not usa_atr,
+        usa_atr = (sl_modo == SL_ATR or bool(_sv("f_atr"))
+                   or (bool(_sv("f_sma")) and float((_sv("f_sma_dist") or 0) or 0) > 0)
+                   or (bool(_sv("f_vwap")) and float((_sv("f_vwap_dist") or 0) or 0) > 0))
+        atr_per = _W(st).number_input("Período ATR (compartido)", 2, 200, 14, disabled=not usa_atr,
                                   help="Es un solo valor para toda la estrategia: lo usan el SL en múltiplos de ATR, el filtro ATR y la distancia mínima a la SMA o al VWAP.")
         if not usa_atr:
             st.caption("Desactivado: con SL en dólares o en % del precio y sin filtros que usen ATR, este valor no interviene.")
 
     with st.expander("4. Lotaje y dinero", expanded=False):
-        lotes = st.number_input("Lotes", 0.01, 1000.0, 0.10, 0.01, format="%.2f")
+        lotes = _W(st).number_input("Lotes", 0.01, 1000.0, 0.10, 0.01, format="%.2f")
         tick_size_man, tick_value_man = 0.01, 1.0
         if any(s not in specs for s in datos):
-            tick_size_man = st.number_input("tick_size del símbolo", 0.00001, value=0.01, format="%.5f")
-            tick_value_man = st.number_input("tick_value (US$ por tick con 1 lote)", 0.00001, value=1.0, format="%.5f")
+            tick_size_man = _W(st).number_input("tick_size del símbolo", 0.00001, value=0.01, format="%.5f")
+            tick_value_man = _W(st).number_input("tick_value (US$ por tick con 1 lote)", 0.00001, value=1.0, format="%.5f")
             st.caption("Sin MT5 directo no se conocen estos datos: los valores por defecto son los del oro. "
                        "En MT5: clic derecho en el símbolo → Especificación.")
         else:
             st.caption("tick_size, tick_value y el paso de lote se leen de cada símbolo en MT5.")
-        comision = st.number_input("Comisión por lote (US$)", 0.0, value=0.0)
-        capital = st.number_input("Capital de la cuenta (US$)", 0.0, 100_000_000.0, 100_000.0, 1000.0)
+        comision = _W(st).number_input("Comisión por lote (US$)", 0.0, value=0.0)
+        capital = _W(st).number_input("Capital de la cuenta (US$)", 0.0, 100_000_000.0, 100_000.0, 1000.0)
         st.caption("Capital inicial: sobre él se calculan los límites de pérdida y se estima, en la conclusión final, "
                    "el riesgo de tocarlos.")
         st.markdown("**Reglas de la cuenta**")
-        reglas_on = st.checkbox("Aplicar reglas de cuenta en el backtest", value=True,
+        reglas_on = _W(st).checkbox("Aplicar reglas de cuenta en el backtest", value=True,
                                 help="Tildado: el backtest simula la cuenta en orden cronológico y respeta los límites y controles de "
                                      "abajo (las operaciones bloqueadas no cuentan). Destildado: funciona como hasta ahora, sin "
                                      "cuenta. Los valores quedan cargados y el bot de MT5 los usa igual.")
         MODOS_DIA = ["Trailing", "Estático"]
         MODOS_TOT = ["Estático", "Trailing"]
-        perd_dia = st.number_input("Pérdida diaria máx. (%)", 0.0, 100.0, 5.0, 0.5)
-        modo_dia = {MODOS_DIA[0]: "trailing", MODOS_DIA[1]: "estatico"}[st.radio(
+        perd_dia = _W(st).number_input("Pérdida diaria máx. (%)", 0.0, 100.0, 5.0, 0.5)
+        modo_dia = {MODOS_DIA[0]: "trailing", MODOS_DIA[1]: "estatico"}[_W(st).radio(
             "Modo diario", MODOS_DIA, horizontal=True,
             help="Trailing: el límite es un % del balance con el que empezó el día y se recalcula cada día. "
                  "Estático: un monto fijo en dólares (el % del capital inicial) que se resta del balance de inicio del día.")]
         st.caption("0 = sin límite. Se vigila el equity (incluye lo flotante). En FTMO es el 5% del capital.")
-        perd_tot = st.number_input("Pérdida total máx. (%)", 0.0, 100.0, 10.0, 0.5)
-        modo_tot = {MODOS_TOT[0]: "estatico", MODOS_TOT[1]: "trailing"}[st.radio(
+        perd_tot = _W(st).number_input("Pérdida total máx. (%)", 0.0, 100.0, 10.0, 0.5)
+        modo_tot = {MODOS_TOT[0]: "estatico", MODOS_TOT[1]: "trailing"}[_W(st).radio(
             "Modo total", MODOS_TOT, horizontal=True,
             help="Estático: el piso es fijo (capital inicial menos el %). Trailing: el piso sube con "
                  "el balance máximo alcanzado y nunca baja.")]
         st.caption("0 = sin límite. En FTMO es el 10% del capital inicial y el piso no sube.")
-        colchon = st.number_input("Colchón antes del límite (%)", 0.0, 50.0, 1.0, 0.5)
+        colchon = _W(st).number_input("Colchón antes del límite (%)", 0.0, 50.0, 1.0, 0.5)
         st.caption("Se resta a los dos límites: el bot y el backtest frenan ese margen antes del límite real, para cubrir "
                    "saltos de precio y slippage. Con 5% y colchón 1%, frena en 4%.")
         _ef_d = max(perd_dia - colchon, 0.0) if perd_dia > 0 else 0.0
@@ -361,78 +431,78 @@ with st.sidebar:
             _txt_t = (f"total {_ef_t:g} %" + (f" (piso US$ {capital * (1 - _ef_t / 100):,.0f})".replace(",", ".")
                                               if modo_tot == "estatico" else " (desde el máximo)") if _ef_t else "total: sin límite")
             st.info(f"**Límites efectivos** (los usan el backtest y el bot)\n\n- {_txt_d}\n- {_txt_t}")
-        proteger = st.checkbox("No abrir si el SL, perdiendo al máximo, rompe un límite", value=True,
+        proteger = _W(st).checkbox("No abrir si el SL, perdiendo al máximo, rompe un límite", value=True,
                                help="Evita que una sola operación lleve la cuenta por debajo del límite diario o total. "
                                     "Sin esto, una operación abierta se cierra cuando el equity toca el límite.")
-        riesgo_on = st.checkbox("Riesgo máximo por operación (% del capital)",
+        riesgo_on = _W(st).checkbox("Riesgo máximo por operación (% del capital)",
                                 help="Si el riesgo del SL de una operación supera este porcentaje, la operación se saltea. "
                                      "Los lotes siguen siendo fijos.")
-        riesgo_pct = st.number_input("Máximo por operación (%)", 0.05, 100.0, 1.0, 0.25, disabled=not riesgo_on)
-        pausa_on = st.checkbox("Tiempo mínimo tras una pérdida (minutos)",
+        riesgo_pct = _W(st).number_input("Máximo por operación (%)", 0.05, 100.0, 1.0, 0.25, disabled=not riesgo_on)
+        pausa_on = _W(st).checkbox("Tiempo mínimo tras una pérdida (minutos)",
                                help="Después de una operación que cierra en pérdida, las señales que caen dentro de este "
                                     "tiempo se descartan.")
-        pausa_min = st.number_input("Minutos sin operar tras una pérdida", 0.0, 100_000.0, 60.0, 5.0, disabled=not pausa_on)
-        offset_dia = st.number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="offset_dia")
+        pausa_min = _W(st).number_input("Minutos sin operar tras una pérdida", 0.0, 100_000.0, 60.0, 5.0, disabled=not pausa_on)
+        offset_dia = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="offset_dia")
         st.caption("Sirve para cortar el día a medianoche de Europa Central (hora CE(S)T), como FTMO. Medilo con el "
                    "mercado abierto; es el mismo dato del filtro de sesión.")
         limite_pct = perd_tot
 
     with st.expander("5. Costos", expanded=False):
-        spread = SPREADS[st.selectbox("Spread", list(SPREADS))]
-        spread_fijo = st.number_input("Spread fijo (unid. de precio)", 0.0, value=0.3) if spread == "fijo" else 0.0
-        costo_extra = st.number_input("Costo extra por operación (unid. de precio)", 0.0, value=0.0)
+        spread = SPREADS[_W(st).selectbox("Spread", list(SPREADS))]
+        spread_fijo = _W(st).number_input("Spread fijo (unid. de precio)", 0.0, value=0.3) if spread == "fijo" else 0.0
+        costo_extra = _W(st).number_input("Costo extra por operación (unid. de precio)", 0.0, value=0.0)
 
     with st.expander("6. Filtros (independientes)", expanded=False):
-        sma_on = st.checkbox("Filtro SMA", key="f_sma")
+        sma_on = _W(st).checkbox("Filtro SMA", key="f_sma")
         if sma_on:
-            sma_per = st.number_input("Período SMA", 2, 1000, 200)
-            sma_dist = st.number_input("Distancia mínima al cierre (múltiplos de ATR, 0 = sin)", 0.0, value=0.0, step=0.1, key="f_sma_dist")
-            sma_pend = st.number_input("Pendiente a favor: N velas (0 = sin)", 0, 500, 0)
+            sma_per = _W(st).number_input("Período SMA", 2, 1000, 200)
+            sma_dist = _W(st).number_input("Distancia mínima al cierre (múltiplos de ATR, 0 = sin)", 0.0, value=0.0, step=0.1, key="f_sma_dist")
+            sma_pend = _W(st).number_input("Pendiente a favor: N velas (0 = sin)", 0, 500, 0)
         else:
             sma_per, sma_dist, sma_pend = 200, 0.0, 0
-        vwap_on = st.checkbox("Filtro VWAP (diario)", key="f_vwap")
+        vwap_on = _W(st).checkbox("Filtro VWAP (diario)", key="f_vwap")
         if vwap_on:
-            vwap_dist = st.number_input("Distancia mínima al VWAP (múltiplos de ATR, 0 = sin)", 0.0, value=0.5, step=0.1, key="f_vwap_dist",
+            vwap_dist = _W(st).number_input("Distancia mínima al VWAP (múltiplos de ATR, 0 = sin)", 0.0, value=0.5, step=0.1, key="f_vwap_dist",
                                         help="Regla práctica habitual: exigir al menos 0,5 ATR de distancia para no operar en la zona de ruido pegada al VWAP.")
-            vwap_min = st.number_input("Minutos mínimos desde el inicio del día", 0, 1440, 30, 5,
+            vwap_min = _W(st).number_input("Minutos mínimos desde el inicio del día", 0, 1440, 30, 5,
                                        help="No se filtra en los primeros minutos del día: al abrir el VWAP es casi igual al precio. "
                                             "Práctica habitual: ignorar la primera media hora.")
             st.caption("VWAP del día (precio típico × volumen de ticks), reiniciado en cada día del servidor. "
                        "Largos solo con el cierre sobre el VWAP; cortos solo debajo. Necesita velas menores a D1.")
         else:
             vwap_dist, vwap_min = 0.5, 30
-        adx_on = st.checkbox("Filtro ADX")
+        adx_on = _W(st).checkbox("Filtro ADX")
         if adx_on:
-            adx_per = st.number_input("Período ADX", 2, 100, 14)
-            adx_min = st.number_input("ADX mínimo", 0.0, 100.0, 20.0)
-            adx_max = st.number_input("ADX máximo (0 = sin)", 0.0, 100.0, 0.0)
-            adx_cre = st.number_input("ADX creciente: N velas (0 = sin)", 0, 200, 0)
+            adx_per = _W(st).number_input("Período ADX", 2, 100, 14)
+            adx_min = _W(st).number_input("ADX mínimo", 0.0, 100.0, 20.0)
+            adx_max = _W(st).number_input("ADX máximo (0 = sin)", 0.0, 100.0, 0.0)
+            adx_cre = _W(st).number_input("ADX creciente: N velas (0 = sin)", 0, 200, 0)
         else:
             adx_per, adx_min, adx_max, adx_cre = 14, 20.0, 0.0, 0
-        rango_on = st.checkbox("Filtro de rango (ratio de eficiencia)", key="f_rango",
+        rango_on = _W(st).checkbox("Filtro de rango (ratio de eficiencia)", key="f_rango",
                                help="Mide cuánto avanzó el precio en las últimas N velas respecto de todo lo que se movió: 1 = tendencia "
                                     "limpia, 0 = va y viene sin avanzar (rango). Si el ratio es menor al mínimo, la señal no se opera.")
         if rango_on:
-            rango_vent = st.number_input("Ventana (velas)", 2, 500, 20, key="rango_vent")
-            rango_min = st.number_input("Ratio mínimo (0 a 1)", 0.0, 1.0, 0.30, 0.05, format="%.2f", key="rango_min")
+            rango_vent = _W(st).number_input("Ventana (velas)", 2, 500, 20, key="rango_vent")
+            rango_min = _W(st).number_input("Ratio mínimo (0 a 1)", 0.0, 1.0, 0.30, 0.05, format="%.2f", key="rango_min")
             st.caption("Valor de partida: ventana 20, mínimo 0,30. Más alto = más exigente (opera menos). "
                        "Se parece al ADX: probá uno u otro con la ablación antes de usar los dos.")
         else:
             rango_vent, rango_min = 20, 0.30
-        atr_on = st.checkbox("Filtro ATR", key="f_atr")
+        atr_on = _W(st).checkbox("Filtro ATR", key="f_atr")
         if atr_on:
-            atr_min = st.number_input("ATR mínimo (% del precio, 0 = sin)", 0.0, value=0.0, step=0.01, format="%.3f")
-            atr_max = st.number_input("ATR máximo (% del precio, 0 = sin)", 0.0, value=0.0, step=0.01, format="%.3f")
-            rel_on = st.checkbox("Modo relativo (ATR / promedio de N velas)")
+            atr_min = _W(st).number_input("ATR mínimo (% del precio, 0 = sin)", 0.0, value=0.0, step=0.01, format="%.3f")
+            atr_max = _W(st).number_input("ATR máximo (% del precio, 0 = sin)", 0.0, value=0.0, step=0.01, format="%.3f")
+            rel_on = _W(st).checkbox("Modo relativo (ATR / promedio de N velas)")
             if rel_on:
-                rel_n = st.number_input("N velas", 5, 500, 100)
-                rel_min = st.number_input("Relativo mínimo", 0.0, value=0.8, step=0.1)
-                rel_max = st.number_input("Relativo máximo", 0.0, value=2.0, step=0.1)
+                rel_n = _W(st).number_input("N velas", 5, 500, 100)
+                rel_min = _W(st).number_input("Relativo mínimo", 0.0, value=0.8, step=0.1)
+                rel_max = _W(st).number_input("Relativo máximo", 0.0, value=2.0, step=0.1)
             else:
                 rel_n, rel_min, rel_max = 0, 0.0, 0.0
         else:
             atr_min = atr_max = rel_n = rel_min = rel_max = 0
-        ses_on = st.checkbox("Filtro de sesión",
+        ses_on = _W(st).checkbox("Filtro de sesión",
                              help="Sin marcar, el bot opera 24/5: toma cruces a cualquier hora en que el mercado esté "
                                   "abierto, sin filtro de sesión y sin necesitar el desfase del servidor. Tokio + Londres + "
                                   "Nueva York juntas dejan afuera unas 2-3 horas por día (después del cierre de Nueva York "
@@ -440,9 +510,9 @@ with st.sidebar:
         if not ses_on:
             st.caption("Sin marcar: 24/5, todo el mercado.")
         if ses_on:
-            sesiones = st.multiselect("Sesiones permitidas", SESIONES, SESIONES)
-            offset = st.number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)
-            dst = st.checkbox("El servidor cambia de hora con EE.UU.", True)
+            sesiones = _W(st).multiselect("Sesiones permitidas", SESIONES, SESIONES)
+            offset = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)
+            dst = _W(st).checkbox("El servidor cambia de hora con EE.UU.", True)
             st.caption("Confirmá el desfase midiéndolo con el mercado abierto. Los horarios de "
                        "las sesiones se mueven con el horario de verano de cada plaza. En BTC el "
                        "filtro se desactiva solo (opera 24/7).")
@@ -450,8 +520,27 @@ with st.sidebar:
             sesiones, offset, dst = list(SESIONES), None, True
 
     with st.expander("7. Control de sobreajuste", expanded=False):
-        oos = st.slider("Out-of-sample reservado (%)", 10, 50, 30)
-        azar_n = st.number_input("Repeticiones del azar", 20, 500, 100, 20)
+        oos = _W(st).slider("Out-of-sample reservado (%)", 10, 50, 30)
+        azar_n = _W(st).number_input("Repeticiones del azar", 20, 500, 100, 20)
+
+
+    # ---- guardar y cargar la configuración
+    st.markdown('<div class="fte">Configuración</div>', unsafe_allow_html=True)
+    estado.cfg_wk = dict(_WK)
+    st.download_button("💾 Guardar configuración", cio.a_bytes(TIPO, _REG),
+                       file_name=f"ACPTester_config_{MEDIA}_{int(ema_c)}-{int(ema_l)}.json" if modo_senal == "cruce"
+                       else f"ACPTester_config_{MEDIA}_{int(media_unica)}.json",
+                       mime="application/json", use_container_width=True, key=f"cfg_dl_{_PFX}",
+                       help="Baja un archivo con todos los parámetros de las secciones 3 a 7 (señal, SL, TP, dinero, costos, "
+                            "filtros y sobreajuste). No incluye la fuente de datos ni los símbolos.")
+    _k_up = f"cfg_up_{_PFX}{estado.cfg_n}"
+    with st.container(key="cfg_cargar"):        # el selector de archivo se dibuja como un botón (ver ui_estilo)
+        st.file_uploader("Cargar configuración", type=["json"], key=_k_up, on_change=_cargar_cfg, args=(_k_up,),
+                         label_visibility="collapsed")
+    _m = estado.get("cfg_msg")
+    if _m:
+        (st.success if _m[0] == "ok" else st.error)(_m[1])
+        estado.cfg_msg = None
 
 
 def params_dinero(simbolo: str) -> dict:
@@ -585,12 +674,13 @@ with st.expander("📖 Guía de cada campo"):
         st.caption("No se encontró guia_campos.md junto a la app.")
 
 st.write("")
-b1, b2, b3, b4 = st.columns(4)
+with st.container(key="fila_bt"):
+    b1, b2, b3, b4 = st.columns(4)
 slot_descarga = b4.empty()          # el botón de descarga se llena al final, cuando ya están los resultados
 correr = b1.button("Correr backtest", type="primary")
 if correr:
     estado.vista = "bt"
-abl = b2.button("Modo ablación (cruce solo + cada filtro)")
+abl = b2.button("Modo ablación", help="El cruce solo y el efecto de cada filtro, uno por uno.")
 comp = b3.button("Comparar símbolos", disabled=len(datos) < 2)
 
 
@@ -641,15 +731,17 @@ with st.sidebar:
         _motivo = ("Con datos sintéticos no se genera bot." if fuente == ETQ_SINT
                    else gb.motivo_rechazo(_vd_bot, _tf_bot))
         if _motivo:
-            st.button("⚙️ Generar bot (.mq5)", disabled=True, use_container_width=True)
+            with st.container(key="bot_gen"):
+                st.button("⚙️ Generar bot (.mq5)", disabled=True, use_container_width=True)
             st.caption(_motivo)
         else:
             _mq5 = gb.generar_mq5(_cfg_bot, activo, _tf_bot, float(lotes),
                                   float(sl_usd) if sl_modo == SL_USD else None, _vd_bot,
                                   capital=float(capital), limite_pct=float(limite_pct))
-            st.download_button("⚙️ Generar bot (.mq5)", _mq5.encode("utf-8"),
-                               file_name=gb.nombre_archivo(activo, _tf_bot), mime="text/plain",
-                               use_container_width=True)
+            with st.container(key="bot_gen"):
+                st.download_button("⚙️ Generar bot (.mq5)", _mq5.encode("utf-8"),
+                                   file_name=gb.nombre_archivo(activo, _tf_bot), mime="text/plain",
+                                   use_container_width=True)
             st.caption("Veredicto del backtest: " + _vd_bot["titulo"] + ". El bot opera solo y con parámetros fijos: "
                        "se niega a arrancar si el símbolo, la temporalidad, el lote o el horario del servidor no coinciden. "
                        "Compilalo en MetaEditor (F7) y probalo en demo.")
