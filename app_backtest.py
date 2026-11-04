@@ -22,6 +22,7 @@ import streamlit as st
 
 import data
 import engine as eng
+import exportar_ia as xia
 import generar_bot as gb
 import metrics as met
 import ui_estilo as vis
@@ -584,12 +585,36 @@ with st.expander("📖 Guía de cada campo"):
         st.caption("No se encontró guia_campos.md junto a la app.")
 
 st.write("")
-b1, b2, b3 = st.columns(3)
+b1, b2, b3, b4 = st.columns(4)
+slot_descarga = b4.empty()          # el botón de descarga se llena al final, cuando ya están los resultados
 correr = b1.button("Correr backtest", type="primary")
 if correr:
     estado.vista = "bt"
 abl = b2.button("Modo ablación (cruce solo + cada filtro)")
 comp = b3.button("Comparar símbolos", disabled=len(datos) < 2)
+
+
+def _boton_descarga():
+    """Descarga ZIP (informe.md + operaciones.csv + resultados) para analizar con una IA. Usa el último backtest corrido."""
+    paq = estado.get("paquete_ia")
+    if paq is None:
+        slot_descarga.button("Descargar análisis (IA)", disabled=True, use_container_width=True,
+                             help="Corré el backtest para poder descargar el análisis.", key="dl_ia_off")
+        return
+    r_, cfg_, act_, pdin_, vered_, relato_, meta_, obj_ = paq
+    try:
+        md, ops, res_csv = xia.informe(r_, cfg_, act_, pdin_, meta_, vered_, relato_, obj_,
+                                       estado.get("abl"), estado.get("comp"), nombre_app="ACPTester")
+        zbytes = xia.zip_informe(md, ops, res_csv)
+    except Exception as e:      # el informe nunca debe tirar la página
+        slot_descarga.button("Descargar análisis (IA)", disabled=True, use_container_width=True,
+                             help=f"No se pudo armar el informe: {e}", key="dl_ia_err")
+        return
+    slot_descarga.download_button("Descargar análisis (IA)", zbytes,
+                                  file_name=f"ACPTester_{MEDIA}_{act_}_{date.today():%Y%m%d}.zip",
+                                  mime="application/zip", use_container_width=True, key="dl_ia",
+                                  help="ZIP con la estrategia, los parámetros y todos los resultados de la página, "
+                                       "más las operaciones una por una, listo para pasárselo a una IA.")
 
 if correr:
     try:
@@ -677,6 +702,7 @@ if estado.vista == "abl" and estado.abl is not None:
         html(vis.tabla_df(tabla_abl, dec=3, nombre_indice="Configuración"))
     if omitidos:
         st.warning(f"Omitidos: {', '.join(omitidos)}. (Sesión necesita el desfase del servidor; VWAP necesita velas menores a D1.)")
+    _boton_descarga()
     st.stop()
 
 if estado.comp is not None and len(estado.comp) != 3:      # versión anterior: se descarta
@@ -758,9 +784,11 @@ if estado.comp is not None and estado.vista == "comp":
              + "".join(f"<li>{n_}</li>" for n_ in dict.fromkeys(notas_c)) + "</ul>")
     with st.expander("Ver tabla de la comparación"):
         html(vis.tabla_df(tabla_c, dec=3, nombre_indice="Símbolo"))
+    _boton_descarga()
     st.stop()
 
 if estado.res is None:
+    _boton_descarga()
     st.stop()
 
 # ------------------------------------------------------------------ resultado
@@ -1178,3 +1206,9 @@ with st.expander("Supuestos y limitaciones"):
         "ticks reales es la validación final.\n"
         "- En índices hay gaps de apertura y pausas diarias que el backtest no modela.\n"
         "- Resultados pasados no garantizan resultados futuros.")
+
+# ------------------------------------------------------------- descarga para IA
+estado.paquete_ia = (r, cfg_usada, act_res, pdin, veredicto, relato,
+                     {"media": MEDIA, "fuente": fuente, "tf": tf_txt, "regla": regla, "oos": oos, "azar_n": int(azar_n)},
+                     float(globals().get("_obj_pct", 5.0)))
+_boton_descarga()
