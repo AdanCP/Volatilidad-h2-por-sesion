@@ -16,6 +16,7 @@ import io
 import os
 from datetime import date
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -291,10 +292,55 @@ with st.sidebar:
         else:
             st.caption("tick_size, tick_value y el paso de lote se leen de cada símbolo en MT5.")
         comision = st.number_input("Comisión por lote (US$)", 0.0, value=0.0)
-        capital = st.number_input("Capital de la cuenta (US$)", 0.0, 100_000_000.0, 100_000.0, 1000.0,
-                                  help="Se usa en la conclusión final para estimar el riesgo de tocar la pérdida máxima.")
-        limite_pct = st.number_input("Pérdida máxima permitida (% del capital)", 0.0, 100.0, 10.0, 1.0,
-                                     help="En FTMO la pérdida máxima total es del 10% del capital inicial.")
+        capital = st.number_input("Capital de la cuenta (US$)", 0.0, 100_000_000.0, 100_000.0, 1000.0)
+        st.caption("Capital inicial: sobre él se calculan los límites de pérdida y se estima, en la conclusión final, "
+                   "el riesgo de tocarlos.")
+        st.markdown("**Reglas de la cuenta**")
+        reglas_on = st.checkbox("Aplicar reglas de cuenta en el backtest", value=True,
+                                help="Tildado: el backtest simula la cuenta en orden cronológico y respeta los límites y controles de "
+                                     "abajo (las operaciones bloqueadas no cuentan). Destildado: funciona como hasta ahora, sin "
+                                     "cuenta. Los valores quedan cargados y el bot de MT5 los usa igual.")
+        MODOS_DIA = ["Trailing", "Estático"]
+        MODOS_TOT = ["Estático", "Trailing"]
+        perd_dia = st.number_input("Pérdida diaria máx. (%)", 0.0, 100.0, 5.0, 0.5)
+        modo_dia = {MODOS_DIA[0]: "trailing", MODOS_DIA[1]: "estatico"}[st.radio(
+            "Modo diario", MODOS_DIA, horizontal=True,
+            help="Trailing: el límite es un % del balance con el que empezó el día y se recalcula cada día. "
+                 "Estático: un monto fijo en dólares (el % del capital inicial) que se resta del balance de inicio del día.")]
+        st.caption("0 = sin límite. Se vigila el equity (incluye lo flotante). En FTMO es el 5% del capital.")
+        perd_tot = st.number_input("Pérdida total máx. (%)", 0.0, 100.0, 10.0, 0.5)
+        modo_tot = {MODOS_TOT[0]: "estatico", MODOS_TOT[1]: "trailing"}[st.radio(
+            "Modo total", MODOS_TOT, horizontal=True,
+            help="Estático: el piso es fijo (capital inicial menos el %). Trailing: el piso sube con "
+                 "el balance máximo alcanzado y nunca baja.")]
+        st.caption("0 = sin límite. En FTMO es el 10% del capital inicial y el piso no sube.")
+        colchon = st.number_input("Colchón antes del límite (%)", 0.0, 50.0, 1.0, 0.5)
+        st.caption("Se resta a los dos límites: el bot y el backtest frenan ese margen antes del límite real, para cubrir "
+                   "saltos de precio y slippage. Con 5% y colchón 1%, frena en 4%.")
+        _ef_d = max(perd_dia - colchon, 0.0) if perd_dia > 0 else 0.0
+        _ef_t = max(perd_tot - colchon, 0.0) if perd_tot > 0 else 0.0
+        if (0 < perd_dia <= colchon) or (0 < perd_tot <= colchon):
+            st.error("El colchón tiene que ser menor que los límites.")
+        else:
+            _txt_d = (f"diario {_ef_d:g} % (US$ {_ef_d / 100 * capital:,.0f})".replace(",", ".") if _ef_d else "diario: sin límite")
+            _txt_t = (f"total {_ef_t:g} %" + (f" (piso US$ {capital * (1 - _ef_t / 100):,.0f})".replace(",", ".")
+                                              if modo_tot == "estatico" else " (desde el máximo)") if _ef_t else "total: sin límite")
+            st.info(f"**Límites efectivos** (los usan el backtest y el bot)\n\n- {_txt_d}\n- {_txt_t}")
+        proteger = st.checkbox("No abrir si el SL, perdiendo al máximo, rompe un límite", value=True,
+                               help="Evita que una sola operación lleve la cuenta por debajo del límite diario o total. "
+                                    "Sin esto, una operación abierta se cierra cuando el equity toca el límite.")
+        riesgo_on = st.checkbox("Riesgo máximo por operación (% del capital)",
+                                help="Si el riesgo del SL de una operación supera este porcentaje, la operación se saltea. "
+                                     "Los lotes siguen siendo fijos.")
+        riesgo_pct = st.number_input("Máximo por operación (%)", 0.05, 100.0, 1.0, 0.25, disabled=not riesgo_on)
+        pausa_on = st.checkbox("Tiempo mínimo tras una pérdida (minutos)",
+                               help="Después de una operación que cierra en pérdida, las señales que caen dentro de este "
+                                    "tiempo se descartan.")
+        pausa_min = st.number_input("Minutos sin operar tras una pérdida", 0.0, 100_000.0, 60.0, 5.0, disabled=not pausa_on)
+        offset_dia = st.number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="offset_dia")
+        st.caption("Sirve para cortar el día a medianoche de Europa Central (hora CE(S)T), como FTMO. Medilo con el "
+                   "mercado abierto; es el mismo dato del filtro de sesión.")
+        limite_pct = perd_tot
 
     with st.expander("5. Costos", expanded=False):
         spread = SPREADS[st.selectbox("Spread", list(SPREADS))]
@@ -398,7 +444,14 @@ def construir_config(simbolo: str = None) -> eng.Config:
         atr_activo=atr_on, atr_unidad="pct", atr_min=float(atr_min) or None, atr_max=float(atr_max) or None,
         atr_rel_n=int(rel_n), atr_rel_min=float(rel_min) or None, atr_rel_max=float(rel_max) or None,
         sesion_activo=ses_on, sesiones=tuple(sesiones),
-        servidor_offset_horas=offset if ses_on else None, servidor_dst_eeuu=dst)
+        servidor_offset_horas=offset if ses_on else (offset_dia if reglas_on else None), servidor_dst_eeuu=dst,
+        reglas_activas=bool(reglas_on), capital=float(capital),
+        usd_por_unidad=float(met.valor_por_unidad(p["tick_size"], p["tick_value"], lotes)),
+        comision_op_usd=float(comision) * float(lotes),
+        perd_dia_pct=float(perd_dia), perd_dia_modo=modo_dia, perd_tot_pct=float(perd_tot), perd_tot_modo=modo_tot,
+        colchon_pct=float(colchon), proteger_sl=bool(proteger),
+        riesgo_op_activo=bool(riesgo_on), riesgo_op_pct=float(riesgo_pct),
+        pausa_activa=bool(pausa_on), pausa_min=float(pausa_min))
 
 
 # ------------------------------------------------------------------ cuerpo
@@ -687,6 +740,35 @@ with c3:
 with c4:
     html(vis.kpi("Máx. drawdown", vis.n(tt["maxDD_R"], 1) + " R", f"racha máxima de SL: {int(tt['racha_SL'])}", vis.ROSA))
 
+if cfg_usada.reglas_activas and r.get("cuenta"):
+    _cu = r["cuenta"]
+    _cap_u = float(cfg_usada.capital)
+    _dias_tot = int(len(np.unique(r["P"].dia))) if r["P"].dia is not None else 0
+    _salt = (_cu["saltadas_dia"] + _cu["saltadas_proteccion"] + _cu["saltadas_riesgo"] + _cu["saltadas_pausa"])
+    if _cu["quemada"]:
+        st.error(f"Con estas reglas la cuenta se habría quemado el {str(r['P'].indice[int(_cu['quemada_en'])])[:10]}: "
+                 "el resultado termina ahí y el resto del período no se opera.")
+    st.write("")
+    html(vis.titulo_seccion("Reglas de la cuenta", "Qué hicieron los límites y controles en el período (tramo «Todo»)"))
+    q1, q2, q3, q4 = st.columns(4)
+    with q1:
+        html(vis.kpi("Días bloqueados", vis.n(_cu["dias_bloqueados"], 0), f"por el límite diario, de {_dias_tot} días",
+                     vis.ROSA if _cu["dias_bloqueados"] else vis.INDIGO, 140))
+    with q2:
+        html(vis.kpi("Señales salteadas", vis.n(_salt, 0),
+                     f"{_cu['saltadas_dia']} día bloqueado · {_cu['saltadas_proteccion']} protección · "
+                     f"{_cu['saltadas_riesgo']} riesgo · {_cu['saltadas_pausa']} pausa", vis.VIOLETA, 140))
+    with q3:
+        html(vis.kpi("Cuenta quemada", "Sí" if _cu["quemada"] else "No",
+                     (f"{_cu['forzadas']} cierres forzados por límite" if _cu["forzadas"] else "límite total no alcanzado"),
+                     vis.ROSA if _cu["quemada"] else vis.INDIGO, 140))
+    with q4:
+        html(vis.kpi("Peor día", vis.n(_cu["peor_dia_usd"], 0, True) + " US$",
+                     f"{vis.n(100 * _cu['peor_dia_usd'] / _cap_u, 1, True)} % del capital · balance mínimo "
+                     f"{vis.n(100 * (_cu['balance_min'] - _cap_u) / _cap_u, 1, True)} %", vis.tono(_cu["peor_dia_usd"]), 140))
+    st.caption("Cada tramo (todo, in-sample, out-of-sample) y cada corrida al azar arranca con una cuenta nueva. "
+               "Dentro de una vela no se conoce el máximo flotante, así que los límites del día se aplican de forma aproximada.")
+
 st.write("")
 if len(res):
     g1, g2 = st.columns([2, 1])
@@ -924,6 +1006,12 @@ relato = vd.describir(cfg_usada, act_res, tf_txt, r["P"].indice[0], r["P"].indic
                       dinero["neto"] if dinero else None, int(tt["resueltas"]), int(tt["TP"]), int(tt["SL"]),
                       float(tt["exp_R"]) if tt["exp_R"] == tt["exp_R"] else 0.0,
                       dinero["max_drawdown"] if dinero else None, sl_usd_u, tp_usd_u)
+if cfg_usada.reglas_activas and r.get("cuenta"):
+    _cu2 = r["cuenta"]
+    _ed, _et = cfg_usada.limites_efectivos()
+    relato += (f"<br><br>Con las reglas de cuenta aplicadas (límite diario {vis.n(_ed, 1)} %, total {vis.n(_et, 1)} %): "
+               f"{_cu2['dias_bloqueados']} días bloqueados, {_cu2['saltadas_dia'] + _cu2['saltadas_proteccion'] + _cu2['saltadas_riesgo'] + _cu2['saltadas_pausa']} "
+               f"señales salteadas y la cuenta " + ("<b>se habría quemado</b>." if _cu2["quemada"] else "no se quemó."))
 html(vis.titulo_seccion("Conclusión final", "Qué habría pasado, si vale la pena intentarla y con qué probabilidad"))
 html(vis.tarjeta("Qué habría pasado", f'<div style="font-size:.95rem;line-height:1.6;color:{vis.TEXTO}">{relato}</div>',
                  "Resultado teórico sobre datos pasados: no incluye slippage ni gaps."))
