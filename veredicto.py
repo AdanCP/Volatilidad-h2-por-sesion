@@ -145,6 +145,8 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         if cfg.adx_creciente_n > 0:
             x += f", creciente ({cfg.adx_creciente_n} velas)"
         filtros.append(x)
+    if cfg.rango_activo:
+        filtros.append(f"rango: ratio de eficiencia({cfg.rango_ventana}) ≥ {n(cfg.rango_min, 2)}")
     if cfg.atr_activo:
         x = "ATR"
         if cfg.atr_min:

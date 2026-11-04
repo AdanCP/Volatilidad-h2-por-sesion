@@ -374,6 +374,16 @@ with st.sidebar:
             adx_cre = st.number_input("ADX creciente: N velas (0 = sin)", 0, 200, 0)
         else:
             adx_per, adx_min, adx_max, adx_cre = 14, 20.0, 0.0, 0
+        rango_on = st.checkbox("Filtro de rango (ratio de eficiencia)", key="f_rango",
+                               help="Mide cuánto avanzó el precio en las últimas N velas respecto de todo lo que se movió: 1 = tendencia "
+                                    "limpia, 0 = va y viene sin avanzar (rango). Si el ratio es menor al mínimo, la señal no se opera.")
+        if rango_on:
+            rango_vent = st.number_input("Ventana (velas)", 2, 500, 20, key="rango_vent")
+            rango_min = st.number_input("Ratio mínimo (0 a 1)", 0.0, 1.0, 0.30, 0.05, format="%.2f", key="rango_min")
+            st.caption("Valor de partida: ventana 20, mínimo 0,30. Más alto = más exigente (opera menos). "
+                       "Se parece al ADX: probá uno u otro con la ablación antes de usar los dos.")
+        else:
+            rango_vent, rango_min = 20, 0.30
         atr_on = st.checkbox("Filtro ATR", key="f_atr")
         if atr_on:
             atr_min = st.number_input("ATR mínimo (% del precio, 0 = sin)", 0.0, value=0.0, step=0.01, format="%.3f")
@@ -441,6 +451,7 @@ def construir_config(simbolo: str = None) -> eng.Config:
         sma_activo=sma_on, sma_periodo=int(sma_per), sma_dist_min_atr=float(sma_dist), sma_pendiente_n=int(sma_pend),
         adx_activo=adx_on, adx_periodo=int(adx_per), adx_min=float(adx_min),
         adx_max=float(adx_max) or None, adx_creciente_n=int(adx_cre),
+        rango_activo=rango_on, rango_ventana=int(rango_vent), rango_min=float(rango_min),
         atr_activo=atr_on, atr_unidad="pct", atr_min=float(atr_min) or None, atr_max=float(atr_max) or None,
         atr_rel_n=int(rel_n), atr_rel_min=float(rel_min) or None, atr_rel_max=float(rel_max) or None,
         sesion_activo=ses_on, sesiones=tuple(sesiones),
@@ -609,7 +620,7 @@ if estado.vista == "abl" and estado.abl is not None:
     for nombre, fila in tabla_abl.iterrows():
         filas += [(f"{nombre} · todo", fila["exp_R"]), (f"{nombre} · OOS", fila["exp_R_OOS"], vis.VIOLETA)]
     tarjeta_html(f"Ablación de {act_abl}: expectativa en R", vis.barras_divergentes(filas),
-                 "Los filtros se miden con parámetros fijos (SMA 200, VWAP diario sin distancia, ADX mínimo 20, ATR relativo de 100 "
+                 "Los filtros se miden con parámetros fijos (SMA 200, VWAP diario sin distancia, ADX mínimo 20, rango con ventana 20 y mínimo 0,30, ATR relativo de 100 "
                  "velas entre 0,8 y 2,0). El aporte es el de esos valores, no el del filtro en general.")
     with st.expander("Ver tabla de la ablación"):
         html(vis.tabla_df(tabla_abl, dec=3, nombre_indice="Configuración"))
@@ -815,7 +826,7 @@ if len(res):
         else:
             _pasos += [("Operaciones tomadas", tt["resueltas"] + tt["abiertas"])]
         cuerpo = vis.embudo(_pasos + [("Llegaron a TP", tt["TP"])])
-        _nombres = {"sma": "SMA", "adx": "ADX", "atr": "ATR", "sesion": "Sesión"}
+        _nombres = {"sma": "SMA", "adx": "ADX", "rango": "Rango", "atr": "ATR", "sesion": "Sesión"}
         _txt = []
         if r["descartes"]:
             _txt.append("Descartadas por filtro: " + " · ".join(f"{_nombres.get(k, k)} {int(v_)}" for k, v_ in r["descartes"].items()) + ".")

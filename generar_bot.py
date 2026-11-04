@@ -107,7 +107,7 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
                    f"total {_f(g_tot, 1)} % ({'estatico' if cfg.perd_tot_modo == 'estatico' else 'trailing'}), colchon {_f(cfg.colchon_pct, 1)} % "
                    "(ya restado) | corte del dia: medianoche de Europa Central")
     act = [n for n, on in (("SMA", cfg.sma_activo), ("VWAP", cfg.vwap_activo), ("ADX", cfg.adx_activo),
-                           ("ATR", cfg.atr_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo())) if on]
+                           ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo())) if on]
     cab.append("// Filtros/opciones activos: " + (", ".join(act) if act else "ninguno"))
     cab.append(f"// Veredicto del backtester: {_sin_ascii(veredicto.get('titulo', ''))}")
     cab.append("// Parametros FIJOS: para cambiarlos hay que regenerar el bot desde la app (no se editan a mano).")
@@ -139,6 +139,7 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "VWAP_ON": _b(cfg.vwap_activo), "VWAP_DIST": _f(cfg.vwap_dist_min_atr, 4), "VWAP_MIN": _f(cfg.vwap_min_minutos, 2),
         "ADX_ON": _b(cfg.adx_activo), "ADX_PER": str(int(cfg.adx_periodo)), "ADX_MIN": _f(cfg.adx_min, 4),
         "ADX_MAX": _f(cfg.adx_max or 0.0, 4), "ADX_CRE": str(int(cfg.adx_creciente_n)),
+        "ER_ON": _b(cfg.rango_activo), "ER_WIN": str(int(cfg.rango_ventana)), "ER_MIN": _f(cfg.rango_min, 4),
         "ATR_ON": _b(cfg.atr_activo), "ATR_MIN": _f(cfg.atr_min or 0.0, 6), "ATR_MAX": _f(cfg.atr_max or 0.0, 6),
         "ATR_REL_N": str(int(cfg.atr_rel_n)), "ATR_REL_MIN": _f(cfg.atr_rel_min or 0.0, 4),
         "ATR_REL_MAX": _f(cfg.atr_rel_max or 0.0, 4),
@@ -225,6 +226,9 @@ const int             InpAdxPeriod      = @@ADX_PER@@;    // ADX: periodo
 const double          InpAdxMin         = @@ADX_MIN@@;    // ADX: minimo
 const double          InpAdxMax         = @@ADX_MAX@@;    // ADX: maximo (0 = sin)
 const int             InpAdxRisingN     = @@ADX_CRE@@;    // ADX: creciente en N velas (0 = sin)
+const bool            InpRangeOn        = @@ER_ON@@;      // Filtro de rango (ratio de eficiencia)
+const int             InpRangeWindow    = @@ER_WIN@@;     // Rango: ventana en velas
+const double          InpRangeMin       = @@ER_MIN@@;     // Rango: ratio minimo (0 a 1)
 
 const bool            InpAtrOn          = @@ATR_ON@@;     // Filtro ATR
 const double          InpAtrMinPct      = @@ATR_MIN@@;    // ATR minimo (% del precio, 0 = sin)
@@ -260,7 +264,7 @@ const double SENT = -1.0e300;          // "sin dato" (equivale a NaN en el backt
 
 datetime g_time[];
 double   g_h[], g_l[], g_c[], g_tv[];
-double   g_ef[], g_es[], g_atr[], g_sma[], g_adx[], g_vwap[], g_vmin[], g_atrm[];
+double   g_ef[], g_es[], g_atr[], g_sma[], g_adx[], g_er[], g_vwap[], g_vmin[], g_atrm[];
 int      g_m = 0;                      // velas CERRADAS disponibles (la ultima es la senal)
 datetime g_lastBar = 0;
 
@@ -323,6 +327,20 @@ void CalcSMA(const double &x[], const int m, const int p, double &out[])
       suma += x[t];
       if(t >= p) suma -= x[t - p];
       out[t] = (t >= p - 1) ? suma / p : SENT;
+   }
+}
+
+// Ratio de eficiencia de Kaufman: |cierre[t] - cierre[t-p]| / suma de |cierre[k] - cierre[k-1]| (k = t-p+1..t). Recorrido 0 -> 0.
+void CalcEfficiency(const int p, double &out[])
+{
+   ArrayResize(out, g_m);
+   double recorrido = 0.0;
+   for(int t = 0; t < g_m; t++)
+   {
+      if(t >= 1) recorrido += MathAbs(g_c[t] - g_c[t - 1]);
+      if(t > p) recorrido -= MathAbs(g_c[t - p] - g_c[t - p - 1]);
+      if(t < p) { out[t] = SENT; continue; }
+      out[t] = (recorrido > 0.0) ? MathAbs(g_c[t] - g_c[t - p]) / recorrido : 0.0;
    }
 }
 
@@ -493,6 +511,7 @@ int MaxWarm()
    int w = (InpSigMode == 1 ? InpMaSingle : InpEmaSlow) + 1;
    if(InpSmaOn) w = MathMax(w, InpSmaPeriod + MathMax(InpSmaSlopeN, 0));
    if(InpAdxOn) w = MathMax(w, 2 * InpAdxPeriod + MathMax(InpAdxRisingN, 0) + 1);
+   if(InpRangeOn) w = MathMax(w, InpRangeWindow + 1);
    if(InpAtrOn && InpAtrRelN > 0) w = MathMax(w, InpAtrRelN + InpAtrPeriod);
    return w;
 }
@@ -542,6 +561,7 @@ bool LoadData()
    CalcWilder(tr, g_m, InpAtrPeriod, g_atr);
    if(InpSmaOn) CalcSMA(g_c, g_m, InpSmaPeriod, g_sma);
    if(InpAdxOn) CalcADX(InpAdxPeriod, g_adx);
+   if(InpRangeOn) CalcEfficiency(InpRangeWindow, g_er);
    if(InpVwapOn) CalcVWAP(PeriodSeconds());
    if(InpAtrOn && InpAtrRelN > 0) CalcRollingMean(g_atr, g_m, InpAtrRelN, g_atrm);
    return true;
@@ -595,6 +615,11 @@ bool OkAdx(const int i)
    return g_adx[i] > g_adx[i - InpAdxRisingN];
 }
 
+bool OkRange(const int i)
+{
+   return V(g_er[i]) && g_er[i] >= InpRangeMin;
+}
+
 bool OkAtr(const int i)
 {
    const double v = g_atr[i] / g_c[i] * 100.0;
@@ -608,13 +633,14 @@ bool OkAtr(const int i)
    return true;
 }
 
-// orden de los filtros = el del backtester: sesion, SMA, VWAP, ADX, ATR
+// orden de los filtros = el del backtester: sesion, SMA, VWAP, ADX, rango, ATR
 bool PassFilters(const int i, const int side, const bool withSession)
 {
    if(InpSesOn && withSession && !InSession(g_time[i])) return false;
    if(InpSmaOn && !OkSma(i, side)) return false;
    if(InpVwapOn && !OkVwap(i, side)) return false;
    if(InpAdxOn && !OkAdx(i)) return false;
+   if(InpRangeOn && !OkRange(i)) return false;
    if(InpAtrOn && !OkAtr(i)) return false;
    return true;
 }
@@ -639,6 +665,9 @@ string FiltrosTxt(const int i, const int side, const bool withSession)
    if(InpAdxOn)
       r += Sep(r) + "ADX " + DoubleToString(g_adx[i], 1) + " (min " + DoubleToString(InpAdxMin, 0) + ") "
            + (OkAdx(i) ? "ok" : "RECHAZA");
+   if(InpRangeOn)
+      r += Sep(r) + "Rango (eficiencia " + (V(g_er[i]) ? DoubleToString(g_er[i], 2) : "n/d") + ", min " + DoubleToString(InpRangeMin, 2) + ") "
+           + (OkRange(i) ? "ok" : "RECHAZA");
    if(InpAtrOn)
       r += Sep(r) + "ATR " + (OkAtr(i) ? "ok" : "RECHAZA") + " (" + DoubleToString(g_atr[i] / g_c[i] * 100.0, 3) + " % del precio)";
    if(r == "") r = "sin filtros activos";

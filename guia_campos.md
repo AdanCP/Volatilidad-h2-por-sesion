@@ -69,6 +69,12 @@ Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los
   - *Mínimo*: descarta los cruces con ADX bajo (por ejemplo menor a 20, mercado sin tendencia).
   - *Máximo*: descarta tendencias ya muy extendidas (0 = sin límite).
   - *Creciente N velas*: pide que el ADX actual sea mayor que hace N velas.
+- **Filtro de rango (ratio de eficiencia).** Detecta si el precio está en rango (va y viene sin avanzar) y, si es así, no opera la señal.
+  - Mide, sobre las últimas *N* velas, cuánto avanzó el precio en línea recta (|cierre actual − cierre hace N velas|) dividido por todo lo que recorrió (la suma de los movimientos de vela a vela). Da un número de 0 a 1: **1 = tendencia limpia**, **0 = ida y vuelta sin avanzar**.
+  - *Ventana*: cuántas velas mira (20 por defecto). Más chica reacciona más rápido y es más ruidosa; más grande es más estable pero más lenta.
+  - *Ratio mínimo*: por debajo de este valor la señal se descarta (0,30 por defecto). Más alto = más exigente, opera menos.
+  - Usa solo datos hasta la vela de la señal, igual que en el bot. Como todo filtro, reconoce el rango un poco tarde y puede perder alguna ruptura.
+  - Se parece al ADX (los dos miden fuerza de tendencia): conviene probar uno u otro con el modo ablación y mirar el out-of-sample, y usar los dos juntos solo si la mejora es clara.
 - **ATR.** Mide la volatilidad.
   - *Mínimo / máximo (% del precio)*: ATR dividido el cierre, por cien.
   - *Modo relativo*: compara el ATR actual con su promedio de las últimas N velas. Con mínimo 0,8 descarta el mercado dormido y con máximo 2,0 descarta la volatilidad extrema.
@@ -114,7 +120,7 @@ Al final del resultado, la app arma tres cosas:
 
 ### Generar bot (barra lateral, debajo de los menús)
 
-El botón **Generar bot (.mq5)** descarga un Expert Advisor de MetaTrader 5 con los valores que tenés cargados: EMAs, dirección, SL y TP, lotes, filtros (SMA, VWAP, ADX, ATR, sesión) y pullback. Solo arma texto, así que funciona también en la versión online y no necesita MT5.
+El botón **Generar bot (.mq5)** descarga un Expert Advisor de MetaTrader 5 con los valores que tenés cargados: EMAs, dirección, SL y TP, lotes, filtros (SMA, VWAP, ADX, rango, ATR, sesión) y pullback. Solo arma texto, así que funciona también en la versión online y no necesita MT5.
 
 **Cómo usarlo:** copiá el archivo a `MQL5/Experts` (en MT5: Archivo → Abrir carpeta de datos), abrilo en MetaEditor y compilá con F7. Antes de operar, corrélo en el Strategy Tester y compará con la app; después probalo en demo.
 

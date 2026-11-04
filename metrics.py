@@ -107,6 +107,7 @@ FILTROS_ABLACION = {
     "SMA": dict(sma_activo=True),
     "VWAP": dict(vwap_activo=True),
     "ADX": dict(adx_activo=True),
+    "Rango (ratio de eficiencia)": dict(rango_activo=True, rango_ventana=20, rango_min=0.30),
     "ATR relativo": dict(atr_activo=True, atr_rel_n=100, atr_rel_min=0.8, atr_rel_max=2.0),
     "Sesion": dict(sesion_activo=True),
 }

@@ -59,3 +59,21 @@ def vwap_diario(h, l, c, vol, dia):
     v = pd.Series(w).groupby(np.asarray(dia)).cumsum().to_numpy()
     nro = pd.Series(np.ones(len(tp))).groupby(np.asarray(dia)).cumsum().to_numpy()
     return pv / v, nro
+
+
+def eficiencia(c, ventana: int):
+    """Ratio de eficiencia de Kaufman en cada vela: |cierre[i] - cierre[i-N]| / suma de |cierre[k] - cierre[k-1]| (k = i-N+1 .. i).
+    Va de 0 (el precio va y viene sin avanzar: rango) a 1 (movimiento limpio en una sola direccion).
+    Si el precio no se movio en toda la ventana (recorrido 0) vale 0. Las primeras N velas quedan en NaN."""
+    c = np.asarray(c, float)
+    n = len(c)
+    out = np.full(n, np.nan)
+    if n <= ventana:
+        return out
+    paso = np.abs(np.diff(c, prepend=np.nan))                   # paso[k] = |c[k] - c[k-1]|; paso[0] = NaN
+    recorrido = pd.Series(paso).rolling(ventana).sum().to_numpy()
+    neto = np.abs(c - np.r_[np.full(ventana, np.nan), c[:-ventana]])
+    ok = ~np.isnan(recorrido) & ~np.isnan(neto)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out[ok] = np.where(recorrido[ok] > 0, neto[ok] / recorrido[ok], 0.0)
+    return out

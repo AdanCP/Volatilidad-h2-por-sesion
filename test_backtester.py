@@ -178,6 +178,50 @@ def test_filtros_adx_y_atr_extremos_descartan_todo():
     assert P.cruces and all(m == "atr" for _, _, m in P.cruces)
 
 
+def test_eficiencia_contra_calculo_manual_y_extremos():
+    # tendencia limpia = 1; ida y vuelta = 0; precio quieto = 0 (sin dividir por cero)
+    assert np.allclose(ind.eficiencia(np.arange(30, dtype=float), 10)[10:], 1.0)
+    zig = np.tile([100.0, 101.0], 20)
+    assert np.allclose(ind.eficiencia(zig, 10)[10:], 0.0)
+    assert np.allclose(ind.eficiencia(np.full(30, 5.0), 10)[10:], 0.0)
+    c = np.array([1, 2, 3, 4, 5, 4, 5, 4, 5, 4.])
+    e = ind.eficiencia(c, 4)
+    assert np.isnan(e[:4]).all() and np.isclose(e[4], 1.0) and np.isclose(e[5], 0.5) and np.isclose(e[7], 0.0)
+    # contra una version lenta e independiente
+    rng = np.random.default_rng(5)
+    x = 100 + np.cumsum(rng.normal(0, 1, 400))
+    lento = [abs(x[i] - x[i - 20]) / sum(abs(x[k] - x[k - 1]) for k in range(i - 19, i + 1)) for i in range(20, 400)]
+    assert np.allclose(ind.eficiencia(x, 20)[20:], lento)
+    assert np.allclose(ind.eficiencia(x[:10], 20), np.nan, equal_nan=True)
+
+
+def test_filtro_de_rango_descarta_con_motivo_rango_y_no_mira_el_futuro():
+    df = _df()
+    base = eng.preparar(df, eng.Config())
+    todo = eng.preparar(df, eng.Config(rango_activo=True, rango_min=1.0))        # ratio 1 exacto casi nunca ocurre
+    assert todo.cruces and sum(m == "rango" for _, _, m in todo.cruces) > 0.9 * len(todo.cruces)
+    nada = eng.preparar(df, eng.Config(rango_activo=True, rango_min=0.0))        # minimo 0: no descarta nada
+    assert [m for _, _, m in nada.cruces] == [m for _, _, m in base.cruces]
+    # el filtro decide solo con datos hasta la vela de la senal
+    cfg = eng.Config(rango_activo=True, rango_ventana=15, rango_min=0.3)
+    a = eng.preparar(df, cfg)
+    b = eng.preparar(df.iloc[:3000], cfg)
+    assert [x for x in a.cruces if x[0] < 3000] == b.cruces
+    # y cada senal descartada tiene realmente un ratio bajo
+    er = ind.eficiencia(df["Close"].to_numpy(float), 15)
+    assert all(er[i] < 0.3 or np.isnan(er[i]) for i, _, m in a.cruces if m == "rango")
+    assert all(er[i] >= 0.3 for i, _, m in a.cruces if m is None)
+
+
+def test_filtro_de_rango_validacion_y_ablacion():
+    import pytest
+    for k in (dict(rango_ventana=1), dict(rango_min=1.5), dict(rango_min=-0.1)):
+        with pytest.raises(ValueError):
+            eng.preparar(_df(n=500), eng.Config(rango_activo=True, **k))
+    assert "Rango (ratio de eficiencia)" in met.FILTROS_ABLACION
+    assert eng.FILTROS_APAGADOS["rango_activo"] is False
+
+
 def test_sesion_sin_offset_da_error_claro():
     try:
         eng.preparar(_df(500), eng.Config(sesion_activo=True))

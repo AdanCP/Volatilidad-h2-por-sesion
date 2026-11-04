@@ -315,3 +315,37 @@ def test_pisos_y_dia_cet_coinciden_con_el_backtester(dia, tot):
         k = _d.fromordinal(_d(1970, 1, 1).toordinal() + esperado)
         assert int(key) == k.year * 10000 + k.month * 100 + k.day
     assert out[-1] == "1 1 0"                                          # 0 y 30 min dentro de 45; 60 min ya no
+
+
+def test_filtro_de_rango_en_la_plantilla():
+    t = _gen(_cfg(rango_activo=True, rango_ventana=25, rango_min=0.35), "XAUUSD", "M5", 0.1)
+    assert re.search(r"InpRangeOn\s+= true;", t) and re.search(r"InpRangeWindow\s+= 25;", t) and re.search(r"InpRangeMin\s+= 0\.35;", t)
+    assert "OkRange" in t and "Rango" in t
+    t0 = _gen(_cfg(), "XAUUSD", "M5", 0.1)
+    assert re.search(r"InpRangeOn\s+= false;", t0)
+
+
+@pytest.mark.skipif(not HAY_GPP, reason="sin g++")
+@pytest.mark.parametrize("ventana,minimo", [(20, 0.30), (7, 0.5), (50, 0.15)])
+def test_filtro_de_rango_coincide_con_python(ventana, minimo):
+    c = _cfg(rango_activo=True, rango_ventana=ventana, rango_min=minimo)
+    t = _gen(c, "XAUUSD", "M5", 0.1)
+    main = '''int main(){int n;std::cin>>n;g_m=n;g_c.resize(n);
+ for(int i=0;i<n;i++){std::cin>>g_c[i];}
+ CalcEfficiency(InpRangeWindow,g_er);
+ for(int i=0;i<n;i++)printf("%.12g %d\\n",g_er[i],OkRange(i)?1:0);}'''
+    rng = np.random.default_rng(11)
+    n = 3000
+    cl = 2000 + np.cumsum(rng.normal(0, 2, n))
+    cl[1000:1100] = cl[1000]                          # tramo quieto: recorrido 0
+    with tempfile.TemporaryDirectory() as d:
+        exe = _compilar(t, main, d)
+        inp = f"{n}\n" + "\n".join(repr(float(x)) for x in cl)
+        out = subprocess.run([exe], input=inp, capture_output=True, text=True).stdout.split("\n")
+    M = np.array([[float(x) for x in ln.split()] for ln in out if ln.strip()])
+    er = ind.eficiencia(cl, ventana)
+    mq = np.where(M[:, 0] < -1e299, np.nan, M[:, 0])
+    assert np.allclose(mq, er, rtol=1e-7, atol=1e-9, equal_nan=True)
+    esperado = np.where(np.isnan(er), 0, (er >= minimo).astype(int))
+    dudosos = np.abs(er - minimo) < 1e-9                  # justo en el umbral: la suma corrida puede diferir en el ultimo decimal
+    assert np.array_equal(M[~dudosos, 1].astype(int), esperado[~dudosos])

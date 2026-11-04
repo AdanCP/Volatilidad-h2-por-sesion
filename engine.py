@@ -6,7 +6,7 @@ Señal (config.media_tipo y config.modo_senal):
 
 Reglas (ver prompt):
   - Entrada al CIERRE de la vela del cruce (alcista = largo, bajista = corto).
-  - Filtros evaluados con datos de la vela de la señal, en este orden: sesion, SMA, VWAP, ADX, ATR.
+  - Filtros evaluados con datos de la vela de la señal, en este orden: sesion, SMA, VWAP, ADX, rango (ratio de eficiencia), ATR.
     Cada cruce descartado se atribuye al PRIMER filtro que falla.
   - SL = ATR * mult (o % del precio); TP = SL * RR. Una operacion a la vez.
   - Vela que toca SL y TP a la vez = SL ("ambigua"). Sin slippage ni gaps.
@@ -64,6 +64,10 @@ class Config:
     adx_min: float = 20.0
     adx_max: Optional[float] = None
     adx_creciente_n: int = 0        # 0 = sin condicion
+    # filtro de rango (ratio de eficiencia de Kaufman): desplazamiento neto / recorrido total de las ultimas N velas
+    rango_activo: bool = False
+    rango_ventana: int = 20
+    rango_min: float = 0.30         # por debajo no se opera: el precio va y viene sin avanzar
     # filtro ATR
     atr_activo: bool = False
     atr_unidad: str = "pct"         # "pct" (% del precio) o "precio"
@@ -140,6 +144,8 @@ class Config:
         if self.modo_senal == "precio" and self.media_unica < 2:
             raise ValueError("El período de la media debe ser de al menos 2.")
         self._validar_reglas()
+        if self.rango_activo and (self.rango_ventana < 2 or not 0 <= self.rango_min <= 1):
+            raise ValueError("Filtro de rango: la ventana debe ser de al menos 2 velas y el ratio minimo estar entre 0 y 1.")
         if self.salida_modo not in ("rr", "senal"):
             raise ValueError("Modo de salida invalido: 'rr' o 'senal'.")
         if self.sl_modo not in ("atr", "pct", "precio") or self.sl_valor <= 0:
@@ -160,7 +166,7 @@ class Config:
                              "(servidor_offset_horas). Medilo con el mercado abierto.")
 
 
-FILTROS_APAGADOS = dict(sma_activo=False, vwap_activo=False, adx_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False)
+FILTROS_APAGADOS = dict(sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False)
 
 
 @dataclass
@@ -221,6 +227,8 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
         warm = max(warm, cfg.sma_periodo + max(cfg.sma_pendiente_n, 0))
     if cfg.adx_activo:
         warm = max(warm, 2 * cfg.adx_periodo + max(cfg.adx_creciente_n, 0) + 1)
+    if cfg.rango_activo:
+        warm = max(warm, cfg.rango_ventana + 1)
     if cfg.atr_activo and cfg.atr_rel_n:
         warm = max(warm, cfg.atr_rel_n + cfg.atr_periodo)
 
@@ -245,6 +253,7 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
 
     sma = ind.sma(c, cfg.sma_periodo) if cfg.sma_activo else None
     adx = ind.adx_wilder(h, l, c, cfg.adx_periodo)[0] if cfg.adx_activo else None
+    er = ind.eficiencia(c, cfg.rango_ventana) if cfg.rango_activo else None
     atr_pct = atr / c * 100.0
     atr_med = pd.Series(atr).rolling(cfg.atr_rel_n).mean().to_numpy() if (cfg.atr_activo and cfg.atr_rel_n) else None
     ok_ses = None
@@ -275,6 +284,9 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
             return False
         return cfg.adx_creciente_n <= 0 or adx[i] > adx[i - cfg.adx_creciente_n]
 
+    def ok_rango(i):
+        return not np.isnan(er[i]) and er[i] >= cfg.rango_min
+
     def ok_atr(i):
         v = atr[i] if cfg.atr_unidad == "precio" else atr_pct[i]
         if not entre(v, cfg.atr_min, cfg.atr_max):
@@ -300,6 +312,8 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
             motivo = "vwap"
         elif cfg.adx_activo and not ok_adx(i):
             motivo = "adx"
+        elif cfg.rango_activo and not ok_rango(i):
+            motivo = "rango"
         elif cfg.atr_activo and not ok_atr(i):
             motivo = "atr"
         cruces.append((i, lado, motivo))
