@@ -228,25 +228,18 @@ with st.sidebar:
             ema_c = c1.number_input(f"{MEDIA} corta", 2, 500, 20 if ES_SMA else 13)
             ema_l = c2.number_input(f"{MEDIA} larga", 3, 1000, 50 if ES_SMA else 34)
         direccion = DIRECCIONES[st.selectbox("Dirección", list(DIRECCIONES))]
+        st.divider()
         _sal_cruce = modo_senal == "cruce"
         _op_sal = "Cuando las medias se cruzan en sentido contrario" if _sal_cruce else "Cuando el precio cambia de lado de la media"
-        salida_txt = st.radio(
-            "Salida (Take Profit)", ["Objetivo fijo (RR o US$)", _op_sal],
-            help="Objetivo fijo: TP a una distancia fija del SL, como siempre. " + (
-                f"Cruce contrario: no hay TP; la operación se cierra al cierre de la primera vela en que la {MEDIA} corta queda del "
-                f"otro lado de la larga (un largo sale cuando la corta pasa por debajo de la larga, un corto cuando pasa por "
-                f"encima). " if _sal_cruce else
-                "Cambio de lado: no hay TP; se cierra al cierre de la primera vela que queda del otro lado de la media (un largo "
-                "sale cuando una vela cierra por debajo, un corto cuando cierra por encima). ")
-            + "El SL sigue activo y se revisa antes en cada vela.")
-        salida_modo = "senal" if salida_txt.startswith("Cuando") else "rr"
-        sl_modo = st.selectbox("SL en", [SL_ATR, SL_PCT, SL_USD, SL_EMA],
+        _k_sal = f"salida_tp_{modo_senal}"
+        # Primero va el Stop Loss y después el Take Profit; la salida elegida se lee de session_state (el radio se dibuja más abajo).
+        salida_modo = "senal" if str(st.session_state.get(_k_sal, "")).startswith("Cuando") else "rr"
+        sl_modo = st.radio("Stop Loss (SL) en", [SL_ATR, SL_PCT, SL_USD, SL_EMA],
                                help="Distancia a una media: el SL queda fijo en el nivel de la media (al entrar) más o menos una "
                                     "distancia en pips o en dólares de precio. Los otros modos miden el SL desde el precio de entrada.")
         sl_ema_ref, sl_ema_unidad = "larga", "precio"
-        if salida_modo == "senal":
-            st.caption("Sin TP fijo: la operación dura hasta que las medias se cruzan al revés o toca el SL." if _sal_cruce else
-                       "Sin TP fijo: la operación dura hasta que una vela cierra del otro lado de la media o toca el SL.")
+        sl_usd = tp_usd = 0.0
+        tp_modo = TP_RR
         if sl_modo == SL_EMA:
             if modo_senal == "precio":
                 st.caption(f"Media de referencia: la {MEDIA} de {int(media_unica)} períodos.")
@@ -261,41 +254,42 @@ with st.sidebar:
                                        0.0, 1_000_000.0, 30.0 if sl_ema_unidad == "pips" else 3.0, 1.0 if sl_ema_unidad == "pips" else 0.5)
             st.caption("El SL queda fijo en la media menos la distancia (compras) o más la distancia (ventas), con la media de la "
                        "vela de la señal. Si al entrar la media quedó del lado equivocado del precio, esa señal no se opera.")
-            sl_usd = tp_usd = 0.0
-            tp_modo = TP_RR
-            rr = 2.0 if salida_modo == "senal" else st.number_input("RR (1:x)", 0.1, 50.0, 2.0, 0.5)
-        elif salida_modo == "senal":
-            rr, tp_usd, tp_modo = 2.0, 0.0, TP_RR            # el RR no interviene
-            if sl_modo == SL_USD:
-                sl_usd = st.number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
-                sl_valor = sl_usd
-            else:
-                sl_usd = 0.0
-                sl_valor = st.number_input("Valor del SL", 0.01, 100.0, 1.5 if sl_modo == SL_ATR else 0.5, 0.1)
         elif sl_modo == SL_USD:
             sl_usd = st.number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
-            tp_modo = st.radio("Take Profit en", [TP_RR, TP_USD], horizontal=True)
-            if tp_modo == TP_USD:
-                tp_usd = st.number_input("Take Profit (US$ por operación)", 1.0, 10_000_000.0, 200.0, 10.0)
-                rr = tp_usd / sl_usd
-                st.caption(f"Relación TP/SL: {rr:.2f}")
-            else:
-                rr = st.number_input("RR (1:x)", 1.0, 10.0, 2.0, 0.5)
             sl_valor = sl_usd
         else:
-            sl_usd = tp_usd = 0.0
-            tp_modo = TP_RR
-            rr = st.number_input("RR (1:x)", 1.0, 10.0, 2.0, 0.5)
             sl_valor = st.number_input("Valor del SL", 0.01, 100.0, 1.5 if sl_modo == SL_ATR else 0.5, 0.1)
-        # El ATR solo interviene si el SL va en múltiplos de ATR o si algún filtro lo usa (los filtros se definen más abajo:
-        # sus valores ya están en session_state al comienzo de cada ejecución).
-        usa_atr = (sl_modo == SL_ATR or bool(st.session_state.get("f_atr"))
-                   or (bool(st.session_state.get("f_sma")) and float(st.session_state.get("f_sma_dist", 0) or 0) > 0)
-                   or (bool(st.session_state.get("f_vwap")) and float(st.session_state.get("f_vwap_dist", 0) or 0) > 0))
-        atr_per = st.number_input("Período ATR", 2, 200, 14, disabled=not usa_atr,
-                                  help="Se usa en el SL en múltiplos de ATR, en el filtro ATR y en la distancia mínima a la SMA o al VWAP.")
-        if not usa_atr:
-            st.caption("Desactivado: con SL en dólares o en % del precio y sin filtros que usen ATR, este valor no interviene.")
+
+        st.divider()
+        _OP_RR, _OP_USD = "Objetivo fijo: RR (1:x)", "Objetivo fijo: US$ por operación"
+        _opciones = [_OP_RR] + ([_OP_USD] if sl_modo == SL_USD else []) + [_op_sal]   # el TP en US$ pide el SL en dólares fijos
+        if st.session_state.get(_k_sal) not in _opciones:
+            st.session_state.pop(_k_sal, None)
+        salida_txt = st.radio(
+            "Take Profit (TP) en", _opciones, key=_k_sal,
+            help="Objetivo fijo: TP a una distancia fija del SL (en múltiplos del riesgo, RR, o en US$ por operación; el de US$ "
+                 "necesita el SL en dólares fijos). " + (
+                f"Cruce contrario: no hay TP; la operación se cierra al cierre de la primera vela en que la {MEDIA} corta queda del "
+                f"otro lado de la larga (un largo sale cuando la corta pasa por debajo de la larga, un corto cuando pasa por "
+                f"encima). " if _sal_cruce else
+                "Cambio de lado: no hay TP; se cierra al cierre de la primera vela que queda del otro lado de la media (un largo "
+                "sale cuando una vela cierra por debajo, un corto cuando cierra por encima). ")
+            + "El SL sigue activo y se revisa antes en cada vela.")
+        salida_modo = "senal" if salida_txt == _op_sal else "rr"
+        if salida_modo == "senal":
+            rr = 2.0                                  # el RR no interviene
+            st.caption("Sin TP fijo: la operación dura hasta que las medias se cruzan al revés o toca el SL." if _sal_cruce else
+                       "Sin TP fijo: la operación dura hasta que una vela cierra del otro lado de la media o toca el SL.")
+        elif salida_txt == _OP_USD:
+            tp_modo = TP_USD
+            tp_usd = st.number_input("Take Profit (US$ por operación)", 1.0, 10_000_000.0, 200.0, 10.0)
+            rr = tp_usd / sl_usd
+            st.caption(f"Relación TP/SL: {rr:.2f}")
+        else:
+            rr = st.number_input("RR (1:x)", 0.1 if sl_modo == SL_EMA else 1.0, 50.0 if sl_modo == SL_EMA else 10.0, 2.0, 0.5)
+            if sl_modo != SL_USD:
+                st.caption("El TP en US$ por operación está disponible con el SL en dólares fijos.")
+        st.divider()
         pb_on = st.checkbox(f"Entrar en pullback a la {MEDIA} (opcional)",
                             help="Apagado: se entra al cierre de la vela del cruce, como siempre. Encendido: el cruce sigue "
                                  f"siendo la señal, pero la entrada se hace cuando el precio retrocede hacia la {MEDIA}.")
@@ -310,6 +304,16 @@ with st.sidebar:
                                        help="Si en estas velas el precio no hizo el retroceso, la orden se cancela. También "
                                             "se cancela si aparece un cruce en sentido contrario.")
             st.caption("Con pullback, el filtro de sesión se evalúa cuando se ejecuta la entrada.")
+        st.divider()
+        # El ATR solo interviene si el SL va en múltiplos de ATR o si algún filtro lo usa (los filtros se definen más abajo:
+        # sus valores ya están en session_state al comienzo de cada ejecución).
+        usa_atr = (sl_modo == SL_ATR or bool(st.session_state.get("f_atr"))
+                   or (bool(st.session_state.get("f_sma")) and float(st.session_state.get("f_sma_dist", 0) or 0) > 0)
+                   or (bool(st.session_state.get("f_vwap")) and float(st.session_state.get("f_vwap_dist", 0) or 0) > 0))
+        atr_per = st.number_input("Período ATR (compartido)", 2, 200, 14, disabled=not usa_atr,
+                                  help="Es un solo valor para toda la estrategia: lo usan el SL en múltiplos de ATR, el filtro ATR y la distancia mínima a la SMA o al VWAP.")
+        if not usa_atr:
+            st.caption("Desactivado: con SL en dólares o en % del precio y sin filtros que usen ATR, este valor no interviene.")
 
     with st.expander("4. Lotaje y dinero", expanded=False):
         lotes = st.number_input("Lotes", 0.01, 1000.0, 0.10, 0.01, format="%.2f")
