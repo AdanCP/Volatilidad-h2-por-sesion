@@ -36,8 +36,9 @@ class Config:
     media_unica: int = 50           # periodo de la media en el modo "precio"
     rr: float = 2.0
     salida_modo: str = "rr"         # "rr" (TP fijo a RR) | "senal" (sin TP: sale al cierre de la 1ª vela del otro lado de la media)
-    sl_modo: str = "atr"            # "atr" (multiplo), "pct" (% del precio) o "precio" (distancia fija en unidades de precio)
-    sl_valor: float = 1.5
+    sl_modo: str = "atr"            # "atr" (multiplo), "pct" (% del precio) o "precio" (distancia fija en unidades de precio) o "ema" (nivel fijo: media elegida a esa distancia, al entrar)
+    sl_valor: float = 1.5           # con sl_modo "ema": distancia (en unidades de precio) entre la media y el SL
+    sl_ema_ref: str = "larga"       # con sl_modo "ema": media de referencia, "corta" o "larga" (en modo precio, la unica media)
     atr_periodo: int = 14
     direccion: str = "ambas"        # "ambas" | "largos" | "cortos"
     # entrada en pullback (opcional: apagado = entrada al cierre del cruce, como siempre)
@@ -148,11 +149,13 @@ class Config:
             raise ValueError("Filtro de rango: la ventana debe ser de al menos 2 velas y el ratio minimo estar entre 0 y 1.")
         if self.salida_modo not in ("rr", "senal"):
             raise ValueError("Modo de salida invalido: 'rr' o 'senal'.")
-        if self.sl_modo not in ("atr", "pct", "precio") or self.sl_valor <= 0:
-            raise ValueError("SL invalido: modo 'atr', 'pct' o 'precio' y valor mayor que 0.")
+        if self.sl_modo not in ("atr", "pct", "precio", "ema") or self.sl_valor < 0 or (self.sl_modo != "ema" and self.sl_valor <= 0):
+            raise ValueError("SL invalido: modo 'atr', 'pct', 'precio' o 'ema' y valor mayor que 0 (con 'ema' puede ser 0).")
+        if self.sl_ema_ref not in ("corta", "larga"):
+            raise ValueError("La media de referencia del SL debe ser 'corta' o 'larga'.")
         if self.salida_modo == "senal":     # sin TP: el RR no interviene
             pass
-        elif self.sl_modo == "precio":        # SL y TP fijos (p. ej. en dolares): la relacion TP/SL es libre
+        elif self.sl_modo in ("precio", "ema"):        # SL y TP fijos (p. ej. en dolares): la relacion TP/SL es libre
             if not 0.05 <= self.rr <= 50:
                 raise ValueError("La relacion TP/SL debe estar entre 0,05 y 50.")
         elif not 1 <= self.rr <= 10:
@@ -188,6 +191,8 @@ class Preparado:
     ok_ses: Optional[np.ndarray] = None     # sesion al EJECUTAR la entrada (solo con pullback)
     dia: Optional[np.ndarray] = None        # clave de dia de cada vela (reglas de cuenta); corte a medianoche CE(S)T si se conoce el desfase
     diff: Optional[np.ndarray] = None       # lado de la media por vela: >0 arriba (alcista), <0 abajo; base de la salida por señal
+    sl_ref: Optional[np.ndarray] = None     # media de referencia del SL (solo con sl_modo "ema"): el SL queda en sl_ref -/+ sl_off
+    sl_off: float = 0.0                     # distancia entre la media y el SL, en unidades de precio
 
 
 def es_intradia(df: pd.DataFrame) -> bool:
@@ -218,6 +223,8 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
         dist = atr * cfg.sl_valor
     elif cfg.sl_modo == "pct":
         dist = c * cfg.sl_valor / 100.0
+    elif cfg.sl_modo == "ema":              # el SL real se calcula al entrar; mas abajo se deja un valor tipico (solo informativo)
+        dist = None
     else:                                   # "precio": la misma distancia en todas las operaciones
         dist = np.full(n, float(cfg.sl_valor))
 
@@ -237,6 +244,12 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
         ema_c = ema_l = media(c, cfg.media_unica)
     else:
         ema_c, ema_l = media(c, cfg.ema_corta), media(c, cfg.ema_larga)
+    sl_ref = None
+    if cfg.sl_modo == "ema":
+        # SL anclado a una media: nivel = media (de la vela de la señal, o de la anterior al llenado con pullback) -/+ la distancia.
+        # La distancia que se arriesga cambia en cada operacion, asi que "dist" aca es solo un valor tipico para avisos.
+        sl_ref = ema_c if cfg.sl_ema_ref == "corta" else ema_l
+        dist = np.nan_to_num(np.abs(c - sl_ref) + float(cfg.sl_valor), nan=float(cfg.sl_valor))
     vwap = vwap_min = None
     if cfg.vwap_activo:
         if not es_intradia(df):
@@ -322,7 +335,8 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     raw = df["Spread"].to_numpy(float) if "Spread" in df else np.zeros(n)
     return Preparado(h, l, c, sp, atr, dist, df.index, cruces, 100 * float((raw == 0).mean()),
                      ema_c, ema_l, sube, baja, ok_ses if (cfg.pb_efectivo() and cfg.sesion_activo) else None,
-                     claves_dia(df.index, cfg) if cfg.reglas_activas else None, diff)
+                     claves_dia(df.index, cfg) if cfg.reglas_activas else None, diff,
+                     sl_ref, float(cfg.sl_valor) if sl_ref is not None else 0.0)
 
 
 def pb_de(cfg: Config):
@@ -370,7 +384,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
     En la tabla, "i" es la vela de ENTRADA real y "señal" la vela del cruce (iguales sin pullback)."""
     h, l, c, sp, dist = P.h, P.l, P.c, P.sp, P.dist
     n = len(c)
-    filas, libre, ignoradas = [], 0, 0
+    filas, libre, ignoradas, sl_invalido = [], 0, 0, 0
     st = {"ordenes": 0, "llenadas": 0, "caducadas": 0, "cruce_contrario": 0}
     por_senal = salida == "senal"
     if por_senal and P.diff is None:
@@ -384,7 +398,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         ts_min = P.indice.to_numpy().astype("datetime64[s]").astype("int64") / 60.0
         cs = {"saltadas_dia": 0, "saltadas_pausa": 0, "saltadas_riesgo": 0, "saltadas_proteccion": 0, "forzadas": 0,
               "dias_bloqueados": 0, "quemada": False, "quemada_en": None, "peor_dia_usd": 0.0,
-              "balance_final": cap, "balance_min": cap}
+              "balance_final": cap, "balance_min": cap, "balance_max": cap}
         S = {"bal": cap, "pico": cap, "dia": None, "bal_dia": cap, "bloq": None, "perd_j": None}
 
     def rodar_dia(k):
@@ -421,6 +435,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         S["pico"] = max(S["pico"], S["bal"])
         cs["peor_dia_usd"] = min(cs["peor_dia_usd"], S["bal"] - S["bal_dia"])
         cs["balance_min"] = min(cs["balance_min"], S["bal"])
+        cs["balance_max"] = S["pico"]                    # si se quema, es lo maximo que llego a ganar antes de quemarse
         if pnl < 0:
             S["perd_j"] = j_out
         pd_, pt_ = pisos()
@@ -471,7 +486,14 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         lim = None
         if pb is None:
             k = i                                       # vela de entrada
-            d = dist[k]
+            entrada = c[i] + sp[i] if lado == 1 else c[i]
+            if P.sl_ref is not None:                    # SL anclado a una media: nivel fijo, la distancia sale de ahi
+                d = lado * (entrada - (P.sl_ref[i] - lado * P.sl_off))
+                if not d > 0:
+                    sl_invalido += 1                    # la media quedo del lado equivocado del precio: no se opera
+                    continue
+            else:
+                d = dist[k]
             if not d > 0:
                 continue
             if ct:
@@ -479,7 +501,6 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 if motivo_p != "ok":
                     cs[motivo_p] += 1
                     continue
-            entrada = c[i] + sp[i] if lado == 1 else c[i]
             sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
             res, amb, j_out = recorrer(i + 1, lado, sl, tp, entrada, lim)
         else:
@@ -510,7 +531,15 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 st[motivo] += 1
                 libre = fin_esp + 1
                 continue
-            d = dist[k]
+            entrada = px + sp[k] if lado == 1 else px
+            if P.sl_ref is not None:                    # el nivel se fija con la media conocida al dejar la orden (vela anterior al llenado)
+                d = lado * (entrada - (P.sl_ref[k - 1] - lado * P.sl_off))
+                if not d > 0:
+                    sl_invalido += 1
+                    libre = k + 1
+                    continue
+            else:
+                d = dist[k]
             if not d > 0:
                 continue
             if ct:
@@ -520,7 +549,6 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                     libre = k + 1
                     continue
             st["llenadas"] += 1
-            entrada = px + sp[k] if lado == 1 else px
             sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
             # en la vela de entrada no se sabe que paso primero: si toca el SL, cuenta como SL; el TP recien desde la siguiente
             toca_sl = l[k] <= sl if lado == 1 else h[k] + sp[k] >= sl
@@ -553,6 +581,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
     cols = ["i", "señal", "lado", "entrada", "sl", "tp", "dist", "res", "amb", "salida", "R", "motivo"]
     out = pd.DataFrame(filas, columns=cols)
     out.attrs["pb"] = st
+    out.attrs["sl_invalido"] = sl_invalido            # señales sin operar porque el SL anclado a la media quedaba al reves
     if ct:
         cs["balance_final"] = S["bal"]
         out.attrs["cuenta"] = cs

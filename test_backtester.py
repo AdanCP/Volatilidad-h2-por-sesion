@@ -6,6 +6,7 @@ from dataclasses import replace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import data as dt
@@ -984,6 +985,92 @@ def test_cuenta_limite_total_estatico_quema_la_cuenta_y_corta():
     tr, _ = eng.simular(P, [(0, 1), (3, 1), (6, 1), (9, 1)], 2.0, 0.0, None, "rr", _cuenta(p_tot=2.5))
     cs = tr.attrs["cuenta"]
     assert len(tr) == 3 and cs["quemada"] and cs["quemada_en"] == 7        # piso 9750: 3 perdidas de 100 lo cruzan
+
+
+def test_ema_cruce_con_salida_por_cruce_contrario():
+    # EMA de cruce con "TP = cruce contrario": se sale en la primera vela en que la corta queda del otro lado de la larga
+    df = _df()
+    cfg = eng.Config(media_tipo="ema", modo_senal="cruce", ema_corta=13, ema_larga=34, salida_modo="senal",
+                     sl_modo="atr", sl_valor=1.5)
+    P = eng.preparar(df, cfg)
+    tr = eng.ejecutar(P, cfg).trades
+    ss = tr[tr["motivo"] == "senal"]
+    assert len(ss) > 10 and set(tr["motivo"]) <= {"sl", "senal"}
+    ec, el = P.ema_c, P.ema_l
+    for _, f in ss.iterrows():
+        lado, i, j = int(f["lado"]), int(f["i"]), int(f["salida"])
+        assert lado * (ec[j] - el[j]) < 0                                   # el cruce se invirtio en la vela de salida
+        assert all(lado * (ec[k] - el[k]) >= 0 for k in range(i + 1, j))    # y no antes
+    # sin elegir la salida por cruce contrario, la EMA de siempre no cambia: TP fijo, sin motivo "senal"
+    base = eng.Config(media_tipo="ema", ema_corta=13, ema_larga=34)
+    assert "senal" not in set(eng.ejecutar(eng.preparar(df, base), base).trades["motivo"])
+
+
+@pytest.mark.parametrize("ref,pb", [("larga", False), ("corta", False), ("larga", True), ("corta", True)])
+def test_sl_anclado_a_la_media_nivel_fijo_y_r_consistente(ref, pb):
+    df = _df()
+    cfg = eng.Config(ema_corta=13, ema_larga=34, sl_modo="ema", sl_valor=2.0, sl_ema_ref=ref, rr=2.0,
+                     pullback_activo=pb, pullback_pct=40.0, pullback_velas=8)
+    P = eng.preparar(df, cfg)
+    tr = eng.ejecutar(P, cfg).trades
+    assert len(tr) > 20
+    lado = tr["lado"].to_numpy()
+    base = (tr["i"] - 1 if pb else tr["señal"]).to_numpy()            # media conocida al entrar: la de la vela anterior al llenado
+    media = P.ema_c if ref == "corta" else P.ema_l
+    assert np.allclose(tr["sl"].to_numpy(), media[base] - lado * 2.0)                      # nivel = media -/+ distancia
+    assert (tr["dist"] > 0).all() and np.allclose(tr["dist"].to_numpy(), lado * (tr["entrada"].to_numpy() - tr["sl"].to_numpy()))
+    tp = tr[tr["res"] == "TP"]
+    assert len(tp) and np.allclose(tp["R"].to_numpy(), 2.0)                                # el RR se mide sobre esa distancia
+    assert np.allclose(tp["tp"].to_numpy(), tp["entrada"].to_numpy() + tp["lado"].to_numpy() * 2.0 * tp["dist"].to_numpy())
+
+
+def test_sl_anclado_a_la_media_del_lado_equivocado_no_se_opera():
+    import pytest
+    from dataclasses import replace
+    df = _df()
+    cfg = eng.Config(ema_corta=13, ema_larga=34, sl_modo="ema", sl_valor=1.0, direccion="largos", rr=2.0)
+    P = eng.preparar(df, cfg)
+    n_senales = sum(1 for _, _, m in P.cruces if m is None)
+    arriba = replace(P, sl_ref=P.c + 50.0)                           # media 50 por encima del precio: el SL de un largo quedaria al reves
+    r = eng.ejecutar(arriba, cfg)
+    assert r.trades.empty and r.trades.attrs["sl_invalido"] == n_senales > 0
+    normal = eng.ejecutar(P, cfg)
+    assert normal.trades.attrs["sl_invalido"] <= n_senales and len(normal.trades) > 0
+    # validaciones
+    for k in (dict(sl_valor=-1.0), dict(sl_ema_ref="otra")):
+        with pytest.raises(ValueError):
+            eng.preparar(df.iloc[:500], eng.Config(sl_modo="ema", **{"sl_valor": 1.0, **k}))
+    eng.preparar(df.iloc[:500], eng.Config(sl_modo="ema", sl_valor=0.0))       # distancia 0: el SL justo en la media
+
+
+def test_sl_anclado_a_la_media_en_modo_precio_usa_la_unica_media_y_el_veredicto_lo_cuenta():
+    df = _df()
+    cfg = eng.Config(media_tipo="sma", modo_senal="precio", media_unica=50, sl_modo="ema", sl_valor=1.5, rr=2.0)
+    P = eng.preparar(df, cfg)
+    tr = eng.ejecutar(P, cfg).trades
+    assert len(tr) > 10 and np.allclose(tr["sl"].to_numpy(), P.sl_ref[tr["señal"].to_numpy()] - tr["lado"].to_numpy() * 1.5)
+    for sal, esperado in (("rr", "TP a 1:2"), ("senal", "sin TP fijo")):
+        c2 = eng.Config(media_tipo="sma", modo_senal="precio", media_unica=50, sl_modo="ema", sl_valor=1.5, rr=2.0, salida_modo=sal)
+        txt = vd.describir(c2, "XAUUSD", "M5", df.index[0], df.index[-1], 12.0, 0.1, 100.0, 80, 20, 60, 0.1, 500.0)
+        assert "SL a 1,50 de precio de la SMA 50" in txt and esperado in txt, txt
+    c3 = eng.Config(ema_corta=13, ema_larga=34, sl_modo="ema", sl_valor=2.0, sl_ema_ref="corta")
+    assert "EMA corta (13)" in vd.describir(c3, "XAUUSD", "M5", df.index[0], df.index[-1], 12.0, 0.1, 100.0, 80, 20, 60, 0.1, 500.0)
+
+
+def test_cuenta_registra_cuanto_llego_a_ganar_antes_de_quemarse():
+    P = _P_cuenta()
+    P.h[2] = 125.0                                   # la primera señal gana 200 (balance maximo 10200)
+    for i in (3, 6, 9, 12):
+        _pierde(P, i)                                # cuatro perdidas de 100: 10200 -> 9800
+    tr, _ = eng.simular(P, [(0, 1), (3, 1), (6, 1), (9, 1), (12, 1)], 2.0, 0.0, None, "rr", _cuenta(p_tot=1.5))
+    cs = tr.attrs["cuenta"]
+    assert cs["quemada"] and abs(cs["balance_max"] - 10200.0) < 1e-6 and 9800.0 - 1e-6 <= cs["balance_final"] <= 9850.0 + 1e-6
+    # sin ganancias previas, el maximo es el capital inicial
+    P2 = _P_cuenta()
+    for i in (0, 3, 6, 9):
+        _pierde(P2, i)
+    cs2 = eng.simular(P2, [(0, 1), (3, 1), (6, 1), (9, 1)], 2.0, 0.0, None, "rr", _cuenta(p_tot=2.5))[0].attrs["cuenta"]
+    assert cs2["quemada"] and cs2["balance_max"] == 10000.0
 
 
 def test_cuenta_limite_total_trailing_sube_con_el_maximo():

@@ -349,3 +349,54 @@ def test_filtro_de_rango_coincide_con_python(ventana, minimo):
     esperado = np.where(np.isnan(er), 0, (er >= minimo).astype(int))
     dudosos = np.abs(er - minimo) < 1e-9                  # justo en el umbral: la suma corrida puede diferir en el ultimo decimal
     assert np.array_equal(M[~dudosos, 1].astype(int), esperado[~dudosos])
+
+
+def test_sl_a_la_media_en_la_plantilla():
+    t = _gen(_cfg(sl_modo="ema", sl_valor=2.5, sl_ema_ref="corta"), "XAUUSD", "M5", 0.1)
+    assert re.search(r"InpSLMode\s+= BOT_SL_EMA;", t) and re.search(r"InpSLValue\s+= 2\.5;", t) and re.search(r"InpSlEmaRef\s+= 0;", t)
+    assert "BOT_SL_EMA = 3" in t and "double SlLevel(" in t and "// SL: fijo en la EMA corta (" in t
+    t2 = _gen(_cfg(sl_modo="ema", sl_valor=1.0, sl_ema_ref="larga"), "XAUUSD", "M5", 0.1)
+    assert re.search(r"InpSlEmaRef\s+= 1;", t2)
+    assert _magic_distinto(_cfg(sl_modo="ema", sl_valor=1.0, sl_ema_ref="larga"), _cfg(sl_modo="ema", sl_valor=1.0, sl_ema_ref="corta"))
+    # los modos de siempre no cambian: ATR, %, US$
+    assert re.search(r"InpSLMode\s+= BOT_SL_ATR;", _gen(_cfg(), "XAUUSD", "M5", 0.1))
+
+
+def _magic_distinto(a, b):
+    return gb._magic(a, "XAUUSD") != gb._magic(b, "XAUUSD")
+
+
+@pytest.mark.skipif(not HAY_GPP, reason="sin g++")
+@pytest.mark.parametrize("ref", ["corta", "larga"])
+@pytest.mark.parametrize("modo,tipo", [("cruce", "ema"), ("cruce", "sma"), ("precio", "ema")])
+def test_sl_a_la_media_coincide_con_python(ref, modo, tipo):
+    c = _cfg(media_tipo=tipo, modo_senal=modo, ema_corta=9, ema_larga=21, media_unica=30, sl_modo="ema", sl_valor=2.75, sl_ema_ref=ref)
+    t = _gen(c, "XAUUSD", "M5", 0.1)
+    main = '''int main(){int n;std::cin>>n;g_m=n;g_c.resize(n);g_h.resize(n);g_l.resize(n);g_tv.resize(n);g_time.resize(n);
+ for(int i=0;i<n;i++){std::cin>>g_c[i];}
+ g_ef.resize(n);g_es.resize(n);
+ if(InpSigMode==1){ if(InpMaType==1) CalcSMA(g_c,g_m,InpMaSingle,g_ef); else CalcEMA(g_c,g_m,InpMaSingle,g_ef); ArrayCopy(g_es,g_ef); }
+ else if(InpMaType==1){ CalcSMA(g_c,g_m,InpEmaFast,g_ef); CalcSMA(g_c,g_m,InpEmaSlow,g_es); }
+ else { CalcEMA(g_c,g_m,InpEmaFast,g_ef); CalcEMA(g_c,g_m,InpEmaSlow,g_es); }
+ for(int i=0;i<n;i++)printf("%.12g %.12g %.12g %.12g\\n",SlLevel(i,1),SlLevel(i,-1),SlDistance(i,1,g_c[i]+0.3),SlDistance(i,-1,g_c[i]));}'''
+    rng = np.random.default_rng(21)
+    n = 800
+    cl = 2000 + np.cumsum(rng.normal(0, 2, n))
+    with tempfile.TemporaryDirectory() as d:
+        exe = _compilar(t, main, d)
+        inp = f"{n}\n" + "\n".join(repr(float(x)) for x in cl)
+        out = subprocess.run([exe], input=inp, capture_output=True, text=True).stdout.split("\n")
+    M = np.array([[float(x) for x in ln.split()] for ln in out if ln.strip()])
+    media_f = (ind.sma if tipo == "sma" else ind.ema)
+    if modo == "precio":
+        ref_arr = media_f(cl, 30)
+    else:
+        ref_arr = media_f(cl, 9 if ref == "corta" else 21)
+    ok = ~np.isnan(ref_arr)                       # sin dato (primeras velas de una SMA): el bot devuelve 0 y no opera
+    assert (~ok).sum() < 60 and (M[~ok, 0] == 0).all() and (M[~ok, 2] == 0).all() and (M[~ok, 3] == 0).all()
+    assert np.allclose(M[ok, 0], ref_arr[ok] - 2.75) and np.allclose(M[ok, 1], ref_arr[ok] + 2.75)
+    assert np.allclose(M[ok, 2], (cl[ok] + 0.3) - (ref_arr[ok] - 2.75)) and np.allclose(M[ok, 3], -(cl[ok] - (ref_arr[ok] + 2.75)))
+    # y es el mismo nivel que usa el backtester
+    P = eng.preparar(pd.DataFrame({"Open": cl, "High": cl + 1, "Low": cl - 1, "Close": cl, "Volume": 1.0},
+                                  index=pd.date_range("2024-01-01", periods=n, freq="5min")), c)
+    assert np.allclose(P.sl_ref, ref_arr, equal_nan=True)

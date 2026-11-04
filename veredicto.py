@@ -104,12 +104,21 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         return s
 
     dir_txt = {"ambas": "largos y cortos", "largos": "solo largos", "cortos": "solo cortos"}[cfg.direccion]
+    if cfg.sl_modo == "ema":
+        _m = cfg.media_tipo.upper()
+        _ref = (f"{_m} {cfg.media_unica}" if cfg.modo_senal == "precio" else
+                f"{_m} {'corta' if cfg.sl_ema_ref == 'corta' else 'larga'} ({cfg.ema_corta if cfg.sl_ema_ref == 'corta' else cfg.ema_larga})")
+        _sl_txt = f"SL a {n(cfg.sl_valor, 2)} de precio de la {_ref}"
+    else:
+        _sl_txt = None
     if cfg.salida_modo == "senal":
         if cfg.modo_senal == "precio":
             sal = f"sin TP fijo: se sale al cierre de la primera vela que cierra del otro lado de la media {cfg.media_unica}"
         else:
             sal = "sin TP fijo: se sale al cierre de la primera vela en que el cruce se invierte"
-        if cfg.sl_modo == "precio" and sl_usd > 0:
+        if _sl_txt:
+            gestion = f"{_sl_txt} y {sal}"
+        elif cfg.sl_modo == "precio" and sl_usd > 0:
             gestion = f"SL de US${n(sl_usd)} y {sal}"
         elif cfg.sl_modo == "atr":
             gestion = f"SL de {n(cfg.sl_valor, 1)}×ATR({cfg.atr_periodo}) y {sal}"
@@ -117,6 +126,8 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
             gestion = f"SL de {n(cfg.sl_valor, 2)}% del precio y {sal}"
         else:
             gestion = f"SL fijo de {n(cfg.sl_valor, 2)} de precio y {sal}"
+    elif _sl_txt:
+        gestion = f"{_sl_txt} y TP a 1:{n(cfg.rr, 1)}"
     elif cfg.sl_modo == "precio" and sl_usd > 0:
         gestion = f"SL de US${n(sl_usd)} y TP de US${n(tp_usd if tp_usd else sl_usd * cfg.rr)}"
     elif cfg.sl_modo == "atr":

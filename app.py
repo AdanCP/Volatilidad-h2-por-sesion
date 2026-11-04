@@ -9,18 +9,27 @@ import streamlit.components.v1 as components
 
 import ui_estilo
 
-st.set_page_config(page_title="Trading: sesiones y backtester", page_icon="📈", layout="wide")
+st.set_page_config(page_title="ACPTester", page_icon="📈", layout="wide")
 
-# Modo oscuro: el botón vive en la barra lateral y se recuerda en la URL (?tema=oscuro) al recargar.
+# Estilo (juego de colores) y modo noche: viven arriba de la barra lateral y se recuerdan en la URL
+# (?estilo=pastel&tema=oscuro) al recargar.
+if "estilo" not in st.session_state:
+    _e = st.query_params.get("estilo")
+    st.session_state["estilo"] = _e if _e in ui_estilo.ESTILOS else "moderno"
 if "oscuro" not in st.session_state:
     st.session_state["oscuro"] = st.query_params.get("tema") == "oscuro"
-with st.sidebar:
-    oscuro = st.toggle("🌙 Modo oscuro", key="oscuro")
+# Los widgets viven en la barra lateral (o en la portada); el valor se lee de session_state, que ya trae lo elegido.
+estilo = st.session_state["estilo"]
+oscuro = st.session_state["oscuro"]
+if estilo != "moderno":
+    st.query_params["estilo"] = estilo
+elif "estilo" in st.query_params:
+    del st.query_params["estilo"]
 if oscuro:
     st.query_params["tema"] = "oscuro"
 elif "tema" in st.query_params:
     del st.query_params["tema"]
-ui_estilo.set_tema("oscuro" if oscuro else "claro")
+ui_estilo.set_tema("oscuro" if oscuro else "claro", estilo)
 st.markdown(ui_estilo.css(), unsafe_allow_html=True)   # estilo común a todas las páginas
 
 # Chrome traduce solo los textos si cree que la página está en otro idioma (ej. "High-Low" -> "Alto-Bajo").
@@ -61,9 +70,52 @@ components.html(
     height=0,
 )
 
-pagina = st.navigation([
-    st.Page("pagina_sesiones.py", title="Sesiones XAU/USD", icon="📈", default=True),
-    st.Page("app_backtest.py", title="Backtester EMA", icon="🧪"),
-    st.Page("app_backtest_sma.py", title="Backtester SMA", icon="📐"),
-])
+def _cambiar_modo():
+    st.session_state["oscuro"] = not st.session_state["oscuro"]
+
+
+def _controles_superiores():
+    """Estilo y modo noche: dos botones redondos arriba a la derecha, en todas las páginas."""
+    p = ui_estilo.TEMAS[ui_estilo.TEMA]
+    st.markdown("""<style>
+    [data-testid="stSidebarNav"]{display:none !important;}
+    .st-key-ctl_top{position:fixed;top:.75rem;right:9.5rem;z-index:1000002;display:flex;flex-direction:row;gap:.55rem;width:auto;}
+    .st-key-ctl_top [data-testid="stElementContainer"]{width:auto;}
+    .st-key-ctl_top :is([data-testid="stPopover"],[data-testid="stButton"],[data-testid="stElementContainer"],.st-key-ctl_estilo){width:30px !important;min-width:30px !important;flex:none !important;}
+    .st-key-ctl_top button{width:30px !important;min-width:30px !important;max-width:30px !important;height:30px !important;min-height:30px !important;padding:0 !important;border-radius:50% !important;border:1px solid @INBD@ !important;
+      background:@CARD@ !important;box-shadow:0 2px 8px @SHADOW@;display:flex;align-items:center;justify-content:center;}
+    .st-key-ctl_top button:hover{border-color:@ACC@ !important;transform:none;box-shadow:0 2px 8px @SHADOW@;}
+    .st-key-ctl_top button :is(p,span,svg){color:@TXT@ !important;fill:@TXT@;}
+    .st-key-ctl_estilo button{background:linear-gradient(135deg,@ACC@ 50%,@ORQ@ 50%) !important;}
+    .st-key-ctl_estilo button *{display:none !important;}
+    [data-testid="stSidebar"] [data-testid="stPageLink"] :is(a,p,span){color:@SIDETXT@ !important;font-weight:600;}
+    </style>""".replace("@INBD@", p["INBD"]).replace("@CARD@", p["CARD"]).replace("@SHADOW@", p["SHADOW"]).replace("@ACC@", p["INDIGO"])
+        .replace("@SIDETXT@", p["SIDETXT"]).replace("@TXT@", p["TEXTO"]).replace("@ORQ@", p["ORQ"]), unsafe_allow_html=True)
+    with st.container(key="ctl_top"):
+        with st.container(key="ctl_estilo"):
+            with st.popover("Estilo", help="Estilo de colores"):
+                st.radio("Estilo", list(ui_estilo.ESTILOS), format_func=lambda k: ui_estilo.NOMBRES_ESTILO[k], key="estilo",
+                         label_visibility="collapsed")
+        st.button("", icon=":material/light_mode:" if st.session_state["oscuro"] else ":material/dark_mode:", key="ctl_modo",
+                  on_click=_cambiar_modo, help="Modo claro" if st.session_state["oscuro"] else "Modo noche")
+
+
+PAG = {
+    "sesiones": st.Page("pagina_sesiones.py", title="Sesiones XAU/USD", icon="📈", url_path="sesiones"),
+    "ema": st.Page("app_backtest.py", title="Backtester EMA", icon="🧪", url_path="ema"),
+    "sma": st.Page("app_backtest_sma.py", title="Backtester SMA", icon="📐", url_path="sma"),
+}
+
+
+def portada():
+    import pagina_portada
+    pagina_portada.render({k: v.url_path for k, v in PAG.items()})
+
+
+PORTADA = st.Page(portada, title="Portada", icon="🏠", url_path="portada", default=True)
+pagina = st.navigation([PORTADA, *PAG.values()])
+_controles_superiores()
+if pagina is not PORTADA:
+    with st.sidebar:   # el menú de páginas se oculta: se navega desde la portada
+        st.page_link(PORTADA, label="Portada", icon=":material/arrow_back:")
 pagina.run()

@@ -148,3 +148,64 @@ def test_campo_numerico_del_area_principal():
         assert "@ACC@" not in c and "@VIO@" not in c and "\n\n" not in c
         assert ui.TEMAS[t]["VIOLETA"] in c        # el borde usa el violeta del tema
     ui.set_tema("claro")
+
+
+def _lum(hexa):
+    h = hexa.lstrip("#")
+    c = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    c = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+
+def _contraste(a, b):
+    la, lb = sorted((_lum(a), _lum(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def test_cinco_estilos_con_modo_noche_completos_y_legibles():
+    import ui_estilo as v
+    assert list(v.ESTILOS) == ["moderno", "sobrio", "pastel", "oceano", "atardecer"]
+    claves = set(v.ESTILOS["moderno"]["claro"])
+    try:
+        for e, modos in v.ESTILOS.items():
+            assert set(modos) == {"claro", "oscuro"} and e in v.NOMBRES_ESTILO
+            for m, p in modos.items():
+                assert set(p) == claves, (e, m)
+                v.set_tema(m, e)
+                c = v.css()
+                assert not re.findall(r"@[A-Z]+@", c) and "\n\n" not in c, (e, m)
+                assert p["BG"] in c and p["SIDE"] in c and p["BTNG"] in c
+                # texto principal y secundario legibles sobre el fondo y las tarjetas
+                assert _contraste(p["TEXTO"], p["BG"]) >= 7 and _contraste(p["TEXTO"], p["CARD"]) >= 7, (e, m)
+                assert _contraste(p["SUAVE"], p["CARD"]) >= 3.5, (e, m)
+                # texto de la barra lateral sobre sus colores extremos del degradado
+                for col in re.findall(r"#[0-9a-fA-F]{6}", p["SIDE"]):
+                    assert _contraste(p["SIDETXT"], col) >= 3.5, (e, m, col)
+                # texto de botones sobre sus colores
+                for col in re.findall(r"#[0-9a-fA-F]{6}", p["BTNG"]):
+                    assert _contraste(p["BTNTXT"], col) >= 2.7, (e, m, col)
+                # lo positivo y lo negativo se distinguen entre si y se leen sobre la tarjeta
+                assert p["INDIGO"] != p["ROSA"] and _contraste(p["INDIGO"], p["CARD"]) >= 2.2 and _contraste(p["ROSA"], p["CARD"]) >= 2.2, (e, m)
+                # el veredicto y los componentes se arman en cada estilo
+                assert "insight" in v.veredicto_caja("a", "b", "<i>c</i>", "ok") and "<svg" not in v.anillo(10, "x", "y")
+    finally:
+        v.set_tema("claro", "moderno")
+
+
+def test_set_tema_cambia_colores_de_componentes_y_vuelve_al_moderno():
+    import ui_estilo as v
+    try:
+        v.set_tema("claro", "oceano")
+        assert v.INDIGO == v.ESTILOS["oceano"]["claro"]["INDIGO"] and v.ESTILO == "oceano"
+        assert v.TEMAS["oscuro"]["BG"] == v.ESTILOS["oceano"]["oscuro"]["BG"]
+        v.set_tema("oscuro", "estilo_inexistente")
+        assert v.ESTILO == "moderno" and v.TEMA == "oscuro"
+    finally:
+        v.set_tema("claro", "moderno")
+    assert v.ROSA == "#ff4fa3" and v.TEMAS["claro"]["BG"] == "#eef0fb"
+
+
+def test_anillo_acepta_alto_minimo():
+    import ui_estilo as v
+    assert "min-height:284px" in v.anillo(20, "t", "s", 16.7, min_alto=284)
+    assert "min-height" not in v.anillo(20, "t", "s", 16.7)

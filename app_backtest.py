@@ -63,12 +63,14 @@ except ImportError:
 SPREADS = {"Spread de la vela": "vela", "Ceros → mediana": "mediana",
            "Valor fijo": "fijo", "Sin spread": "ninguno"}
 DIRECCIONES = {"Largos y cortos": "ambas", "Solo largos": "largos", "Solo cortos": "cortos"}
+ALTO_ANILLOS = 284        # alto (px) de las cuatro tarjetas de la fila de anillos, para que queden alineadas
 ALTO_FILA = 400          # alto mínimo (px) de las tarjetas «Expectativa por año» y «Embudo», para que queden iguales
 SESIONES = ["Tokio", "Londres", "Nueva York"]
 COLS_TABLA = ["resueltas", "TP", "SL", "abiertas", "ambiguas", "%TP", "%equilibrio", "exp_R",
               "R_total", "maxDD_R", "racha_SL", "azar_exp_R", "mejor_que_%azar",
               "cruces", "tomados", "ignoradas"]
 SL_ATR, SL_PCT, SL_USD = "Múltiplo de ATR", "% del precio", "Dólares fijos"
+SL_EMA = "Distancia a una media"
 TP_RR, TP_USD = "Ratio R:R", "Dólares fijos"
 ETQ_MT5 = "MT5 directo (FTMO)" if MT5_OK else "MT5 directo (solo en tu PC con Windows)"
 ETQ_CSV = "CSV exportado de MT5"
@@ -226,15 +228,43 @@ with st.sidebar:
             ema_c = c1.number_input(f"{MEDIA} corta", 2, 500, 20 if ES_SMA else 13)
             ema_l = c2.number_input(f"{MEDIA} larga", 3, 1000, 50 if ES_SMA else 34)
         direccion = DIRECCIONES[st.selectbox("Dirección", list(DIRECCIONES))]
-        salida_txt = "Objetivo fijo (RR o US$)" if not ES_SMA else st.radio(      # solo en la página SMA: la de EMA no cambia
-            "Salida (Take Profit)", ["Objetivo fijo (RR o US$)", "Cuando el precio cambia de lado de la media"],
-            help="Objetivo fijo: TP a una distancia fija del SL, como siempre. Cambio de lado: no hay TP; se cierra al cierre "
-                 "de la primera vela que queda del otro lado de la media (un largo sale cuando una vela cierra por debajo, un "
-                 "corto cuando cierra por encima). El SL sigue activo y se revisa antes en cada vela.")
+        _sal_cruce = modo_senal == "cruce"
+        _op_sal = "Cuando las medias se cruzan en sentido contrario" if _sal_cruce else "Cuando el precio cambia de lado de la media"
+        salida_txt = st.radio(
+            "Salida (Take Profit)", ["Objetivo fijo (RR o US$)", _op_sal],
+            help="Objetivo fijo: TP a una distancia fija del SL, como siempre. " + (
+                f"Cruce contrario: no hay TP; la operación se cierra al cierre de la primera vela en que la {MEDIA} corta queda del "
+                f"otro lado de la larga (un largo sale cuando la corta pasa por debajo de la larga, un corto cuando pasa por "
+                f"encima). " if _sal_cruce else
+                "Cambio de lado: no hay TP; se cierra al cierre de la primera vela que queda del otro lado de la media (un largo "
+                "sale cuando una vela cierra por debajo, un corto cuando cierra por encima). ")
+            + "El SL sigue activo y se revisa antes en cada vela.")
         salida_modo = "senal" if salida_txt.startswith("Cuando") else "rr"
-        sl_modo = st.selectbox("SL en", [SL_ATR, SL_PCT, SL_USD])
+        sl_modo = st.selectbox("SL en", [SL_ATR, SL_PCT, SL_USD, SL_EMA],
+                               help="Distancia a una media: el SL queda fijo en el nivel de la media (al entrar) más o menos una "
+                                    "distancia en pips o en dólares de precio. Los otros modos miden el SL desde el precio de entrada.")
+        sl_ema_ref, sl_ema_unidad = "larga", "precio"
         if salida_modo == "senal":
-            st.caption("Sin TP fijo: la operación dura hasta que una vela cierra del otro lado de la media o toca el SL.")
+            st.caption("Sin TP fijo: la operación dura hasta que las medias se cruzan al revés o toca el SL." if _sal_cruce else
+                       "Sin TP fijo: la operación dura hasta que una vela cierra del otro lado de la media o toca el SL.")
+        if sl_modo == SL_EMA:
+            if modo_senal == "precio":
+                st.caption(f"Media de referencia: la {MEDIA} de {int(media_unica)} períodos.")
+            else:
+                sl_ema_ref = {f"{MEDIA} corta": "corta", f"{MEDIA} larga": "larga"}[st.radio(
+                    "Media de referencia", [f"{MEDIA} corta", f"{MEDIA} larga"], index=1, horizontal=True)]
+            sl_ema_unidad = {"Pips": "pips", "Dólares (precio)": "precio"}[st.radio(
+                "Distancia en", ["Pips", "Dólares (precio)"], horizontal=True,
+                help="Pips: 1 pip = 10 puntos = 10 × tick_size del símbolo (en el oro 0,10; en EURUSD 0,0001). "
+                     "Dólares (precio): la distancia en el precio del activo (en el oro, 3 = el precio se mueve 3,00).")]
+            sl_valor = st.number_input("Distancia a la media (pips)" if sl_ema_unidad == "pips" else "Distancia a la media (dólares de precio)",
+                                       0.0, 1_000_000.0, 30.0 if sl_ema_unidad == "pips" else 3.0, 1.0 if sl_ema_unidad == "pips" else 0.5)
+            st.caption("El SL queda fijo en la media menos la distancia (compras) o más la distancia (ventas), con la media de la "
+                       "vela de la señal. Si al entrar la media quedó del lado equivocado del precio, esa señal no se opera.")
+            sl_usd = tp_usd = 0.0
+            tp_modo = TP_RR
+            rr = 2.0 if salida_modo == "senal" else st.number_input("RR (1:x)", 0.1, 50.0, 2.0, 0.5)
+        elif salida_modo == "senal":
             rr, tp_usd, tp_modo = 2.0, 0.0, TP_RR            # el RR no interviene
             if sl_modo == SL_USD:
                 sl_usd = st.number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
@@ -439,12 +469,15 @@ def construir_config(simbolo: str = None) -> eng.Config:
         # dólares -> distancia de precio: US$ / (US$ por cada 1,00 de precio con este lote)
         vpu = met.valor_por_unidad(p["tick_size"], p["tick_value"], lotes)
         modo, valor = "precio", float(sl_usd) / vpu
+    elif sl_modo == SL_EMA:
+        # pips -> distancia de precio: 1 pip = 10 x tick_size (se recalcula por símbolo)
+        modo, valor = "ema", float(sl_valor) * (10.0 * p["tick_size"] if sl_ema_unidad == "pips" else 1.0)
     else:
         modo, valor = ("pct" if sl_modo == SL_PCT else "atr"), float(sl_valor)
     return eng.Config(
         ema_corta=int(ema_c), ema_larga=int(ema_l), rr=float(rr), salida_modo=salida_modo,
         media_tipo=TIPO, modo_senal=modo_senal, media_unica=int(media_unica),
-        sl_modo=modo, sl_valor=valor, atr_periodo=int(atr_per),
+        sl_modo=modo, sl_valor=valor, sl_ema_ref=sl_ema_ref, atr_periodo=int(atr_per),
         pullback_activo=bool(pb_on), pullback_pct=float(pb_pct), pullback_ema=pb_ema, pullback_velas=int(pb_velas),
         direccion=direccion, spread=spread, spread_fijo=float(spread_fijo), costo_extra=float(costo_extra),
         vwap_activo=vwap_on, vwap_dist_min_atr=float(vwap_dist), vwap_min_minutos=float(vwap_min),
@@ -526,6 +559,19 @@ if sl_modo == SL_USD:
     except ValueError as e:
         st.error(str(e))
 
+if sl_modo == SL_EMA:
+    try:
+        conv = [(s_, f"{vis.n(construir_config(s_).sl_valor, 5 if construir_config(s_).sl_valor < 1 else 2)} de precio")
+                for s_ in list(datos)[:8]]
+        st.write("")
+        html(vis.tarjeta(f"SL a {vis.n(sl_valor)} {'pips' if sl_ema_unidad == 'pips' else 'dólares de precio'} de la media: "
+                         "distancia en precio", vis.chips(conv),
+                         "El SL real de cada operación es la media (al entrar) menos o más esa distancia, así que el riesgo en dólares "
+                         "cambia de una operación a otra con el lote fijo. Para limitarlo, usá «Riesgo máximo por operación» en "
+                         "«4. Lotaje y dinero»."))
+    except ValueError as e:
+        st.error(str(e))
+
 with st.expander("📖 Guía de cada campo"):
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "guia_campos.md"), encoding="utf-8") as f_:
@@ -588,8 +634,9 @@ if comp:
             _tabla, _notas = met.comparar_simbolos(
                 datos, cfgs, oos / 100, int(azar_n), 42, estado.contador, recortar)
             _gest = (f"SL US${vis.n(sl_usd, 0)}" if sl_modo == SL_USD
-                     else f"SL {vis.n(sl_valor, 1)}{'×ATR' if sl_modo == SL_ATR else '%'}")
-            _gest += " · salida por cambio de lado" if salida_modo == "senal" else (
+                     else (f"SL a {vis.n(sl_valor, 1)} {'pips' if sl_ema_unidad == 'pips' else 'de precio'} de la {sl_ema_ref}"
+                           if sl_modo == SL_EMA else f"SL {vis.n(sl_valor, 1)}{'×ATR' if sl_modo == SL_ATR else '%'}"))
+            _gest += (" · salida por cruce contrario" if modo_senal == "cruce" else " · salida por cambio de lado") if salida_modo == "senal" else (
                 f" · TP US${vis.n(sl_usd * rr, 0)}" if sl_modo == SL_USD else f" · TP 1:{vis.n(rr, 1)}")
             _sen = (f"Precio vs SMA {int(media_unica)}" if modo_senal == "precio" else f"{MEDIA} {int(ema_c)}/{int(ema_l)}")
             estado.comp = (_tabla, _notas, f"{_sen} · {_gest}")
@@ -721,7 +768,7 @@ t = r["tabla"]
 tt, ti, to = t.loc["Todo"], t.loc["In-sample"], t.loc["Out-of-sample"]
 tr = r["trades"]
 if cfg_usada.salida_modo == "senal":
-    st.caption("Salida por cambio de lado: aquí «TP» son las operaciones que cerraron con ganancia y «SL» las que cerraron con "
+    st.caption("Salida por " + ("cruce contrario" if cfg_usada.modo_senal == "cruce" else "cambio de lado") + ": aquí «TP» son las operaciones que cerraron con ganancia y «SL» las que cerraron con "
                "pérdida (ya sea por el SL o por la señal de salida). La columna «motivo» de la tabla dice cómo cerró cada una; "
                "el R de cada operación es el real, no uno fijo.")
 res = tr[tr["res"].isin(["TP", "SL"])] if len(tr) else tr
@@ -748,8 +795,27 @@ with c2:
                  f"{int(tt['TP'])} TP · {int(tt['SL'])} SL · {int(tt['abiertas'])} abiertas", vis.VIOLETA))
 with c3:
     html(vis.kpi("R total", vis.n(tt["R_total"], 1, True), "suma de resultados", vis.tono(tt["R_total"])))
+_dd_usd = _dd_pct = None
+try:
+    _cap_dd = float(pdin.get("capital", 0.0)) or float(cfg_usada.capital)
+    _dd_usd = met.resumen_dinero(tr, pdin["tick_size"], pdin["tick_value"], pdin["lotes"], pdin["comision"]).get("max_drawdown")
+    if _dd_usd is not None and _cap_dd > 0:
+        _dd_pct = 100.0 * _dd_usd / _cap_dd
+except Exception:
+    _dd_usd = _dd_pct = None
 with c4:
-    html(vis.kpi("Máx. drawdown", vis.n(tt["maxDD_R"], 1) + " R", f"racha máxima de SL: {int(tt['racha_SL'])}", vis.ROSA))
+    _sub_dd = (f"≈ {vis.n(_dd_usd, 0)} US$ · {vis.n(_dd_pct, 1)} % del capital · " if _dd_pct is not None else "") \
+        + f"racha máx. de SL: {int(tt['racha_SL'])}"
+    html(vis.kpi("Máx. drawdown", vis.n(tt["maxDD_R"], 1) + " R", _sub_dd, vis.ROSA))
+if _dd_pct is not None and cfg_usada.reglas_activas:
+    _lim_t = cfg_usada.limites_efectivos()[1]
+    if _lim_t and _dd_pct >= _lim_t:
+        st.warning(f"La peor caída desde un máximo ({vis.n(_dd_pct, 1)} % del capital) supera el límite total efectivo de "
+                   f"{vis.n(_lim_t, 1)} %. En este historial la cuenta se salvó porque esa caída llegó después de ganar, pero con otro "
+                   "punto de arranque (justo antes de esa caída) se habría quemado.")
+    elif _lim_t:
+        st.caption(f"La peor caída desde un máximo ({vis.n(_dd_pct, 1)} % del capital) queda por debajo del límite total efectivo "
+                   f"({vis.n(_lim_t, 1)} %), arranque la cuenta cuando arranque.")
 
 if cfg_usada.reglas_activas and r.get("cuenta"):
     _cu = r["cuenta"]
@@ -757,8 +823,11 @@ if cfg_usada.reglas_activas and r.get("cuenta"):
     _dias_tot = int(len(np.unique(r["P"].dia))) if r["P"].dia is not None else 0
     _salt = (_cu["saltadas_dia"] + _cu["saltadas_proteccion"] + _cu["saltadas_riesgo"] + _cu["saltadas_pausa"])
     if _cu["quemada"]:
+        _gmax = float(_cu.get("balance_max", _cap_u)) - _cap_u
         st.error(f"Con estas reglas la cuenta se habría quemado el {str(r['P'].indice[int(_cu['quemada_en'])])[:10]}: "
-                 "el resultado termina ahí y el resto del período no se opera.")
+                 "el resultado termina ahí y el resto del período no se opera. "
+                 + (f"Antes de quemarse llegó a ganar como máximo {vis.n(_gmax, 0)} US$ ({vis.n(100 * _gmax / _cap_u, 1)} % del capital)."
+                    if _gmax > 0 else "Antes de quemarse nunca estuvo por encima del capital inicial."))
     st.write("")
     html(vis.titulo_seccion("Reglas de la cuenta", "Qué hicieron los límites y controles en el período (tramo «Todo»)"))
     q1, q2, q3, q4 = st.columns(4)
@@ -771,7 +840,10 @@ if cfg_usada.reglas_activas and r.get("cuenta"):
                      f"{_cu['saltadas_riesgo']} riesgo · {_cu['saltadas_pausa']} pausa", vis.VIOLETA, 140))
     with q3:
         html(vis.kpi("Cuenta quemada", "Sí" if _cu["quemada"] else "No",
-                     (f"{_cu['forzadas']} cierres forzados por límite" if _cu["forzadas"] else "límite total no alcanzado"),
+                     ((f"llegó a +{vis.n(max(float(_cu.get('balance_max', _cap_u)) - _cap_u, 0), 0)} US$ antes de quemarse"
+                       + (f" · {_cu['forzadas']} cierres forzados" if _cu["forzadas"] else ""))
+                      if _cu["quemada"] else
+                      (f"{_cu['forzadas']} cierres forzados por límite" if _cu["forzadas"] else "límite total no alcanzado")),
                      vis.ROSA if _cu["quemada"] else vis.INDIGO, 140))
     with q4:
         html(vis.kpi("Peor día", vis.n(_cu["peor_dia_usd"], 0, True) + " US$",
@@ -803,12 +875,13 @@ for k, (clave, titulo, fila) in enumerate(anillos):
     with cols[k]:
         html(vis.anillo(fila["%TP"], titulo,
                         f"{int(fila['resueltas'])} operaciones<br>expectativa {vis.n(fila['exp_R'], 2, True)} R<br>"
-                        f"equilibrio {vis.n(fila['%equilibrio'], 1)}%", fila["%equilibrio"], uid=f"r{k}"))
+                        f"equilibrio {vis.n(fila['%equilibrio'], 1)}%", fila["%equilibrio"], uid=f"r{k}",
+                        min_alto=ALTO_ANILLOS))
 with cols[3]:
     html(vis.tarjeta("Cómo leer los anillos", "<div class='note' style='font-size:.8rem'>"
                      "El anillo es el <b>% de operaciones que llegan al TP</b>. La rayita negra marca el "
                      "<b>% de equilibrio</b> (el mínimo para no perder con ese RR y costos): si el anillo pasa la "
-                     "rayita, la expectativa es positiva.</div>"))
+                     "rayita, la expectativa es positiva.</div>", min_alto=ALTO_ANILLOS))
 
 st.write("")
 if len(res):
@@ -832,6 +905,9 @@ if len(res):
             _txt.append("Descartadas por filtro: " + " · ".join(f"{_nombres.get(k, k)} {int(v_)}" for k, v_ in r["descartes"].items()) + ".")
         if _pb and _pb["ordenes"]:
             _txt.append(f"Sin ejecutar: caducaron {_pb['caducadas']}, cruce contrario {_pb['cruce_contrario']}.")
+        _si = int(r["trades"].attrs.get("sl_invalido", 0) or 0)
+        if _si:
+            _txt.append(f"{_si} señales sin operar: la media quedó del lado equivocado del precio (el SL habría quedado al revés).")
         _txt.append(f"{int(tt['ignoradas'])} señales ignoradas por haber ya una operación abierta.")
         tarjeta_html("Embudo de señales", cuerpo, " ".join(_txt), min_alto=ALTO_FILA)
 

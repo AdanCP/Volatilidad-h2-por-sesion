@@ -29,10 +29,20 @@ Cada campo cambia **qué operaciones se toman** o **cómo se miden**. Cambiá de
 - **Caducidad (velas):** si en ese plazo no hubo retroceso, la orden se cancela. También se cancela si aparece un cruce contrario.
 - **Cómo leerlo:** mirá el porcentaje de órdenes ejecutadas y comparalo contra la versión sin pullback **por mes**, no solo por operación: el pullback suele mejorar el R por operación pero deja pasar las tendencias fuertes que no retroceden. El backtest supone que la orden se ejecuta cuando el precio toca el nivel, algo optimista en la práctica.
 
+### SL a una distancia de una media
+En "3. Señal y gestión", el campo **SL en** tiene la opción **Distancia a una media**: el SL no se mide desde el precio de entrada sino desde una media móvil.
+- **Media de referencia**: la corta o la larga (con "Precio cruza una SMA", la única media).
+- **Distancia en pips o en dólares de precio.** 1 pip = 10 puntos = 10 × tick_size del símbolo: en el oro 0,10 (30 pips = 3,00), en EURUSD 0,0001. «Dólares (precio)» es la distancia en el precio del activo (en el oro, 3 = el precio se mueve 3,00). No es lo mismo que el SL en «Dólares fijos», que es una pérdida en dinero de la cuenta.
+- **Cómo queda el SL:** fijo en la media **menos** la distancia en las compras y **más** la distancia en las ventas, con el valor de la media en la vela de la señal (con pullback, el de la vela anterior al llenado). No se mueve después.
+- El **riesgo cambia en cada operación**: depende de qué tan lejos estaba el precio de la media. Con el lote fijo, eso cambia los dólares en juego. Para acotarlo, usá «Riesgo máximo por operación» en «4. Lotaje y dinero».
+- Si al entrar la media quedó del lado equivocado del precio (el SL quedaría al revés), **esa señal no se opera**. El embudo muestra cuántas fueron.
+- El TP por RR (1:x) y la salida por cruce contrario siguen funcionando: el RR se mide sobre la distancia real al SL de esa operación. El bot de MT5 lo respeta.
+
 ### Salida (Take Profit): objetivo fijo o cambio de lado de la media
 En "3. Señal y gestión", el campo **Salida (Take Profit)** permite elegir:
 - **Objetivo fijo (RR o US$)**: como siempre, el TP está a una distancia fija del SL.
-- **Cuando el precio cambia de lado de la media**: no hay TP. Un largo se cierra al cierre de la primera vela que queda **por debajo** de la media; un corto, al cierre de la primera vela que queda **por encima**. Ejemplo: una vela M5 cierra sobre la SMA 200 y se compra; se vende cuando una vela cierre por primera vez debajo de la SMA 200. Con el cruce de dos medias, "cambio de lado" significa que el cruce se invierte.
+- **Cuando las medias se cruzan en sentido contrario** (cruce de dos medias, en las páginas EMA y SMA): no hay TP. Un largo se cierra al cierre de la primera vela en que la media corta queda **por debajo** de la larga; un corto, cuando queda **por encima**. Es decir, la operación dura hasta que el cruce se invierte.
+- **Cuando el precio cambia de lado de la media** (señal "precio cruza una SMA"): no hay TP. Un largo se cierra al cierre de la primera vela que queda **por debajo** de la media; un corto, al cierre de la primera vela que queda **por encima**. Ejemplo: una vela M5 cierra sobre la SMA 200 y se compra; se vende cuando una vela cierre por primera vez debajo de la SMA 200. Con el cruce de dos medias, "cambio de lado" significa que el cruce se invierte.
 - El **SL sigue activo** y se revisa antes en cada vela. La salida por señal se evalúa recién desde la vela siguiente a la de la entrada.
 - En los resultados, «TP» son las operaciones que cerraron con ganancia y «SL» las que cerraron con pérdida (por SL o por la señal). La tabla de operaciones trae la columna «motivo» (tp / sl / senal) y el R de cada una es el real, no uno fijo; el % de equilibrio se calcula con el pago medio observado.
 - El **bot de MT5** respeta esta salida: abre sin TP y cierra a mercado cuando una vela cerrada queda del otro lado de la media (también lo detecta si el PC estuvo apagado), y avisa «SALIDA POR SENAL» al celular.

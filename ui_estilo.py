@@ -6,37 +6,117 @@ negativo = rosa, siempre acompañado de signo o flecha (no depende solo del colo
 """
 from html import escape as _e
 
-TEMAS = {
-    "claro": dict(ROSA="#ff4fa3", MAGENTA="#e63e9c", VIOLETA="#7c5cf0", INDIGO="#4c4fe0", AZUL="#2f3fd8",
-                  TEXTO="#1f2340", SUAVE="#7a7f9d", PISTA="#e7e9f7", GRID="#eceefa", EJE="#b9bcd8",
-                  BG="#eef0fb", CARD="#ffffff", LINE="#eef0fb", HEAD="#f4f5fd", ND="#b0b4cc",
-                  SHADOW="rgba(60,64,140,.10)", SHADOW2="rgba(60,64,140,.08)", INBG="#ffffff", INBD="#d9dcf3",
-                  SIDE="linear-gradient(185deg,#4b3fd1 0%,#6a4fe6 55%,#8a63f2 100%)"),
-    "oscuro": dict(ROSA="#ff5fae", MAGENTA="#f05fb0", VIOLETA="#9b82ff", INDIGO="#8b8fff", AZUL="#6b86ff",
-                   TEXTO="#eceefc", SUAVE="#9aa0c8", PISTA="#2a2e5a", GRID="#252952", EJE="#4a4f80",
-                   BG="#0e1126", CARD="#181b3b", LINE="#262a52", HEAD="#20244d", ND="#5a5f8a",
-                   SHADOW="rgba(0,0,0,.40)", SHADOW2="rgba(0,0,0,.30)", INBG="#10132d", INBD="#363c72",
-                   SIDE="linear-gradient(185deg,#1d1858 0%,#2b2280 55%,#3d2f98 100%)"),
+# Cada estilo tiene su version clara y su version noche. Claves: ROSA = color de lo negativo; INDIGO = color de lo positivo;
+# VIOLETA/MAGENTA/AZUL/ORQ/PROF = resto del degradado; SIDE/SIDETXT = barra lateral y su texto; VEIL/VEILB = velo de los
+# elementos de la barra lateral (fondo y bordes); BTNTXT = texto sobre botones y barras de color; GLOW = brillo de los botones.
+ESTILOS = {
+    "moderno": {
+        "claro": dict(ROSA="#ff4fa3", MAGENTA="#e63e9c", VIOLETA="#7c5cf0", INDIGO="#4c4fe0", AZUL="#2f3fd8", ORQ="#a355e8", PROF="#1b2a9e",
+                      TEXTO="#1f2340", SUAVE="#7a7f9d", PISTA="#e7e9f7", GRID="#eceefa", EJE="#b9bcd8",
+                      BG="#eef0fb", CARD="#ffffff", LINE="#eef0fb", HEAD="#f4f5fd", ND="#b0b4cc",
+                      SHADOW="rgba(60,64,140,.10)", SHADOW2="rgba(60,64,140,.08)", INBG="#ffffff", INBD="#d9dcf3",
+                      SIDE="linear-gradient(185deg,#4b3fd1 0%,#6a4fe6 55%,#8a63f2 100%)", SIDETXT="#ffffff",
+                      VEIL="rgba(255,255,255,.10)", VEILB="rgba(255,255,255,.25)", BTNTXT="#ffffff", GLOW="rgba(124,92,240,.35)"),
+        "oscuro": dict(ROSA="#ff5fae", MAGENTA="#f05fb0", VIOLETA="#9b82ff", INDIGO="#8b8fff", AZUL="#6b86ff", ORQ="#b778f0", PROF="#3a4bd0",
+                       TEXTO="#eceefc", SUAVE="#9aa0c8", PISTA="#2a2e5a", GRID="#252952", EJE="#4a4f80",
+                       BG="#0e1126", CARD="#181b3b", LINE="#262a52", HEAD="#20244d", ND="#5a5f8a",
+                       SHADOW="rgba(0,0,0,.40)", SHADOW2="rgba(0,0,0,.30)", INBG="#10132d", INBD="#363c72",
+                       SIDE="linear-gradient(185deg,#1d1858 0%,#2b2280 55%,#3d2f98 100%)", SIDETXT="#ffffff",
+                       VEIL="rgba(255,255,255,.10)", VEILB="rgba(255,255,255,.25)", BTNTXT="#ffffff", GLOW="rgba(155,130,255,.35)"),
+    },
+    "sobrio": {
+        "claro": dict(ROSA="#c0504d", MAGENTA="#b0454a", VIOLETA="#5a6f8a", INDIGO="#2f5d8a", AZUL="#1f4468", ORQ="#7a8aa3", PROF="#16324d",
+                      TEXTO="#1f2933", SUAVE="#6b7785", PISTA="#e3e7ec", GRID="#e9edf1", EJE="#b8c0ca",
+                      BG="#f1f3f6", CARD="#ffffff", LINE="#e9edf1", HEAD="#f5f7f9", ND="#b0b8c2",
+                      SHADOW="rgba(31,41,51,.09)", SHADOW2="rgba(31,41,51,.07)", INBG="#ffffff", INBD="#d3d9e0",
+                      SIDE="linear-gradient(185deg,#2b3340 0%,#343d4c 60%,#3d4859 100%)", SIDETXT="#ffffff",
+                      VEIL="rgba(255,255,255,.08)", VEILB="rgba(255,255,255,.22)", BTNTXT="#ffffff", GLOW="rgba(47,93,138,.30)"),
+        "oscuro": dict(ROSA="#e0706c", MAGENTA="#d4747f", VIOLETA="#8497b3", INDIGO="#6fa0d1", AZUL="#4f86bf", ORQ="#9aa9c0", PROF="#2f5d8a",
+                       TEXTO="#e6e9ee", SUAVE="#98a2b0", PISTA="#2a313b", GRID="#252b34", EJE="#4b5563",
+                       BG="#12151a", CARD="#1b2027", LINE="#2a313b", HEAD="#222831", ND="#5f6b7a",
+                       SHADOW="rgba(0,0,0,.45)", SHADOW2="rgba(0,0,0,.33)", INBG="#14181e", INBD="#364050",
+                       SIDE="linear-gradient(185deg,#0f1216 0%,#171b21 60%,#1e242c 100%)", SIDETXT="#e6e9ee",
+                       VEIL="rgba(255,255,255,.07)", VEILB="rgba(255,255,255,.18)", BTNTXT="#ffffff", GLOW="rgba(111,160,209,.30)"),
+    },
+    "pastel": {                       # menta y durazno: verdes suaves con coral claro para lo negativo
+        "claro": dict(ROSA="#ee8466", MAGENTA="#e57457", VIOLETA="#7cc9ae", INDIGO="#3fa07e", AZUL="#5aa7c7", ORQ="#f2c46d", PROF="#2f7d62",
+                      TEXTO="#3b4a44", SUAVE="#6f8279", PISTA="#e5f1ea", GRID="#ebf4ee", EJE="#c3d4ca",
+                      BG="#f4faf6", CARD="#ffffff", LINE="#ebf4ee", HEAD="#f2f9f5", ND="#b9c9c0",
+                      SHADOW="rgba(80,130,105,.13)", SHADOW2="rgba(80,130,105,.10)", INBG="#ffffff", INBD="#d6e6dc",
+                      SIDE="linear-gradient(185deg,#d6eee2 0%,#e4f3e9 50%,#fde8d8 100%)", SIDETXT="#3b4a44",
+                      VEIL="rgba(255,255,255,.65)", VEILB="rgba(59,74,68,.20)", BTNTXT="#2f3d37", GLOW="rgba(63,160,126,.30)"),
+        "oscuro": dict(ROSA="#ff9d85", MAGENTA="#f48d73", VIOLETA="#a6e0c8", INDIGO="#7fd6b0", AZUL="#82c4e0", ORQ="#f5d27f", PROF="#4aa586",
+                       TEXTO="#e8f3ed", SUAVE="#9ab3a7", PISTA="#2d3d36", GRID="#27352f", EJE="#4f685c",
+                       BG="#16201c", CARD="#1f2b26", LINE="#2b3a33", HEAD="#25332d", ND="#68857a",
+                       SHADOW="rgba(0,0,0,.40)", SHADOW2="rgba(0,0,0,.30)", INBG="#18231f", INBD="#3a5247",
+                       SIDE="linear-gradient(185deg,#1b2a24 0%,#22352c 55%,#2f3a2c 100%)", SIDETXT="#e8f3ed",
+                       VEIL="rgba(255,255,255,.08)", VEILB="rgba(255,255,255,.20)", BTNTXT="#16201c", GLOW="rgba(127,214,176,.28)"),
+    },
+    "oceano": {
+        "claro": dict(ROSA="#ef6f6c", MAGENTA="#e5575f", VIOLETA="#2aa6a0", INDIGO="#0f7f9e", AZUL="#0b5d8a", ORQ="#4bb5c9", PROF="#073f63",
+                      TEXTO="#12323f", SUAVE="#6a8794", PISTA="#dcecf0", GRID="#e6f1f4", EJE="#aac4cc",
+                      BG="#eef6f8", CARD="#ffffff", LINE="#e6f1f4", HEAD="#f2f9fb", ND="#a5bcc4",
+                      SHADOW="rgba(11,93,138,.11)", SHADOW2="rgba(11,93,138,.08)", INBG="#ffffff", INBD="#cfe2e8",
+                      SIDE="linear-gradient(185deg,#0b4f6c 0%,#0e6f8a 55%,#12808f 100%)", SIDETXT="#ffffff",
+                      VEIL="rgba(255,255,255,.10)", VEILB="rgba(255,255,255,.25)", BTNTXT="#ffffff", GLOW="rgba(15,127,158,.35)"),
+        "oscuro": dict(ROSA="#ff7f7a", MAGENTA="#f0707c", VIOLETA="#43c9b8", INDIGO="#4fc3dc", AZUL="#3aa0d6", ORQ="#68d6e6", PROF="#1b6fa3",
+                       TEXTO="#e3f2f6", SUAVE="#8fb0bb", PISTA="#1c3a46", GRID="#183440", EJE="#3d6372",
+                       BG="#0a1a22", CARD="#10262f", LINE="#1c3a46", HEAD="#15303b", ND="#52798a",
+                       SHADOW="rgba(0,0,0,.42)", SHADOW2="rgba(0,0,0,.32)", INBG="#0b1d25", INBD="#2a5365",
+                       SIDE="linear-gradient(185deg,#06222d 0%,#08303e 55%,#0b4152 100%)", SIDETXT="#e3f2f6",
+                       VEIL="rgba(255,255,255,.08)", VEILB="rgba(255,255,255,.20)", BTNTXT="#06222d", GLOW="rgba(79,195,220,.30)"),
+    },
+    "atardecer": {
+        "claro": dict(ROSA="#c0264f", MAGENTA="#d44a6a", VIOLETA="#8a3f7a", INDIGO="#d9701a", AZUL="#b8530f", ORQ="#e8a13a", PROF="#8a3a08",
+                      TEXTO="#3a2430", SUAVE="#94787f", PISTA="#f6e4da", GRID="#f9ece4", EJE="#d9bfb0",
+                      BG="#fdf3ec", CARD="#ffffff", LINE="#f9ece4", HEAD="#fdf6f1", ND="#cdb5a8",
+                      SHADOW="rgba(160,80,60,.12)", SHADOW2="rgba(160,80,60,.09)", INBG="#ffffff", INBD="#efd7c8",
+                      SIDE="linear-gradient(185deg,#6b2340 0%,#a53a3a 55%,#c85a1f 100%)", SIDETXT="#ffffff",
+                      VEIL="rgba(255,255,255,.10)", VEILB="rgba(255,255,255,.25)", BTNTXT="#ffffff", GLOW="rgba(217,98,43,.35)"),
+        "oscuro": dict(ROSA="#ff6b8a", MAGENTA="#f0607f", VIOLETA="#d98ab8", INDIGO="#ffa04d", AZUL="#ff8a3d", ORQ="#ffc166", PROF="#c4551b",
+                       TEXTO="#f6e8e2", SUAVE="#b79a98", PISTA="#432a2e", GRID="#392327", EJE="#6b4b4c",
+                       BG="#1c1214", CARD="#2a1a1d", LINE="#3f282c", HEAD="#331f23", ND="#7d5e5e",
+                       SHADOW="rgba(0,0,0,.45)", SHADOW2="rgba(0,0,0,.33)", INBG="#211416", INBD="#5a3a3d",
+                       SIDE="linear-gradient(185deg,#2a0f1c 0%,#4a1a2a 55%,#6b2a22 100%)", SIDETXT="#f6e8e2",
+                       VEIL="rgba(255,255,255,.08)", VEILB="rgba(255,255,255,.20)", BTNTXT="#2a1014", GLOW="rgba(255,160,77,.30)"),
+    },
 }
+# degradado de los botones principales (por defecto, del color de lo negativo al violeta)
+_BOTONES = {("pastel", "claro"): ("#f5a58a", "#7cc9ae"), ("pastel", "oscuro"): ("#ff9d85", "#7fd6b0"),
+            ("sobrio", "claro"): ("#2f5d8a", "#5a6f8a"), ("sobrio", "oscuro"): ("#4f86bf", "#6f8aa8"),
+            ("oceano", "claro"): ("#0f7f9e", "#2aa6a0"), ("oceano", "oscuro"): ("#4fc3dc", "#43c9b8"),
+            ("atardecer", "claro"): ("#d9701a", "#c0264f"), ("atardecer", "oscuro"): ("#ffa04d", "#ff6b8a")}
+for _e_, _modos in ESTILOS.items():
+    for _m_, _p_ in _modos.items():
+        _c1, _c2 = _BOTONES.get((_e_, _m_), (_p_["ROSA"], _p_["VIOLETA"]))
+        _p_["BTNG"] = f"linear-gradient(90deg,{_c1},{_c2})"
+NOMBRES_ESTILO = {"moderno": "Moderno", "sobrio": "Sobrio", "pastel": "Pastel", "oceano": "Océano", "atardecer": "Atardecer"}
+ESTILO = "moderno"
+TEMAS = dict(ESTILOS["moderno"])           # paleta clara/oscura del estilo activo (set_tema la actualiza)
 TEMA = "claro"
-ROSA = MAGENTA = VIOLETA = INDIGO = AZUL = TEXTO = SUAVE = PISTA = GRID = EJE = POS = NEG = ""
+ROSA = MAGENTA = VIOLETA = INDIGO = AZUL = ORQ = TEXTO = SUAVE = PISTA = GRID = EJE = POS = NEG = ""
 
 
-def set_tema(nombre: str = "claro") -> str:
-    """Cambia la paleta de los componentes (colores de los gráficos y del CSS). Es global del proceso:
-    se llama una vez por ejecución, al comienzo de app.py."""
-    global TEMA, ROSA, MAGENTA, VIOLETA, INDIGO, AZUL, TEXTO, SUAVE, PISTA, GRID, EJE, POS, NEG
+def set_tema(nombre: str = "claro", estilo: str = None) -> str:
+    """Cambia la paleta de los componentes (colores de los gráficos y del CSS). `nombre` es el modo ("claro" o "oscuro",
+    este último es el modo noche) y `estilo` el juego de colores (ver ESTILOS). Es global del proceso: se llama una vez
+    por ejecución, al comienzo de app.py."""
+    global ESTILO, TEMA, ROSA, MAGENTA, VIOLETA, INDIGO, AZUL, ORQ, TEXTO, SUAVE, PISTA, GRID, EJE, POS, NEG
+    if estilo is not None:
+        ESTILO = estilo if estilo in ESTILOS else "moderno"
+        TEMAS.clear()
+        TEMAS.update(ESTILOS[ESTILO])
     TEMA = nombre if nombre in TEMAS else "claro"
     p = TEMAS[TEMA]
-    ROSA, MAGENTA, VIOLETA, INDIGO, AZUL = p["ROSA"], p["MAGENTA"], p["VIOLETA"], p["INDIGO"], p["AZUL"]
+    ROSA, MAGENTA, VIOLETA, INDIGO, AZUL, ORQ = p["ROSA"], p["MAGENTA"], p["VIOLETA"], p["INDIGO"], p["AZUL"], p["ORQ"]
     TEXTO, SUAVE, PISTA, GRID, EJE = p["TEXTO"], p["SUAVE"], p["PISTA"], p["GRID"], p["EJE"]
     POS, NEG = INDIGO, ROSA
     return TEMA
 
 
-set_tema("claro")
+set_tema("claro", "moderno")
 
-# Poné False si la barra lateral morada no se ve bien en tu versión de Streamlit.
+# Poné False si la barra lateral de color no se ve bien en tu versión de Streamlit.
 SIDEBAR_MORADO = True
 
 
@@ -68,8 +148,8 @@ _CSS_NATIVOS = """/* widgets nativos: colores forzados para que no dependan del 
 [data-testid="stNumberInput"] button{background:@INBG@ !important;color:@TXT@ !important;}
 [data-testid="stMain"] [data-testid="stNumberInput"] :is(input,[data-baseweb="input"],[data-baseweb="base-input"],[data-testid="stNumberInputContainer"]){background:@INBG@ !important;color:@ACC@ !important;-webkit-text-fill-color:@ACC@ !important;font-weight:800;}
 [data-testid="stMain"] [data-testid="stNumberInput"] [data-baseweb="input"]{border:1.5px solid @VIO@ !important;border-radius:12px !important;overflow:hidden;box-shadow:0 2px 10px rgba(124,92,240,.16);}
-[data-testid="stMain"] [data-testid="stNumberInput"] button{background:linear-gradient(135deg,@ACC@,@VIO@) !important;color:#fff !important;border:0 !important;border-left:1px solid rgba(255,255,255,.35) !important;border-radius:0 !important;}
-[data-testid="stMain"] [data-testid="stNumberInput"] button :is(svg,path){fill:#fff !important;color:#fff !important;}
+[data-testid="stMain"] [data-testid="stNumberInput"] button{background:linear-gradient(135deg,@ACC@,@VIO@) !important;color:@BTNTXT@ !important;border:0 !important;border-left:1px solid rgba(255,255,255,.35) !important;border-radius:0 !important;}
+[data-testid="stMain"] [data-testid="stNumberInput"] button :is(svg,path){fill:@BTNTXT@ !important;color:@BTNTXT@ !important;}
 [data-testid="stMain"] [data-testid="stNumberInput"] button:hover{filter:brightness(1.12) saturate(1.1);}
 [data-testid="stFileUploaderDropzone"]{background:@INBG@ !important;}
 [data-testid="stFileUploaderDropzone"] :is(span,small,p,div){color:@TXT@ !important;}
@@ -85,29 +165,29 @@ _CSS_SIDEBAR = """
 [data-testid="stSidebar"] [data-testid="stRadio"] label p,
 [data-testid="stSidebar"] [data-testid="stCheckbox"] label p,
 [data-testid="stSidebar"] label :is(p,span),
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] > p{color:#fff !important;}
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] > p{color:@SIDETXT@ !important;}
 [data-testid="stSidebar"] h2{font-size:1.05rem;letter-spacing:.02em;text-transform:uppercase;
-  border-bottom:1px solid rgba(255,255,255,.25);padding-bottom:.35rem;margin-top:.6rem;}
-[data-testid="stSidebar"] [data-testid="stExpander"]{background:rgba(255,255,255,.10);box-shadow:none;
-  border:1px solid rgba(255,255,255,.22);border-radius:14px;}
+  border-bottom:1px solid @VEILB@;padding-bottom:.35rem;margin-top:.6rem;}
+[data-testid="stSidebar"] [data-testid="stExpander"]{background:@VEIL@;box-shadow:none;
+  border:1px solid @VEILB@;border-radius:14px;}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary{padding:.55rem .8rem;}
-[data-testid="stSidebar"] [data-testid="stExpander"] summary :is(p,span){color:#fff !important;font-weight:700;}
-[data-testid="stSidebar"] [data-testid="stExpander"] summary svg{fill:#fff;color:#fff;}
-.fte{font-size:1.05rem;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:#fff !important;
-  border-top:1px solid rgba(255,255,255,.25);padding-top:.7rem;margin-top:.4rem;}
-.fte-fin{border-bottom:1px solid rgba(255,255,255,.25);margin:.2rem 0 .7rem;}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary :is(p,span){color:@SIDETXT@ !important;font-weight:700;}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary svg{fill:@SIDETXT@;color:@SIDETXT@;}
+.fte{font-size:1.05rem;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:@SIDETXT@ !important;
+  border-top:1px solid @VEILB@;padding-top:.7rem;margin-top:.4rem;}
+.fte-fin{border-bottom:1px solid @VEILB@;margin:.2rem 0 .7rem;}
 [data-testid="stSidebar"] :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button{
-  background:linear-gradient(90deg,@NEG@,@VIO@) !important;border:0 !important;border-radius:12px;
-  box-shadow:0 4px 14px rgba(40,20,120,.35);}
+  background:@BTNG@ !important;border:0 !important;border-radius:12px;
+  box-shadow:0 4px 14px @GLOW@;}
 [data-testid="stSidebar"] :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button :is(p,span,div){
-  color:#fff !important;font-weight:700;}
+  color:@BTNTXT@ !important;font-weight:700;}
 [data-testid="stSidebar"] [data-testid="stButton"] button:disabled{opacity:.45;box-shadow:none;cursor:not-allowed;}
 [data-testid="stSidebar"] :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button:not(:disabled):hover{
   filter:brightness(1.2) saturate(1.12);transform:translateY(-2px);
-  box-shadow:0 0 0 3px rgba(255,255,255,.95),0 0 22px 6px rgba(255,255,255,.55);}
+  box-shadow:0 0 0 3px @SIDETXT@,0 0 22px 6px @GLOW@;}
 [data-testid="stSidebarNav"] a{border-radius:10px;}
-[data-testid="stSidebarNav"] a span{color:#fff !important;}
-[data-testid="stSidebarNav"] a[aria-current="page"]{background:rgba(255,255,255,.18);}
+[data-testid="stSidebarNav"] a span{color:@SIDETXT@ !important;}
+[data-testid="stSidebarNav"] a[aria-current="page"]{background:@VEILB@;}
 """
 
 CSS = """<style>
@@ -121,14 +201,14 @@ h1,h2,h3{color:@TXT@;letter-spacing:-.01em;}
 [data-testid="stVerticalBlockBorderWrapper"]{background:@CARD@;border:0 !important;border-radius:18px;
   box-shadow:0 6px 22px @SHADOW@;padding:.35rem .35rem;}
 /* botones */
-button[kind="primary"],[data-testid="stBaseButton-primary"]{background:linear-gradient(90deg,#ff4fa3,#7c5cf0);
-  border:0;color:#fff;border-radius:12px;font-weight:600;box-shadow:0 6px 16px rgba(124,92,240,.35);}
+button[kind="primary"],[data-testid="stBaseButton-primary"]{background:@BTNG@;
+  border:0;color:@BTNTXT@;border-radius:12px;font-weight:600;box-shadow:0 6px 16px @GLOW@;}
 button[kind="secondary"],[data-testid="stBaseButton-secondary"]{border-radius:12px;border:1px solid @INBD@;
   background:@CARD@;color:@ACC@;font-weight:600;}
 .stButton>button{width:100%;padding:.55rem 1rem;}
 .stButton>button,.stDownloadButton>button{transition:filter .15s,transform .15s,box-shadow .15s,background .15s,border-color .15s;}
 button[kind="primary"]:hover,[data-testid="stBaseButton-primary"]:hover{filter:brightness(1.18) saturate(1.12);transform:translateY(-2px);
-  box-shadow:0 0 0 3px #fff,0 0 0 6px rgba(255,79,163,.65),0 12px 26px rgba(124,92,240,.55);}
+  box-shadow:0 0 0 3px @CARD@,0 0 0 6px @NEG@,0 12px 26px @GLOW@;}
 button[kind="secondary"]:hover,[data-testid="stBaseButton-secondary"]:hover{background:@HEAD@;border-color:@ACC@;color:@ACC@;
   transform:translateY(-2px);box-shadow:0 0 0 3px @CARD@,0 0 0 5px @ACC@,0 10px 22px @SHADOW@;}
 button:active{transform:translateY(0);filter:brightness(.97);}
@@ -153,7 +233,7 @@ button:active{transform:translateY(0);filter:brightness(.97);}
 .cargando{display:flex;align-items:center;gap:14px;padding:14px 6px;}
 .cargando .txt{color:@TXT@;font-weight:600;font-size:.95rem;}
 .anillo-carga{width:34px;height:34px;border-radius:50%;flex:none;
-  background:conic-gradient(from 0deg,rgba(255,79,163,0),@NEG@ 40%,@VIO@ 85%,@ACC@);
+  background:conic-gradient(from 0deg,transparent,@NEG@ 40%,@VIO@ 85%,@ACC@);
   -webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 5px),#000 calc(100% - 4px));
   mask:radial-gradient(farthest-side,transparent calc(100% - 5px),#000 calc(100% - 4px));
   animation:giro-carga 1.2s linear infinite;}
@@ -167,8 +247,8 @@ button:active{transform:translateY(0);filter:brightness(.97);}
 .track{position:relative;height:11px;border-radius:99px;background:@TRACK@;}
 .track .c{position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:@EJE@;}
 .track .f{position:absolute;top:0;bottom:0;border-radius:99px;}
-.emb .e{box-sizing:border-box;margin:8px auto;border-radius:12px;color:#fff;padding:9px 14px;display:flex;justify-content:space-between;
-  font-weight:600;font-size:.82rem;box-shadow:0 4px 12px rgba(124,92,240,.25);}
+.emb .e{box-sizing:border-box;margin:8px auto;border-radius:12px;color:@BTNTXT@;padding:9px 14px;display:flex;justify-content:space-between;
+  font-weight:600;font-size:.82rem;box-shadow:0 4px 12px @GLOW@;}
 .emb .e span:last-child{font-weight:800;}
 .ra{margin-bottom:9px;}
 .ra .rl{display:flex;justify-content:space-between;font-size:.86rem;font-weight:600;color:@TXT@;}
@@ -176,9 +256,9 @@ button:active{transform:translateY(0);filter:brightness(.97);}
 .ra .trk{background:@TRACK@;border-radius:8px;height:13px;margin-top:3px;overflow:hidden;}
 .ra .trk div{height:100%;border-radius:8px;}
 .ra .rp{font-size:.7rem;color:@MUTED@;margin-top:1px;}
-.insight{background:linear-gradient(120deg,#4c4fe0,#2f3fd8);color:#fff;border-radius:18px;padding:16px 20px;
-  box-shadow:0 8px 24px rgba(47,63,216,.30);font-size:.9rem;line-height:1.55;}
-.insight b{color:#fff;}
+.insight{background:linear-gradient(120deg,@ACC@,@AZ@);color:@BTNTXT@;border-radius:18px;padding:16px 20px;
+  box-shadow:0 8px 24px @GLOW@;font-size:.9rem;line-height:1.55;}
+.insight b{color:@BTNTXT@;}
 .insight .tt{font-weight:800;letter-spacing:.04em;text-transform:uppercase;font-size:.72rem;opacity:.85;margin-bottom:4px;}
 .note{color:@MUTED@;font-size:.78rem;line-height:1.5;margin-top:6px;}
 .tbl{overflow:auto;border-radius:12px;}
@@ -207,7 +287,8 @@ def css() -> str:
     fichas = {"@BG@": p["BG"], "@CARD@": p["CARD"], "@TXT@": p["TEXTO"], "@MUTED@": p["SUAVE"], "@TRACK@": p["PISTA"],
               "@LINE@": p["LINE"], "@HEAD@": p["HEAD"], "@ND@": p["ND"], "@EJE@": p["EJE"], "@SHADOW@": p["SHADOW"],
               "@SHADOW2@": p["SHADOW2"], "@INBG@": p["INBG"], "@INBD@": p["INBD"], "@ACC@": p["INDIGO"],
-              "@NEG@": p["ROSA"], "@VIO@": p["VIOLETA"], "@SIDE@": p["SIDE"]}
+              "@NEG@": p["ROSA"], "@VIO@": p["VIOLETA"], "@SIDE@": p["SIDE"], "@AZ@": p["AZUL"], "@SIDETXT@": p["SIDETXT"],
+              "@VEIL@": p["VEIL"], "@VEILB@": p["VEILB"], "@BTNTXT@": p["BTNTXT"], "@BTNG@": p["BTNG"], "@GLOW@": p["GLOW"]}
     for k, v in fichas.items():
         out = out.replace(k, v)
     return "\n".join(l for l in out.split("\n") if l.strip())
@@ -252,7 +333,7 @@ def tarjeta(titulo: str, cuerpo_html: str, nota: str = "", derecha: str = "", mi
     return f'<div class="card"{est}>{h}{cuerpo_html}{nt}</div>'
 
 
-def anillo(pct, titulo: str, sub: str, equilibrio=None, color: str = None, uid: str = "a") -> str:
+def anillo(pct, titulo: str, sub: str, equilibrio=None, color: str = None, uid: str = "a", min_alto: int = 0) -> str:
     """Anillo de progreso (0-100). `equilibrio` marca con una rayita el %TP mínimo para no perder."""
     import math
     color = color or VIOLETA
@@ -270,7 +351,8 @@ def anillo(pct, titulo: str, sub: str, equilibrio=None, color: str = None, uid: 
            f'<circle cx="60" cy="60" r="{r}" fill="none" stroke="url(#g{uid})" stroke-width="10" stroke-linecap="round" '
            f'stroke-dasharray="{c * p / 100:.1f} {c:.1f}" transform="rotate(-90 60 60)"/>{marca}'
            f'<text x="60" y="66" text-anchor="middle" font-size="21" font-weight="800" fill="{TEXTO}">{n(p, 1)}%</text></svg>')
-    return (f'<div class="card"><div class="ring">{_como_img(svg, "width:118px;height:118px")}'
+    est = f' style="min-height:{int(min_alto)}px"' if min_alto else ""
+    return (f'<div class="card"{est}><div class="ring">{_como_img(svg, "width:118px;height:118px")}'
             f'<div class="t">{_e(titulo)}</div><div class="s">{sub}</div></div></div>')
 
 
@@ -318,7 +400,7 @@ def barras_divergentes(filas: list, maximo=None, dec=2) -> str:
 def embudo(etapas: list) -> str:
     """etapas: [(nombre, cantidad)]. Una barra por etapa; el largo es el % de la etapa ANTERIOR (la primera = 100 %),
     así cada paso se lee bien aunque la cantidad inicial sea mucho mayor que las siguientes."""
-    cols = [ROSA, MAGENTA, "#a355e8", VIOLETA, INDIGO, AZUL]
+    cols = [ROSA, MAGENTA, ORQ, VIOLETA, INDIGO, AZUL]
     out, previo = [], None
     for k, (nombre, c) in enumerate(etapas):
         f = 100.0 if previo is None else (100.0 * c / previo if previo else 0.0)
@@ -476,15 +558,20 @@ def tabla_df(df, decs: dict = None, dec: int = 2, signo_cols=COLS_CON_SIGNO, max
     return h
 
 
-_FONDOS = {"solida": "linear-gradient(120deg,#2f3fd8,#1b2a9e)", "ok": "linear-gradient(120deg,#4c4fe0,#2f3fd8)",
-           "dudosa": "linear-gradient(120deg,#7c5cf0,#a355e8)", "sin": "linear-gradient(120deg,#c04fd0,#e63e9c)",
-           "pierde": "linear-gradient(120deg,#e63e5c,#b3123f)", "no": "linear-gradient(120deg,#e63e5c,#b3123f)",
-           "nc": "linear-gradient(120deg,#7a7f9d,#555a82)"}
+def _fondos() -> dict:
+    """Fondos de los recuadros de veredicto, con los colores del estilo activo (lo malo siempre en rojo, lo no concluyente en gris)."""
+    claro_txt = TEMAS[TEMA]["BTNTXT"] != "#ffffff"       # estilos con texto oscuro sobre los colores (pastel, noche suave)
+    g = lambda a, b: f"linear-gradient(120deg,{a},{b})"
+    p = TEMAS[TEMA]
+    return {"solida": g(AZUL, p["PROF"]), "ok": g(INDIGO, AZUL), "dudosa": g(VIOLETA, ORQ), "sin": g(ORQ, MAGENTA),
+            "pierde": g("#f28ba0", "#e2607f") if claro_txt else g("#e63e5c", "#b3123f"),
+            "no": g("#f28ba0", "#e2607f") if claro_txt else g("#e63e5c", "#b3123f"),
+            "nc": g("#c4c0d8", "#a9a4c4") if claro_txt else g("#7a7f9d", "#555a82")}
 
 
 def veredicto_caja(etiqueta: str, titulo: str, texto_html: str, nivel: str) -> str:
     """Recuadro de color según el nivel: solida / ok / dudosa / sin / pierde / nc."""
-    return (f'<div class="insight" style="background:{_FONDOS.get(nivel, _FONDOS["nc"])}">'
+    return (f'<div class="insight" style="background:{_fondos().get(nivel, _fondos()["nc"])}">'
             f'<div class="tt">{_e(etiqueta)}</div><div style="font-size:1.25rem;font-weight:800;margin:2px 0 8px">{_e(titulo)}</div>'
             f'{texto_html}</div>')
 

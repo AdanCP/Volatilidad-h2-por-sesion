@@ -12,7 +12,7 @@ from typing import Optional
 _TF = {"M1": "PERIOD_M1", "M5": "PERIOD_M5", "M15": "PERIOD_M15", "M30": "PERIOD_M30",
        "H1": "PERIOD_H1", "H4": "PERIOD_H4", "D1": "PERIOD_D1"}
 _DIR = {"ambas": "BOT_AMBAS", "largos": "BOT_LARGOS", "cortos": "BOT_CORTOS"}
-_SL = {"atr": "BOT_SL_ATR", "pct": "BOT_SL_PCT", "usd": "BOT_SL_USD"}
+_SL = {"atr": "BOT_SL_ATR", "pct": "BOT_SL_PCT", "usd": "BOT_SL_USD", "ema": "BOT_SL_EMA"}
 _PBEMA = {"corta": "BOT_PB_CORTA", "larga": "BOT_PB_LARGA"}
 
 
@@ -41,6 +41,8 @@ def _magic(cfg, simbolo: str) -> int:
         clave += f"|{cfg.media_tipo}|{cfg.modo_senal}|{cfg.media_unica}"
     if cfg.salida_modo != "rr":
         clave += f"|{cfg.salida_modo}"
+    if cfg.sl_modo == "ema":
+        clave += f"|{cfg.sl_ema_ref}"
     h = 0
     for ch in clave:
         h = (h * 31 + ord(ch)) % 90000
@@ -83,7 +85,7 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         if not sl_usd or sl_usd <= 0:
             raise ValueError("Con SL fijo hace falta el monto en dolares.")
         sl_modo, sl_valor, usd = "usd", 1.0, float(sl_usd)
-    else:
+    else:                               # "atr", "pct" o "ema" (distancia de precio a una media)
         sl_modo, sl_valor, usd = cfg.sl_modo, float(cfg.sl_valor), 0.0
     fecha = fecha or datetime.now()
     if cfg.capital > 0:                 # limites de la app: ya traen el colchon restado (0 = sin limite)
@@ -98,6 +100,11 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
     ]
     if sl_modo == "usd":
         cab.append(f"// SL: US${_f(usd, 2)} por operacion (se convierte a precio con el valor del tick del broker)")
+    elif sl_modo == "ema":
+        _ref = (f"{cfg.media_tipo.upper()} {cfg.media_unica}" if cfg.modo_senal == "precio" else
+                f"{cfg.media_tipo.upper()} {'corta' if cfg.sl_ema_ref == 'corta' else 'larga'} "
+                f"({cfg.ema_corta if cfg.sl_ema_ref == 'corta' else cfg.ema_larga})")
+        cab.append(f"// SL: fijo en la {_ref} de la vela de la senal menos (compras) o mas (ventas) {_f(sl_valor, 5)} de precio")
     elif sl_modo == "pct":
         cab.append(f"// SL: {_f(sl_valor, 3)} % del precio")
     else:
@@ -131,6 +138,7 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "MA_UNICA": str(int(cfg.media_unica)),
         "DIR": _DIR[cfg.direccion], "RR": _f(cfg.rr, 4),
         "SL_MODO": _SL[sl_modo], "SL_VALOR": _f(sl_valor, 6), "SL_USD": _f(usd, 4),
+        "SL_REF": "0" if cfg.sl_ema_ref == "corta" else "1",
         "ATR_PER": str(int(cfg.atr_periodo)), "LOTES": _f(lotes, 4),
         "PB_ON": _b(cfg.pb_efectivo()), "PB_PCT": _f(cfg.pullback_pct, 4), "PB_EMA": _PBEMA[cfg.pullback_ema],
         "PB_VELAS": str(int(cfg.pullback_velas)),
@@ -179,7 +187,7 @@ _PLANTILLA = r'''//+------------------------------------------------------------
 @@CABECERA@@
 
 enum ENUM_BOT_DIR   { BOT_AMBAS = 0, BOT_LARGOS = 1, BOT_CORTOS = 2 };
-enum ENUM_BOT_SL    { BOT_SL_ATR = 0, BOT_SL_PCT = 1, BOT_SL_USD = 2 };
+enum ENUM_BOT_SL    { BOT_SL_ATR = 0, BOT_SL_PCT = 1, BOT_SL_USD = 2, BOT_SL_EMA = 3 };
 enum ENUM_BOT_PBEMA { BOT_PB_CORTA = 0, BOT_PB_LARGA = 1 };
 
 // ---------------------------- identificacion --------------------------------
@@ -199,9 +207,10 @@ const int             InpMaSingle       = @@MA_UNICA@@;      // Periodo de la me
 const ENUM_BOT_DIR    InpDir            = @@DIR@@;        // Direccion
 const double          InpRR             = @@RR@@;         // Relacion TP/SL (TP = SL x RR); no se usa con salida por senal
 const int             InpExitSignal     = @@SAL_SENAL@@;      // Salida: 0 = TP fijo, 1 = sin TP (cierra cuando una vela cierra del otro lado de la media)
-const ENUM_BOT_SL     InpSLMode         = @@SL_MODO@@;    // SL en: ATR / % del precio / dolares fijos
+const ENUM_BOT_SL     InpSLMode         = @@SL_MODO@@;    // SL en: ATR / % del precio / dolares fijos / distancia a una media
 const double          InpSLValue        = @@SL_VALOR@@;   // Valor del SL (multiplo de ATR o % del precio)
 const double          InpSLUsd          = @@SL_USD@@;     // SL en dolares por operacion (con SL en dolares)
+const int             InpSlEmaRef       = @@SL_REF@@;     // Con SL a una media: 0 = media corta, 1 = media larga (en modo precio, la unica)
 const int             InpAtrPeriod      = @@ATR_PER@@;    // Periodo del ATR
 const double          InpLots           = @@LOTES@@;      // Lotes
 
@@ -765,9 +774,24 @@ double Px(const double price)
    return NormalizeDouble(price, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS));
 }
 
-// distancia de precio del SL (misma regla que el backtester, medida en la vela de la senal)
-double SlDistance(const int i)
+// SL anclado a una media: nivel FIJO = media de la vela i menos (compras) o mas (ventas) la distancia. 0.0 si no aplica o no hay dato.
+double SlLevel(const int i, const int side)
 {
+   if(InpSLMode != BOT_SL_EMA) return 0.0;
+   const double ref = (InpSlEmaRef == 0) ? g_ef[i] : g_es[i];
+   if(!V(ref)) return 0.0;
+   return ref - side * InpSLValue;
+}
+
+// distancia de precio del SL (misma regla que el backtester, medida en la vela de la senal). Con el SL anclado a una media es la
+// distancia desde 'price' hasta el nivel; si es <= 0 la media quedo del lado equivocado y la senal no se opera.
+double SlDistance(const int i, const int side, const double price)
+{
+   if(InpSLMode == BOT_SL_EMA)
+   {
+      const double lvl = SlLevel(i, side);
+      return (lvl > 0.0) ? side * (price - lvl) : 0.0;
+   }
    if(InpSLMode == BOT_SL_ATR) return g_atr[i] * InpSLValue;
    if(InpSLMode == BOT_SL_PCT) return g_c[i] * InpSLValue / 100.0;
    const double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -873,10 +897,16 @@ void RevisarSalidaPorSenal()
 }
 
 // entrada a mercado: largo al ask, corto al bid; SL/TP desde ese precio (igual que el backtester)
-bool MarketEntry(const int side, const double d)
+bool MarketEntry(const int side, const double d0, const double lvl = 0.0)
 {
-   if(d <= 0.0) return false;
+   if(d0 <= 0.0) return false;
    const double price = (side == 1) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double d = d0;
+   if(lvl > 0.0)                                  // SL anclado a una media: el SL es el nivel; la distancia se mide desde el precio real
+   {
+      d = side * (price - lvl);
+      if(d <= 0.0) return false;
+   }
    MqlTradeRequest rq;
    MqlTradeResult  rs;
    ZeroMemory(rq);
@@ -886,7 +916,7 @@ bool MarketEntry(const int side, const double d)
    rq.volume    = InpLots;
    rq.type      = (side == 1) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    rq.price     = Px(price);
-   rq.sl        = Px(price - side * d);
+   rq.sl        = (lvl > 0.0) ? Px(lvl) : Px(price - side * d);
    rq.tp        = (InpExitSignal == 1) ? 0.0 : Px(price + side * d * InpRR);
    rq.deviation = InpDeviation;
    rq.magic     = InpMagic;
@@ -910,33 +940,49 @@ void PlacePullback(const int i)
       Print("Pullback: fuera de sesion, no se deja orden en esta vela (vela ", g_pbBars, " de ", InpPBBars, ").");
       return;
    }
-   const double d = SlDistance(i);
-   if(d <= 0.0) return;
-   if(!AccountRulesOK(d)) { g_pbActive = false; return; }
+   double d = 0.0;
+   const double lvl = SlLevel(i, g_pbSide);                          // 0.0 si el SL no esta anclado a una media
+   if(InpSLMode != BOT_SL_EMA)
+   {
+      d = SlDistance(i, g_pbSide, 0.0);
+      if(d <= 0.0) return;
+      if(!AccountRulesOK(d)) { g_pbActive = false; return; }
+   }
    const double ema  = (InpPBEma == BOT_PB_CORTA) ? g_ef[i] : g_es[i];
    const double frac = InpPBPct / 100.0;
    const double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    const double ask  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double nivel, price;
+   bool aMercado = false;
    if(g_pbSide == 1)
    {
       nivel = g_pbExt - frac * MathMax(g_pbExt - ema, 0.0);
       price = nivel + (ask - bid);                 // el nivel esta medido en BID; el largo paga el ask
-      if(price >= ask)                              // el precio ya esta en el nivel: se entra a mercado
-      {
-         if(MarketEntry(1, d)) g_pbActive = false;
-         return;
-      }
+      aMercado = (price >= ask);                    // el precio ya esta en el nivel: se entra a mercado
+      if(aMercado) price = ask;
    }
    else
    {
       nivel = g_pbExt + frac * MathMax(ema - g_pbExt, 0.0);
       price = nivel;
-      if(price <= bid)
+      aMercado = (price <= bid);
+      if(aMercado) price = bid;
+   }
+   if(InpSLMode == BOT_SL_EMA)                      // SL anclado a una media: la distancia sale del precio de la orden hasta el nivel
+   {
+      d = g_pbSide * (price - lvl);
+      if(lvl <= 0.0 || d <= 0.0)
       {
-         if(MarketEntry(-1, d)) g_pbActive = false;
+         Print("Pullback descartado: la media quedo del lado equivocado del precio (SL al reves).");
+         g_pbActive = false;
          return;
       }
+      if(!AccountRulesOK(d)) { g_pbActive = false; return; }
+   }
+   if(aMercado)
+   {
+      if(MarketEntry(g_pbSide, d, lvl)) g_pbActive = false;
+      return;
    }
    MqlTradeRequest rq;
    MqlTradeResult  rs;
@@ -947,7 +993,7 @@ void PlacePullback(const int i)
    rq.volume = InpLots;
    rq.type   = (g_pbSide == 1) ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
    rq.price  = Px(price);
-   rq.sl     = Px(price - g_pbSide * d);
+   rq.sl     = (lvl > 0.0) ? Px(lvl) : Px(price - g_pbSide * d);
    rq.tp     = (InpExitSignal == 1) ? 0.0 : Px(price + g_pbSide * d * InpRR);
    rq.magic  = InpMagic;
    rq.comment = "EMA bot pullback";
@@ -1057,9 +1103,16 @@ void OnNewBar()
    }
    if(!conPullback)
    {
-      if(!AccountRulesOK(SlDistance(i))) return;
+      const double pxE = (cr == 1) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      const double dE = SlDistance(i, cr, pxE);
+      if(InpSLMode == BOT_SL_EMA && dE <= 0.0)
+      {
+         Print("Senal descartada: la media quedo del lado equivocado del precio (SL al reves).");
+         return;
+      }
+      if(!AccountRulesOK(dE)) return;
       Print("Senal valida: entrada a mercado.");
-      MarketEntry(cr, SlDistance(i));
+      MarketEntry(cr, dE, SlLevel(i, cr));
       return;
    }
    Print("Senal valida: se arma el pullback del ", DoubleToString(InpPBPct, 0), " % (caduca en ", InpPBBars, " velas).");
