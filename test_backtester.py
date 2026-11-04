@@ -897,3 +897,138 @@ def test_salida_senal_valida_y_resumen_usa_pago_observado():
     eng.Config(salida_modo="senal", rr=0.5).validar()
     tr = pd.DataFrame({"res": ["TP", "TP", "SL"], "R": [3.0, 1.0, -1.0], "amb": [False] * 3, "motivo": ["senal"] * 3})
     assert abs(met.resumen(tr, 5.0)["%equilibrio"] - 100 / (1 + 2.0)) < 1e-9
+
+
+# ---------------------------------------------------------------- reglas de cuenta
+def _P_cuenta(n=40, dias=None, d_sl=10.0):
+    c = np.full(n, 100.0)
+    P = eng.Preparado(c + 0.5, c - 0.5, c, np.zeros(n), np.full(n, 1.0), np.full(n, d_sl),
+                      pd.date_range("2024-01-02 00:00", periods=n, freq="5min"), [], 0.0,
+                      dia=np.asarray(dias if dias is not None else [0] * n, dtype="int64"),
+                      diff=np.ones(n))
+    return P
+
+
+def _cuenta(**k):
+    base = dict(capital=10000.0, vu=10.0, comision=0.0, p_dia=0.0, modo_dia="trailing", p_tot=0.0, modo_tot="estatico",
+                proteger=False, riesgo_pct=None, pausa_min=None)
+    base.update(k)
+    return base
+
+
+def _pierde(P, idx):
+    """Hace que una señal larga en idx pierda en la vela siguiente (el SL esta a 10 por debajo)."""
+    P.l[idx + 1] = 89.0
+
+
+def test_cuenta_limite_diario_bloquea_el_resto_del_dia_y_se_libera_al_siguiente():
+    dias = [0] * 20 + [1] * 20
+    P = _P_cuenta(dias=dias)
+    for i in (0, 3, 6, 9, 22):
+        _pierde(P, i)
+    tr, _ = eng.simular(P, [(0, 1), (3, 1), (6, 1), (9, 1), (22, 1)], 2.0, 0.0, None, "rr", _cuenta(p_dia=3.0))
+    cs = tr.attrs["cuenta"]
+    assert len(tr) == 4 and list(tr["señal"]) == [0, 3, 6, 22]
+    assert cs["saltadas_dia"] == 1 and cs["dias_bloqueados"] == 1 and not cs["quemada"]
+    assert abs(cs["balance_final"] - (10000 - 400)) < 1e-6 and abs(cs["peor_dia_usd"] + 300) < 1e-6
+
+
+def test_cuenta_limite_total_estatico_quema_la_cuenta_y_corta():
+    P = _P_cuenta()
+    for i in (0, 3, 6, 9):
+        _pierde(P, i)
+    tr, _ = eng.simular(P, [(0, 1), (3, 1), (6, 1), (9, 1)], 2.0, 0.0, None, "rr", _cuenta(p_tot=2.5))
+    cs = tr.attrs["cuenta"]
+    assert len(tr) == 3 and cs["quemada"] and cs["quemada_en"] == 7        # piso 9750: 3 perdidas de 100 lo cruzan
+
+
+def test_cuenta_limite_total_trailing_sube_con_el_maximo():
+    P = _P_cuenta()
+    P.h[2] = 125.0                                   # señal 0 gana: TP a 100+20=120 (RR 2)
+    for i in (3, 6):
+        _pierde(P, i)
+    c_t = _cuenta(p_tot=2.5, modo_tot="trailing")
+    tr, _ = eng.simular(P, [(0, 1), (3, 1), (6, 1)], 2.0, 0.0, None, "rr", c_t)
+    cs = tr.attrs["cuenta"]
+    # tras ganar 200: balance 10200, piso 10200*0.975 = 9945; dos perdidas dejan 10000 (> piso): sigue viva
+    assert len(tr) == 3 and not cs["quemada"]
+    c_e = _cuenta(p_tot=2.5, modo_tot="estatico")
+    assert not eng.simular(P, [(0, 1), (3, 1), (6, 1)], 2.0, 0.0, None, "rr", c_e)[0].empty
+
+
+def test_cuenta_proteccion_del_sl_y_cierre_forzado_por_limite():
+    P = _P_cuenta()
+    for i in (0, 3):
+        _pierde(P, i)
+    # piso diario 9850 (1,5 %): tras perder 100 quedan 9900; abrir arriesga otros 100 -> 9800 <= 9850
+    prot = eng.simular(P, [(0, 1), (3, 1)], 2.0, 0.0, None, "rr", _cuenta(p_dia=1.5, proteger=True))
+    assert len(prot[0]) == 1 and prot[0].attrs["cuenta"]["saltadas_proteccion"] == 1
+    sin = eng.simular(P, [(0, 1), (3, 1)], 2.0, 0.0, None, "rr", _cuenta(p_dia=1.5, proteger=False))[0]
+    f = sin.iloc[1]
+    assert f["motivo"] == "limite" and abs(f["R"] + 0.5) < 1e-9          # margen US$50 = 5 de precio = 0,5 R
+    assert abs(sin.attrs["cuenta"]["balance_final"] - 9850) < 1e-6 and sin.attrs["cuenta"]["forzadas"] == 1
+
+
+def test_cuenta_riesgo_por_operacion_saltea_si_supera_el_porcentaje():
+    P = _P_cuenta()
+    _pierde(P, 0)
+    solo = eng.simular(P, [(0, 1)], 2.0, 0.0, None, "rr", _cuenta(riesgo_pct=0.5))
+    assert len(solo[0]) == 0 and solo[0].attrs["cuenta"]["saltadas_riesgo"] == 1
+    assert len(eng.simular(P, [(0, 1)], 2.0, 0.0, None, "rr", _cuenta(riesgo_pct=1.0))[0]) == 1     # 100 / 10000 = 1 %
+
+
+def test_cuenta_pausa_tras_perdida_descarta_las_señales_dentro_del_tiempo():
+    P = _P_cuenta()
+    _pierde(P, 0)
+    tr, _ = eng.simular(P, [(0, 1), (3, 1), (9, 1)], 2.0, 0.0, None, "rr", _cuenta(pausa_min=30.0))
+    assert list(tr["señal"]) == [0, 9] and tr.attrs["cuenta"]["saltadas_pausa"] == 1     # 10 min < 30 < 40 min
+    P2 = _P_cuenta()
+    P2.h[2] = 125.0                                                                       # una ganadora no activa la pausa
+    tr2, _ = eng.simular(P2, [(0, 1), (3, 1)], 2.0, 0.0, None, "rr", _cuenta(pausa_min=30.0))
+    assert len(tr2) == 2
+
+
+def test_cuenta_balance_coincide_con_las_operaciones_y_comision():
+    P = _P_cuenta()
+    P.h[2] = 125.0
+    _pierde(P, 3)
+    tr, _ = eng.simular(P, [(0, 1), (3, 1)], 2.0, 0.0, None, "rr", _cuenta(comision=7.0, p_dia=50.0, p_tot=50.0))
+    esperado = 10000 + float((tr["R"] * tr["dist"] * 10.0 - 7.0).sum())
+    assert abs(tr.attrs["cuenta"]["balance_final"] - esperado) < 1e-6
+
+
+def test_cuenta_con_limites_en_cero_y_sin_protecciones_no_cambia_nada():
+    idx = pd.date_range("2024-01-01", periods=1500, freq="5min")
+    rng = np.random.default_rng(9)
+    c = 2000 + np.cumsum(rng.normal(0, 1.5, 1500))
+    df = pd.DataFrame({"Open": c, "High": c + 1, "Low": c - 1, "Close": c, "Volume": 1.0}, index=idx)
+    base = dict(ema_corta=9, ema_larga=21, sl_valor=3.0, spread="ninguno")
+    a = eng.ejecutar(eng.preparar(df, eng.Config(**base)), eng.Config(**base)).trades
+    cfg = eng.Config(**base, reglas_activas=True, capital=25000.0, usd_por_unidad=10.0, perd_dia_pct=0.0, perd_tot_pct=0.0,
+                     proteger_sl=False)
+    r = eng.ejecutar(eng.preparar(df, cfg), cfg)
+    assert r.cuenta["dias_bloqueados"] == 0 and not r.cuenta["quemada"]
+    pd.testing.assert_frame_equal(a.reset_index(drop=True), r.trades.reset_index(drop=True))
+
+
+def test_cuenta_reglas_validan_y_limites_efectivos():
+    cfg = eng.Config(perd_dia_pct=5.0, perd_tot_pct=10.0, colchon_pct=1.0)
+    assert cfg.limites_efectivos() == (4.0, 9.0)
+    assert eng.Config(perd_dia_pct=0.0, perd_tot_pct=10.0).limites_efectivos() == (0.0, 9.0)
+    for kw in (dict(colchon_pct=5.0), dict(perd_dia_modo="x"), dict(colchon_pct=-1.0),
+               dict(reglas_activas=True, capital=0.0, usd_por_unidad=1.0),
+               dict(riesgo_op_activo=True, riesgo_op_pct=0.0)):
+        try:
+            eng.Config(**kw).validar()
+            assert False, kw
+        except ValueError:
+            pass
+
+
+def test_claves_dia_cortan_a_medianoche_de_europa_central():
+    idx = pd.DatetimeIndex(["2026-11-03 00:30", "2026-11-03 01:00", "2026-11-03 23:30"])
+    cfg = eng.Config(servidor_offset_horas=2.0, servidor_dst_eeuu=True)     # servidor UTC+2 en invierno; CET = UTC+1
+    k = eng.claves_dia(idx, cfg)
+    assert k[0] == k[1] - 1 and k[1] == k[2]                                # 00:30 servidor = 23:30 CET del dia anterior
+    k2 = eng.claves_dia(idx, eng.Config())                                  # sin desfase: dia de los datos
+    assert k2[0] == k2[1] == k2[2]

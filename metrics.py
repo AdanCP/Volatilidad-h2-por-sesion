@@ -51,7 +51,8 @@ def azar(P, cfg, lo, hi, n_sig, veces, rng) -> np.ndarray:
     for _ in range(veces):
         idx = np.sort(rng.choice(np.arange(lo, hi), size=n_sig, replace=False))
         sig = list(zip(idx, rng.choice(lados, size=n_sig)))
-        tr, _ = eng.simular(P, sig, cfg.rr, cfg.costo_extra, eng.pb_de(cfg), cfg.salida_modo)
+        tr, _ = eng.simular(P, sig, cfg.rr, cfg.costo_extra, eng.pb_de(cfg), cfg.salida_modo,
+                              eng.cuenta_de(P, cfg))
         out.append(resumen(tr, cfg.rr)["exp_R"])
     return np.array([x for x in out if not np.isnan(x)])
 
@@ -98,7 +99,8 @@ def evaluar(df, cfg, oos_pct=0.3, azar_veces=200, semilla=42, contador=None) -> 
     if prueba and prueba >= 20:
         avisos.append(f"Prueba n.º {prueba}: con tantas pruebas, un resultado bueno puede ser azar.")
     return {"tabla": tabla, "trades": tr, "por_anio": por_anio, "avisos": avisos,
-            "prueba": prueba, "P": P, "descartes": res_todo.descartes, "corte": corte}
+            "prueba": prueba, "P": P, "descartes": res_todo.descartes, "corte": corte,
+            "cuenta": res_todo.cuenta}
 
 
 FILTROS_ABLACION = {

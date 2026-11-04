@@ -78,10 +78,49 @@ class Config:
     horarios: Optional[dict] = None
     servidor_offset_horas: Optional[float] = None   # desfase del servidor en invierno (GMT+2 -> 2)
     servidor_dst_eeuu: bool = True
+    # reglas de la cuenta (limites de perdida, protecciones y controles de operacion)
+    reglas_activas: bool = False            # False: el backtest no simula la cuenta (como hasta ahora)
+    capital: float = 0.0                    # capital inicial de la cuenta (US$)
+    usd_por_unidad: float = 0.0             # US$ por cada 1,00 de precio con los lotes elegidos
+    comision_op_usd: float = 0.0            # comision por operacion (US$) = comision por lote x lotes
+    perd_dia_pct: float = 5.0               # perdida diaria maxima (% del capital; 0 = sin limite)
+    perd_dia_modo: str = "trailing"         # "trailing": % del balance de inicio del dia | "estatico": % del capital inicial
+    perd_tot_pct: float = 10.0              # perdida total maxima (% del capital; 0 = sin limite)
+    perd_tot_modo: str = "estatico"         # "estatico": piso fijo desde el capital inicial | "trailing": desde el balance maximo
+    colchon_pct: float = 1.0                # se resta a los dos limites: el bot frena ese margen antes
+    proteger_sl: bool = True                # no abrir si el SL, perdiendo al maximo, rompe un limite
+    riesgo_op_activo: bool = False
+    riesgo_op_pct: float = 1.0              # riesgo maximo por operacion (% del capital); si lo supera, se saltea
+    pausa_activa: bool = False
+    pausa_min: float = 60.0                 # minutos sin operar tras una operacion perdedora; las señales dentro se descartan
 
     def pb_efectivo(self) -> bool:
         """El pullback solo actua si esta activo y el porcentaje es mayor que 0 (0 % = entrada al cierre, como sin pullback)."""
         return bool(self.pullback_activo and self.pullback_pct > 0)
+
+    def limites_efectivos(self) -> tuple:
+        """(diario, total) en % tras restar el colchon; 0 = sin limite."""
+        def ef(p):
+            return max(p - self.colchon_pct, 0.0) if p > 0 else 0.0
+        return ef(self.perd_dia_pct), ef(self.perd_tot_pct)
+
+    def _validar_reglas(self) -> None:
+        if self.perd_dia_modo not in ("trailing", "estatico") or self.perd_tot_modo not in ("trailing", "estatico"):
+            raise ValueError("El modo de los limites de perdida debe ser 'trailing' o 'estatico'.")
+        if not (0 <= self.perd_dia_pct <= 100 and 0 <= self.perd_tot_pct <= 100):
+            raise ValueError("Los limites de perdida deben estar entre 0 y 100 %.")
+        if self.colchon_pct < 0:
+            raise ValueError("El colchon no puede ser negativo.")
+        for nombre, p in (("diario", self.perd_dia_pct), ("total", self.perd_tot_pct)):
+            if 0 < p <= self.colchon_pct:
+                raise ValueError(f"El colchon ({self.colchon_pct:g} %) debe ser menor que el limite {nombre} ({p:g} %).")
+        if self.riesgo_op_activo and not 0 < self.riesgo_op_pct <= 100:
+            raise ValueError("El riesgo maximo por operacion debe estar entre 0 y 100 %.")
+        if self.pausa_activa and self.pausa_min < 0:
+            raise ValueError("El tiempo minimo entre operaciones no puede ser negativo.")
+        if self.reglas_activas and (self.capital <= 0 or self.usd_por_unidad <= 0):
+            raise ValueError("Las reglas de cuenta necesitan el capital de la cuenta y el valor por unidad de precio "
+                             "(cargá el capital en «Lotaje y dinero»).")
 
     def validar(self) -> None:
         if self.vwap_dist_min_atr < 0 or self.vwap_min_minutos < 0:
@@ -100,6 +139,7 @@ class Config:
             raise ValueError(f"La {self.media_tipo.upper()} corta debe ser menor que la larga.")
         if self.modo_senal == "precio" and self.media_unica < 2:
             raise ValueError("El período de la media debe ser de al menos 2.")
+        self._validar_reglas()
         if self.salida_modo not in ("rr", "senal"):
             raise ValueError("Modo de salida invalido: 'rr' o 'senal'.")
         if self.sl_modo not in ("atr", "pct", "precio") or self.sl_valor <= 0:
@@ -140,6 +180,7 @@ class Preparado:
     sube: Optional[np.ndarray] = None       # cruces alcistas/bajistas de TODA la serie (cancelan ordenes pendientes)
     baja: Optional[np.ndarray] = None
     ok_ses: Optional[np.ndarray] = None     # sesion al EJECUTAR la entrada (solo con pullback)
+    dia: Optional[np.ndarray] = None        # clave de dia de cada vela (reglas de cuenta); corte a medianoche CE(S)T si se conoce el desfase
     diff: Optional[np.ndarray] = None       # lado de la media por vela: >0 arriba (alcista), <0 abajo; base de la salida por señal
 
 
@@ -266,7 +307,8 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     sp = _spread(df, cfg)
     raw = df["Spread"].to_numpy(float) if "Spread" in df else np.zeros(n)
     return Preparado(h, l, c, sp, atr, dist, df.index, cruces, 100 * float((raw == 0).mean()),
-                     ema_c, ema_l, sube, baja, ok_ses if (cfg.pb_efectivo() and cfg.sesion_activo) else None, diff)
+                     ema_c, ema_l, sube, baja, ok_ses if (cfg.pb_efectivo() and cfg.sesion_activo) else None,
+                     claves_dia(df.index, cfg) if cfg.reglas_activas else None, diff)
 
 
 def pb_de(cfg: Config):
@@ -276,33 +318,116 @@ def pb_de(cfg: Config):
     return {"pct": float(cfg.pullback_pct), "ema": cfg.pullback_ema, "velas": int(cfg.pullback_velas)}
 
 
-def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr"):
+def claves_dia(indice: pd.DatetimeIndex, cfg: Config) -> np.ndarray:
+    """Clave de dia (dias desde 1970) de cada vela para las reglas de cuenta. Con el desfase del servidor cargado, el dia
+    se corta a medianoche de Europa Central (hora CE(S)T, la que usa FTMO); sin el, a medianoche de los datos."""
+    if cfg.servidor_offset_horas is not None:
+        utc = ses.servidor_a_utc(indice, cfg.servidor_offset_horas, cfg.servidor_dst_eeuu)
+        local = pd.DatetimeIndex(utc).tz_localize("UTC").tz_convert("Europe/Berlin").tz_localize(None)
+    else:
+        local = pd.DatetimeIndex(indice)
+    return local.normalize().to_numpy().astype("datetime64[D]").astype("int64")
+
+
+def cuenta_de(P: Preparado, cfg: Config):
+    """Parametros de la simulacion de cuenta para simular(), o None si las reglas no estan aplicadas."""
+    if not cfg.reglas_activas:
+        return None
+    if P.dia is None:
+        raise ValueError("Las reglas de cuenta necesitan preparar() con esta configuracion.")
+    p_dia, p_tot = cfg.limites_efectivos()
+    return {"capital": float(cfg.capital), "vu": float(cfg.usd_por_unidad), "comision": float(cfg.comision_op_usd),
+            "p_dia": p_dia, "modo_dia": cfg.perd_dia_modo, "p_tot": p_tot, "modo_tot": cfg.perd_tot_modo,
+            "proteger": bool(cfg.proteger_sl), "riesgo_pct": float(cfg.riesgo_op_pct) if cfg.riesgo_op_activo else None,
+            "pausa_min": float(cfg.pausa_min) if cfg.pausa_activa else None, "dia": P.dia}
+
+
+def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None):
     """señales: lista de (indice, lado). Devuelve (DataFrame de operaciones, ignoradas).
 
     pb=None: entrada al cierre de la vela de la señal. pb={"pct","ema","velas"}: la señal deja una orden pendiente.
     El resultado trae en .attrs["pb"] cuantas ordenes se llenaron, caducaron o se cancelaron por cruce contrario.
     salida="senal": no hay TP. Se sale al CIERRE de la primera vela (posterior a la de entrada) que cierra del otro lado de
     la media (diff de signo contrario al del lado); el SL sigue vigente y se revisa antes en cada vela. La tabla trae
-    "motivo" (tp / sl / senal): una salida por señal se rotula TP si gana y SL si pierde, con su R real.
+    "motivo" (tp / sl / senal / limite): una salida por señal se rotula TP si gana y SL si pierde, con su R real.
+    cuenta (ver cuenta_de): simula la cuenta en orden cronologico con limites de perdida diaria y total, proteccion del SL,
+    riesgo maximo por operacion y pausa tras una perdida; el resumen queda en .attrs["cuenta"]. Si el equity llega a un
+    limite con una operacion abierta, se cierra en ese nivel (motivo "limite").
     En la tabla, "i" es la vela de ENTRADA real y "señal" la vela del cruce (iguales sin pullback)."""
     h, l, c, sp, dist = P.h, P.l, P.c, P.sp, P.dist
     n = len(c)
     filas, libre, ignoradas = [], 0, 0
     st = {"ordenes": 0, "llenadas": 0, "caducadas": 0, "cruce_contrario": 0}
-
     por_senal = salida == "senal"
     if por_senal and P.diff is None:
         raise ValueError("La salida por señal necesita el lado de la media (preparar() con esta version).")
 
-    def recorrer(desde, lado, sl, tp):
-        if por_senal:
-            for j in range(desde, n):
+    # ---- estado de la cuenta (solo con reglas)
+    ct = cuenta
+    if ct:
+        cap, vu, comm = ct["capital"], ct["vu"], ct["comision"]
+        dia = ct["dia"] if ct.get("dia") is not None else P.dia
+        ts_min = P.indice.to_numpy().astype("datetime64[s]").astype("int64") / 60.0
+        cs = {"saltadas_dia": 0, "saltadas_pausa": 0, "saltadas_riesgo": 0, "saltadas_proteccion": 0, "forzadas": 0,
+              "dias_bloqueados": 0, "quemada": False, "quemada_en": None, "peor_dia_usd": 0.0,
+              "balance_final": cap, "balance_min": cap}
+        S = {"bal": cap, "pico": cap, "dia": None, "bal_dia": cap, "bloq": None, "perd_j": None}
+
+    def rodar_dia(k):
+        if S["dia"] != dia[k]:
+            S["dia"], S["bal_dia"] = dia[k], S["bal"]
+
+    def pisos():
+        pd_, pt_ = -np.inf, -np.inf
+        if ct["p_dia"] > 0:
+            pd_ = (S["bal_dia"] * (1 - ct["p_dia"] / 100.0) if ct["modo_dia"] == "trailing"
+                   else S["bal_dia"] - ct["p_dia"] / 100.0 * cap)
+        if ct["p_tot"] > 0:
+            pt_ = (S["pico"] if ct["modo_tot"] == "trailing" else cap) * (1 - ct["p_tot"] / 100.0)
+        return pd_, pt_
+
+    def puerta(d):
+        """None si se puede abrir una operacion con SL a distancia d; si no, el motivo por el que se saltea.
+        Si se abre, devuelve ("ok", distancia de precio a la que el equity toca un limite o None)."""
+        riesgo = d * vu + comm
+        if ct["riesgo_pct"] is not None and riesgo / cap * 100.0 > ct["riesgo_pct"] + 1e-12:
+            return "saltadas_riesgo", None
+        pd_, pt_ = pisos()
+        if ct["proteger"] and (S["bal"] - riesgo <= pd_ or S["bal"] - riesgo <= pt_):
+            return "saltadas_proteccion", None
+        margen = min(S["bal"] - pd_, S["bal"] - pt_) - comm       # US$ que puede perder antes de tocar un limite
+        lim = max(margen, 0.0) / vu
+        return "ok", (lim if lim < d else None)
+
+    def cerrar(r, d, j_out):
+        """Aplica el resultado de la operacion a la cuenta y revisa los limites."""
+        pnl = r * d * vu - comm
+        rodar_dia(j_out)                 # si cruzo la medianoche, el dia nuevo parte del balance previo a este cierre
+        S["bal"] += pnl
+        S["pico"] = max(S["pico"], S["bal"])
+        cs["peor_dia_usd"] = min(cs["peor_dia_usd"], S["bal"] - S["bal_dia"])
+        cs["balance_min"] = min(cs["balance_min"], S["bal"])
+        if pnl < 0:
+            S["perd_j"] = j_out
+        pd_, pt_ = pisos()
+        if S["bal"] <= pt_ + 1e-9:
+            cs["quemada"], cs["quemada_en"] = True, j_out
+        elif S["bal"] <= pd_ + 1e-9 and S["bloq"] != dia[j_out]:
+            S["bloq"] = dia[j_out]
+            cs["dias_bloqueados"] += 1
+
+    def recorrer(desde, lado, sl, tp, entrada=None, lim=None):
+        for j in range(desde, n):
+            if lim is not None:                          # el equity toca un limite de cuenta antes que el SL
+                adverso = (entrada - l[j]) if lado == 1 else (h[j] + sp[j] - entrada)
+                if adverso >= lim:
+                    return "LIM", False, j
+            if por_senal:
                 if (l[j] <= sl) if lado == 1 else (h[j] + sp[j] >= sl):
                     return "SL", False, j
                 if (P.diff[j] < 0) if lado == 1 else (P.diff[j] > 0):
                     return "SEN", False, j
-            return "ABIERTA", False, n - 1
-        for j in range(desde, n):
+                continue
             if lado == 1:
                 hit_sl, hit_tp = l[j] <= sl, h[j] >= tp
             else:
@@ -319,14 +444,30 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         if i < libre:                                   # operacion en curso (o orden pendiente): se ignora
             ignoradas += 1
             continue
+        if ct:
+            if cs["quemada"]:
+                break
+            rodar_dia(i)
+            if S["bloq"] == dia[i]:                     # dia bloqueado por el limite diario
+                cs["saltadas_dia"] += 1
+                continue
+            if ct["pausa_min"] is not None and S["perd_j"] is not None and ts_min[i] - ts_min[S["perd_j"]] < ct["pausa_min"]:
+                cs["saltadas_pausa"] += 1
+                continue
+        lim = None
         if pb is None:
             k = i                                       # vela de entrada
             d = dist[k]
             if not d > 0:
                 continue
+            if ct:
+                motivo_p, lim = puerta(d)
+                if motivo_p != "ok":
+                    cs[motivo_p] += 1
+                    continue
             entrada = c[i] + sp[i] if lado == 1 else c[i]
             sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
-            res, amb, j_out = recorrer(i + 1, lado, sl, tp)
+            res, amb, j_out = recorrer(i + 1, lado, sl, tp, entrada, lim)
         else:
             st["ordenes"] += 1
             ema = P.ema_c if pb["ema"] == "corta" else P.ema_l
@@ -358,20 +499,32 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             d = dist[k]
             if not d > 0:
                 continue
+            if ct:
+                motivo_p, lim = puerta(d)
+                if motivo_p != "ok":
+                    cs[motivo_p] += 1
+                    libre = k + 1
+                    continue
             st["llenadas"] += 1
             entrada = px + sp[k] if lado == 1 else px
             sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
             # en la vela de entrada no se sabe que paso primero: si toca el SL, cuenta como SL; el TP recien desde la siguiente
             toca_sl = l[k] <= sl if lado == 1 else h[k] + sp[k] >= sl
-            if toca_sl:
+            if lim is not None and ((entrada - l[k]) if lado == 1 else (h[k] + sp[k] - entrada)) >= lim:
+                res, amb, j_out = "LIM", True, k
+            elif toca_sl:
                 res, amb, j_out = "SL", True, k
             else:
-                res, amb, j_out = recorrer(k + 1, lado, sl, tp)
-        motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal"}.get(res, "")
+                res, amb, j_out = recorrer(k + 1, lado, sl, tp, entrada, lim)
+        motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal", "LIM": "limite"}.get(res, "")
         if res == "SEN":                                # sale al cierre: el largo vende al bid, el corto compra al ask
             salida_px = c[j_out] if lado == 1 else c[j_out] + sp[j_out]
             r = lado * (salida_px - entrada) / d
             res = "TP" if r > 0 else "SL"
+        elif res == "LIM":                              # el bot cierra todo cuando el equity toca el limite
+            r = -lim / d
+            res = "SL"
+            cs["forzadas"] += 1
         else:
             r = rr if res == "TP" else (-1.0 if res == "SL" else 0.0)
         if res != "ABIERTA" and costo_extra:
@@ -381,9 +534,14 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         if res == "ABIERTA":
             break
         libre = j_out + 1
+        if ct:
+            cerrar(r, d, j_out)
     cols = ["i", "señal", "lado", "entrada", "sl", "tp", "dist", "res", "amb", "salida", "R", "motivo"]
     out = pd.DataFrame(filas, columns=cols)
     out.attrs["pb"] = st
+    if ct:
+        cs["balance_final"] = S["bal"]
+        out.attrs["cuenta"] = cs
     return out, ignoradas
 
 
@@ -395,6 +553,7 @@ class Resultado:
     tomados: int = 0                # cruces que pasaron todos los filtros
     ignoradas: int = 0              # cruces que pasaron filtros pero habia operacion abierta
     pb: dict = field(default_factory=dict)   # ordenes / llenadas / caducadas / cruce_contrario (vacio sin pullback)
+    cuenta: dict = field(default_factory=dict)   # resumen de las reglas de cuenta (vacio si no se aplican)
 
 
 def ejecutar(P: Preparado, cfg: Config, lo: int = 0, hi: Optional[int] = None) -> Resultado:
@@ -406,5 +565,6 @@ def ejecutar(P: Preparado, cfg: Config, lo: int = 0, hi: Optional[int] = None) -
             descartes[m] = descartes.get(m, 0) + 1
     señales = [(i, lado) for i, lado, m in en_rango if m is None]
     pb = pb_de(cfg)
-    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo)
-    return Resultado(tr, descartes, len(en_rango), len(señales), ign, dict(tr.attrs.get("pb", {})) if pb else {})
+    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo, cuenta_de(P, cfg))
+    return Resultado(tr, descartes, len(en_rango), len(señales), ign, dict(tr.attrs.get("pb", {})) if pb else {},
+                     dict(tr.attrs.get("cuenta", {})))

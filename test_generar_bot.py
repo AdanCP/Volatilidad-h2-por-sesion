@@ -264,3 +264,54 @@ def test_salida_por_senal_coincide_con_el_backtester(pb, modo, tipo):
         out = subprocess.run([exe], input=inp, capture_output=True, text=True).stdout.split()
     got = [int(x) for x in out]
     assert got == [0, 1] * len(tr)
+
+
+# ---------------------------------------------------------------- reglas de cuenta en el bot
+def test_reglas_de_cuenta_en_la_plantilla():
+    c = _cfg(capital=25000.0, usd_por_unidad=10.0, perd_dia_pct=5.0, perd_dia_modo="estatico", perd_tot_pct=10.0,
+             perd_tot_modo="trailing", colchon_pct=1.0, proteger_sl=False, riesgo_op_activo=True, riesgo_op_pct=0.5,
+             pausa_activa=True, pausa_min=45.0, comision_op_usd=3.5)
+    t = _gen(c, "XAUUSD", "M5", 0.1)
+    assert "@@" not in t and t.count("{") == t.count("}")
+    for frag in ["InpMaxDailyLossPct = 4.0", "InpMaxTotalLossPct = 9.0", "InpInitialBalance = 25000.0", "InpDailyMode      = 1",
+                 "InpTotalMode      = 1", "InpProtectSL      = false", "InpRiskOn         = true", "InpRiskPct        = 0.5",
+                 "InpPauseOn        = true", "InpPauseMin       = 45.0", "InpCommissionUsd  = 3.5"]:
+        assert frag in t, frag
+    sin = _gen(_cfg(), "XAUUSD", "M5", 0.1, capital=25000.0)               # sin capital en la config: limites de siempre
+    assert "InpMaxDailyLossPct = 4.0" in sin and "InpMaxTotalLossPct = 8.0" in sin and "InpInitialBalance = 25000.0" in sin
+    libre = _gen(_cfg(capital=25000.0, perd_dia_pct=0.0, perd_tot_pct=0.0), "XAUUSD", "M5", 0.1)
+    assert "InpMaxDailyLossPct = 0.0" in libre and "InpMaxTotalLossPct = 0.0" in libre
+
+
+@pytest.mark.skipif(not HAY_GPP, reason="sin g++")
+@pytest.mark.parametrize("dia,tot", [("trailing", "estatico"), ("estatico", "trailing"), ("trailing", "trailing")])
+def test_pisos_y_dia_cet_coinciden_con_el_backtester(dia, tot):
+    c = _cfg(capital=25000.0, usd_por_unidad=10.0, perd_dia_pct=5.0, perd_dia_modo=dia, perd_tot_pct=10.0, perd_tot_modo=tot,
+             colchon_pct=1.0, riesgo_op_activo=True, riesgo_op_pct=0.5, pausa_activa=True, pausa_min=45.0,
+             servidor_offset_horas=2.0)
+    t = _gen(c, "XAUUSD", "M5", 0.1)
+    main = '''int main(){int q;std::cin>>q;g_initBal=InpInitialBalance;
+ while(q--){double bd,pk;long long u;std::cin>>bd>>pk>>u;g_dayBal=bd;g_peak=pk;
+  printf("%.6f %.6f %d\\n",FloorDay(),FloorTotal(),DayKeyCET(u));}
+ g_time.assign(3,0);g_time[0]=1000;g_time[1]=1000+60*30;g_time[2]=1000+60*60;g_lastLossBar=1000;
+ printf("%d %d %d\\n",PauseBlocks(0)?1:0,PauseBlocks(1)?1:0,PauseBlocks(2)?1:0);}'''
+    casos = [(25000.0, 25000.0, "2026-01-15 12:00"), (25800.0, 26500.0, "2026-03-29 00:30"), (24000.0, 25200.0, "2026-10-25 01:30"),
+             (25300.0, 25300.0, "2026-11-03 23:30"), (25000.0, 25900.0, "2026-07-01 22:30")]
+    entrada = f"{len(casos)}\n" + "\n".join(f"{bd} {pk} {int(pd.Timestamp(ts).timestamp())}" for bd, pk, ts in casos)
+    with tempfile.TemporaryDirectory() as d:
+        exe = _compilar(t, main, d)
+        out = subprocess.run([exe], input=entrada, capture_output=True, text=True).stdout.strip().split("\n")
+    for (bd, pk, ts), ln in zip(casos, out):
+        fd, ft, key = ln.split()
+        p_dia, p_tot = 4.0, 9.0
+        esp_d = bd * (1 - p_dia / 100) if dia == "trailing" else bd - p_dia / 100 * 25000.0
+        esp_t = (pk if tot == "trailing" else 25000.0) * (1 - p_tot / 100)
+        assert abs(float(fd) - esp_d) < 1e-3 and abs(float(ft) - esp_t) < 1e-3
+        # el dia del bot = dia CET que calcula el backtester al pasar un instante UTC (servidor UTC+0 para esta prueba)
+        idx = pd.DatetimeIndex([pd.Timestamp(ts)])
+        esperado = int(eng.claves_dia(idx, eng.Config(servidor_offset_horas=0.0, servidor_dst_eeuu=False))[0])
+        y, m, dd = 1970, 1, 1
+        from datetime import date as _d
+        k = _d.fromordinal(_d(1970, 1, 1).toordinal() + esperado)
+        assert int(key) == k.year * 10000 + k.month * 100 + k.day
+    assert out[-1] == "1 1 0"                                          # 0 y 30 min dentro de 45; 60 min ya no

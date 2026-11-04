@@ -86,6 +86,10 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
     else:
         sl_modo, sl_valor, usd = cfg.sl_modo, float(cfg.sl_valor), 0.0
     fecha = fecha or datetime.now()
+    if cfg.capital > 0:                 # limites de la app: ya traen el colchon restado (0 = sin limite)
+        g_dia, g_tot = cfg.limites_efectivos()
+    else:                               # sin capital en la configuracion: limites de siempre
+        g_dia, g_tot = 4.0, (min(8.0, limite_pct * 0.8) if limite_pct > 0 else 8.0)
 
     cab = [
         "//--------------------------------------------------------------------",
@@ -98,6 +102,10 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         cab.append(f"// SL: {_f(sl_valor, 3)} % del precio")
     else:
         cab.append(f"// SL: {_f(sl_valor, 3)} x ATR({cfg.atr_periodo})")
+    if cfg.capital > 0:
+        cab.append(f"// Reglas de cuenta: diario {_f(g_dia, 1)} % ({'trailing' if cfg.perd_dia_modo == 'trailing' else 'estatico'}), "
+                   f"total {_f(g_tot, 1)} % ({'estatico' if cfg.perd_tot_modo == 'estatico' else 'trailing'}), colchon {_f(cfg.colchon_pct, 1)} % "
+                   "(ya restado) | corte del dia: medianoche de Europa Central")
     act = [n for n, on in (("SMA", cfg.sma_activo), ("VWAP", cfg.vwap_activo), ("ADX", cfg.adx_activo),
                            ("ATR", cfg.atr_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo())) if on]
     cab.append("// Filtros/opciones activos: " + (", ".join(act) if act else "ninguno"))
@@ -139,9 +147,15 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "SRV_OFFSET": _f(cfg.servidor_offset_horas if cfg.servidor_offset_horas is not None else 2.0, 2),
         "SRV_DST": _b(cfg.servidor_dst_eeuu),
         "VEREDICTO_OK": "true",
-        "CAPITAL": _f(capital, 2),
-        "GUARD_DIA": "4.0",
-        "GUARD_TOT": _f(min(8.0, limite_pct * 0.8) if limite_pct > 0 else 8.0, 2),
+        "CAPITAL": _f(cfg.capital if cfg.capital > 0 else capital, 2),
+        "GUARD_DIA": _f(g_dia, 2),
+        "GUARD_TOT": _f(g_tot, 2),
+        "DIA_MODO": "1" if cfg.perd_dia_modo == "estatico" else "0",
+        "TOT_MODO": "1" if cfg.perd_tot_modo == "trailing" else "0",
+        "PROTEGER": _b(cfg.proteger_sl),
+        "RIESGO_ON": _b(cfg.riesgo_op_activo), "RIESGO_PCT": _f(cfg.riesgo_op_pct, 4),
+        "PAUSA_ON": _b(cfg.pausa_activa), "PAUSA_MIN": _f(cfg.pausa_min, 2),
+        "COMISION": _f(cfg.comision_op_usd, 4),
     }
     txt = _PLANTILLA
     for k, v in valores.items():
@@ -232,6 +246,14 @@ const double          InpMaxDailyLossPct = @@GUARD_DIA@@;           // Perdida d
 const double          InpMaxTotalLossPct = @@GUARD_TOT@@;           // Perdida total maxima (% del balance inicial)
 const int             InpAvisoHoraAR    = 20;             // Hora (Argentina) del aviso diario "activo": 20 queda despues de la pausa diaria del mercado todo el ano
 const double          InpInitialBalance = @@CAPITAL@@;            // Balance inicial de la cuenta (0 = el de la primera vez que arranca)
+const int             InpDailyMode      = @@DIA_MODO@@;             // Limite diario: 0 = trailing (% del balance de inicio del dia), 1 = estatico (monto fijo sobre el capital inicial)
+const int             InpTotalMode      = @@TOT_MODO@@;             // Limite total: 0 = estatico (desde el capital inicial), 1 = trailing (desde el balance maximo)
+const bool            InpProtectSL      = @@PROTEGER@@;           // No abrir si el SL, perdiendo al maximo, rompe un limite
+const bool            InpRiskOn         = @@RIESGO_ON@@;          // Riesgo maximo por operacion
+const double          InpRiskPct        = @@RIESGO_PCT@@;         // ... en % del capital inicial (si lo supera, no se opera)
+const bool            InpPauseOn        = @@PAUSA_ON@@;           // Tiempo minimo tras una operacion perdedora
+const double          InpPauseMin       = @@PAUSA_MIN@@;          // ... en minutos (las senales dentro de ese tiempo se descartan)
+const double          InpCommissionUsd  = @@COMISION@@;           // Comision por operacion (US$)
 
 // ============================ estado ==========================================
 const double SENT = -1.0e300;          // "sin dato" (equivale a NaN en el backtester)
@@ -259,6 +281,8 @@ int      g_blockDay  = 0;
 int      g_dayKey    = 0;
 double   g_initBal   = 0.0;
 double   g_dayBal    = 0.0;
+double   g_peak      = 0.0;                    // balance maximo alcanzado (limite total trailing)
+datetime g_lastLossBar = 0;                    // vela (hora servidor) en que cerro la ultima operacion perdedora
 string   g_gv        = "";
 
 bool V(const double x) { return x > -1.0e299; }
@@ -628,6 +652,69 @@ bool DirectionAllows(const int side)
    return side == -1;
 }
 
+// ============================ reglas de la cuenta (pisos, riesgo, pausa) ======
+// El "dia" de la cuenta se corta a medianoche de Europa Central (CE(S)T), como el de FTMO, y no a la del servidor.
+datetime ToCET(const datetime utc)
+{
+   MqlDateTime u;
+   TimeToStruct(utc, u);
+   const bool dst = (utc >= LastSunday(u.year, 3) + 3600 && utc < LastSunday(u.year, 10) + 3600);
+   return utc + (datetime)(dst ? 7200 : 3600);
+}
+
+int DayKeyCET(const datetime utc) { return DayKeyOf(ToCET(utc)); }
+
+// pisos de equity (en dinero) de los limites efectivos; SENT = sin limite
+double FloorDay()
+{
+   if(InpMaxDailyLossPct <= 0.0) return SENT;
+   if(InpDailyMode == 1) return g_dayBal - InpMaxDailyLossPct / 100.0 * g_initBal;
+   return g_dayBal * (1.0 - InpMaxDailyLossPct / 100.0);
+}
+
+double FloorTotal()
+{
+   if(InpMaxTotalLossPct <= 0.0) return SENT;
+   const double base = (InpTotalMode == 1) ? g_peak : g_initBal;
+   return base * (1.0 - InpMaxTotalLossPct / 100.0);
+}
+
+// riesgo en dinero de una operacion con SL a la distancia d (precio): perdida del SL + comision
+double RiskUsd(const double d)
+{
+   const double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   const double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   if(tickSize <= 0.0 || tickValue <= 0.0) return 0.0;
+   return d * (tickValue / tickSize) * InpLots + InpCommissionUsd;
+}
+
+// controles previos a abrir: riesgo maximo por operacion y proteccion (que un SL no rompa un limite)
+bool AccountRulesOK(const double d)
+{
+   const double riesgo = RiskUsd(d);
+   if(InpRiskOn && g_initBal > 0.0 && riesgo / g_initBal * 100.0 > InpRiskPct + 1.0e-12)
+   {
+      Print("Operacion saltada: el riesgo (", DoubleToString(riesgo, 2), ") supera el ", DoubleToString(InpRiskPct, 2), " % del capital.");
+      return false;
+   }
+   if(InpProtectSL)
+   {
+      const double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+      if(bal - riesgo <= FloorDay() || bal - riesgo <= FloorTotal())
+      {
+         Print("Operacion saltada: con el SL (riesgo ", DoubleToString(riesgo, 2), ") el equity romperia un limite de la cuenta.");
+         return false;
+      }
+   }
+   return true;
+}
+
+// tiempo minimo tras una perdida: true si la senal de la vela i cae dentro de la pausa
+bool PauseBlocks(const int i)
+{
+   return InpPauseOn && g_lastLossBar > 0 && (double)(g_time[i] - g_lastLossBar) / 60.0 < InpPauseMin;
+}
+
 // ============================ ordenes =========================================
 // el lote del backtest debe ser exactamente operable en este broker: si no lo es, el bot no arranca
 bool VolumenValido()
@@ -796,6 +883,7 @@ void PlacePullback(const int i)
    }
    const double d = SlDistance(i);
    if(d <= 0.0) return;
+   if(!AccountRulesOK(d)) { g_pbActive = false; return; }
    const double ema  = (InpPBEma == BOT_PB_CORTA) ? g_ef[i] : g_es[i];
    const double frac = InpPBPct / 100.0;
    const double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -849,7 +937,9 @@ bool GuardsOK()
    if(!InpGuards) return true;
    if(g_stopTotal) return false;
    const double eq = AccountInfoDouble(ACCOUNT_EQUITY);
-   if(eq <= g_initBal * (1.0 - InpMaxTotalLossPct / 100.0))
+   const double balNow = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(balNow > g_peak) { g_peak = balNow; GlobalVariableSet(g_gv + "PEAK", g_peak); }
+   if(eq <= FloorTotal())
    {
       Avisar("FRENO TOTAL: perdida total del " + DoubleToString(InpMaxTotalLossPct, 1) + " %. Se cerro todo. Bot detenido: no opera hasta que lo reactives (variable global " + g_gv + "STOP, F3 en MT5).");
       CloseAll();
@@ -857,7 +947,7 @@ bool GuardsOK()
       GlobalVariableSet(g_gv + "STOP", 1.0);
       return false;
    }
-   const int key = DayKeyOf(TimeCurrent());
+   const int key = DayKeyCET(TimeGMT());
    if(key != g_dayKey)
    {
       g_dayKey = key;
@@ -867,7 +957,7 @@ bool GuardsOK()
       GlobalVariableSet(g_gv + "DAYBAL", g_dayBal);
    }
    if(g_blockDay == key) return false;
-   if(eq <= g_dayBal * (1.0 - InpMaxDailyLossPct / 100.0))
+   if(eq <= FloorDay())
    {
       Avisar("FRENO DIARIO: la perdida del dia llego al " + DoubleToString(InpMaxDailyLossPct, 1) + " %. Se cerro todo; retoma manana solo.");
       CloseAll();
@@ -931,8 +1021,14 @@ void OnNewBar()
       return;
    }
 
+   if(PauseBlocks(i))
+   {
+      Print("Senal descartada: dentro del tiempo minimo (", DoubleToString(InpPauseMin, 0), " min) tras una operacion perdedora.");
+      return;
+   }
    if(!conPullback)
    {
+      if(!AccountRulesOK(SlDistance(i))) return;
       Print("Senal valida: entrada a mercado.");
       MarketEntry(cr, SlDistance(i));
       return;
@@ -990,7 +1086,10 @@ int OnInit()
    if(InpInitialBalance > 0.0) g_initBal = InpInitialBalance;
    else if(GlobalVariableCheck(g_gv + "INIT")) g_initBal = GlobalVariableGet(g_gv + "INIT");
    else { g_initBal = AccountInfoDouble(ACCOUNT_BALANCE); GlobalVariableSet(g_gv + "INIT", g_initBal); }
-   g_dayKey = DayKeyOf(TimeCurrent());
+   g_dayKey = DayKeyCET(TimeGMT());
+   g_peak = GlobalVariableCheck(g_gv + "PEAK") ? GlobalVariableGet(g_gv + "PEAK") : MathMax(g_initBal, AccountInfoDouble(ACCOUNT_BALANCE));
+   GlobalVariableSet(g_gv + "PEAK", g_peak);
+   g_lastLossBar = GlobalVariableCheck(g_gv + "LASTLOSS") ? (datetime)GlobalVariableGet(g_gv + "LASTLOSS") : 0;
    if(GlobalVariableCheck(g_gv + "DAYKEY") && (int)GlobalVariableGet(g_gv + "DAYKEY") == g_dayKey)
       g_dayBal = GlobalVariableGet(g_gv + "DAYBAL");
    else
@@ -1002,8 +1101,8 @@ int OnInit()
    if(InpGuards && !g_stopTotal)
    {
       const double eq0 = AccountInfoDouble(ACCOUNT_EQUITY);
-      const double lim = g_initBal * (1.0 - InpMaxTotalLossPct / 100.0);
-      if(eq0 <= lim)
+      const double lim = FloorTotal();
+      if(InpMaxTotalLossPct > 0.0 && eq0 <= lim)
       {
          Avisar("RECHAZADO: el equity de la cuenta (" + DoubleToString(eq0, 2) + ") ya esta por debajo del limite de perdida total ("
                 + DoubleToString(lim, 2) + ") calculado con un capital inicial de " + DoubleToString(g_initBal, 2)
@@ -1095,7 +1194,7 @@ void OnTimer()
    {
       string problema = "";
       if(g_stopTotal) problema = "DETENIDO por freno de perdida total";
-      else if(g_blockDay == DayKeyOf(TimeCurrent())) problema = "freno diario activo hoy";
+      else if(g_blockDay == DayKeyCET(TimeGMT())) problema = "freno diario activo hoy";
       else if(!AlgoOK()) problema = "SIN trading algoritmico habilitado";
       else if(TerminalInfoInteger(TERMINAL_CONNECTED) == 0) problema = "SIN conexion con el servidor";
       string msg;
@@ -1165,6 +1264,14 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       else if(motivo == DEAL_REASON_CLIENT || motivo == DEAL_REASON_MOBILE || motivo == DEAL_REASON_WEB) que = "CIERRE MANUAL";
       const double res = HistoryDealGetDouble(trans.deal, DEAL_PROFIT) + HistoryDealGetDouble(trans.deal, DEAL_SWAP)
                          + HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
+      if(res < 0.0)                                  // operacion perdedora: arranca el tiempo minimo (si esta activo)
+      {
+         datetime b = (datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME);
+         b -= (datetime)((long)b % PeriodSeconds());
+         if(g_salidaSenal) b -= (datetime)PeriodSeconds();      // la salida por senal es de la vela que acaba de cerrar
+         g_lastLossBar = b;
+         GlobalVariableSet(g_gv + "LASTLOSS", (double)b);
+      }
       g_salidaSenal = false;
       Avisar(que + ": " + string(tipo == DEAL_TYPE_SELL ? "compra" : "venta") + " cerrada a " + DoubleToString(precio, dig)
              + " | resultado " + (res >= 0.0 ? "+" : "") + DoubleToString(res, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY));
