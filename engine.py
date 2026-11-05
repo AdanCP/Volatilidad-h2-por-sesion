@@ -82,6 +82,7 @@ class Config:
     sesion_activo: bool = False
     sesiones: tuple = ("Tokio", "Londres", "Nueva York")
     horarios: Optional[dict] = None
+    sin_pausa: tuple = ()           # sesiones a las que se les excluye la pausa de mediodia (solo bloquea entradas nuevas)
     servidor_offset_horas: Optional[float] = None   # desfase del servidor en invierno (GMT+2 -> 2)
     servidor_dst_eeuu: bool = True
     # reglas de la cuenta (limites de perdida, protecciones y controles de operacion)
@@ -283,7 +284,7 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     ok_ses = None
     if cfg.sesion_activo:
         utc = ses.servidor_a_utc(df.index, cfg.servidor_offset_horas, cfg.servidor_dst_eeuu)
-        ok_ses = ses.mascara_sesiones(utc, cfg.sesiones, cfg.horarios)
+        ok_ses = ses.mascara_sesiones(utc, cfg.sesiones, cfg.horarios, cfg.sin_pausa)
 
     def entre(v, lo, hi):
         return not (np.isnan(v) or (lo is not None and v < lo) or (hi is not None and v > hi))

@@ -177,6 +177,7 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         _tx = [f"{n_} {_hh(cfg.horarios[n_][1])}-{_hh(cfg.horarios[n_][2])} hora local"
                if cfg.horarios and n_ in cfg.horarios and tuple(cfg.horarios[n_]) != tuple(_SL[n_]) else n_
                for n_ in cfg.sesiones]
+        _tx = [t + " sin pausa de mediodía" if n_ in (cfg.sin_pausa or ()) else t for t, n_ in zip(_tx, cfg.sesiones)]
         filtros.append("sesión " + " + ".join(_tx))
     filtros_txt = ("filtros: " + "; ".join(filtros)) if filtros else "sin filtros"
     if cfg.pb_efectivo():

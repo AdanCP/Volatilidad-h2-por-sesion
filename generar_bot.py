@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from sessions import SESIONES_LOCAL as _SES_LOCAL
+from sessions import SESIONES_LOCAL as _SES_LOCAL, PAUSAS_LOCAL as _PAUSAS
 
 
 _TF = {"M1": "PERIOD_M1", "M5": "PERIOD_M5", "M15": "PERIOD_M15", "M30": "PERIOD_M30",
@@ -45,6 +45,8 @@ def _magic(cfg, simbolo: str) -> int:
         clave += f"|{cfg.salida_modo}"
     if cfg.sl_modo == "ema":
         clave += f"|{cfg.sl_ema_ref}" + ("|pct" if cfg.sl_ema_pct else "")
+    if cfg.sin_pausa:
+        clave += "|sp" + ",".join(sorted(cfg.sin_pausa))
     h = 0
     for ch in clave:
         h = (h * 31 + ord(ch)) % 90000
@@ -127,7 +129,8 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         _hor = {**_SES_LOCAL, **(cfg.horarios or {})}
         _hh = lambda x: f"{int(x):02d}:{int(round((x % 1) * 60)):02d}"
         cab.append("// Sesiones (hora LOCAL de cada plaza; el horario de verano se ajusta solo): " + ", ".join(
-            f"{n_} {_hh(_hor[n_][1])}-{_hh(_hor[n_][2])}" for n_ in ("Tokio", "Londres", "Nueva York") if n_ in cfg.sesiones))
+            f"{n_} {_hh(_hor[n_][1])}-{_hh(_hor[n_][2])}" + (f" sin pausa {_hh(_PAUSAS[n_][1])}-{_hh(_PAUSAS[n_][2])}" if n_ in (cfg.sin_pausa or ()) else "")
+            for n_ in ("Tokio", "Londres", "Nueva York") if n_ in cfg.sesiones))
     cab.append(f"// Veredicto del backtester: {_sin_ascii(veredicto.get('titulo', ''))}")
     cab.append("// Parametros FIJOS: para cambiarlos hay que regenerar el bot desde la app (no se editan a mano).")
     cab += [
@@ -170,6 +173,11 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "TOKIO_INI": _f(hor["Tokio"][1], 4), "TOKIO_FIN": _f(hor["Tokio"][2], 4),
         "LONDRES_INI": _f(hor["Londres"][1], 4), "LONDRES_FIN": _f(hor["Londres"][2], 4),
         "NY_INI": _f(hor["Nueva York"][1], 4), "NY_FIN": _f(hor["Nueva York"][2], 4),
+        "TOKIO_PAUSA": _b("Tokio" in (cfg.sin_pausa or ())), "LONDRES_PAUSA": _b("Londres" in (cfg.sin_pausa or ())),
+        "NY_PAUSA": _b("Nueva York" in (cfg.sin_pausa or ())),
+        "TOKIO_P_INI": _f(_PAUSAS["Tokio"][1], 4), "TOKIO_P_FIN": _f(_PAUSAS["Tokio"][2], 4),
+        "LONDRES_P_INI": _f(_PAUSAS["Londres"][1], 4), "LONDRES_P_FIN": _f(_PAUSAS["Londres"][2], 4),
+        "NY_P_INI": _f(_PAUSAS["Nueva York"][1], 4), "NY_P_FIN": _f(_PAUSAS["Nueva York"][2], 4),
         "SRV_OFFSET": _f(cfg.servidor_offset_horas if cfg.servidor_offset_horas is not None else 2.0, 2),
         "SRV_DST": _b(cfg.servidor_dst_eeuu),
         "VEREDICTO_OK": "true",
@@ -274,6 +282,15 @@ const double          InpLondresFin     = @@LONDRES_FIN@@; // Londres: fin de la
 const bool            InpSesNY          = @@SES_NY@@;     // Sesion Nueva York
 const double          InpNYIni          = @@NY_INI@@;     // Nueva York: inicio de la ventana (hora local de Nueva York)
 const double          InpNYFin          = @@NY_FIN@@;     // Nueva York: fin de la ventana (hora local de Nueva York)
+const bool            InpTokioSinPausa  = @@TOKIO_PAUSA@@; // Tokio: excluir la pausa de mediodia
+const double          InpTokioPIni      = @@TOKIO_P_INI@@; // Tokio: inicio de la pausa (hora local)
+const double          InpTokioPFin      = @@TOKIO_P_FIN@@; // Tokio: fin de la pausa (hora local)
+const bool            InpLondresSinPausa = @@LONDRES_PAUSA@@; // Londres: excluir la pausa de mediodia
+const double          InpLondresPIni    = @@LONDRES_P_INI@@; // Londres: inicio de la pausa (hora local)
+const double          InpLondresPFin    = @@LONDRES_P_FIN@@; // Londres: fin de la pausa (hora local)
+const bool            InpNYSinPausa     = @@NY_PAUSA@@;   // Nueva York: excluir la pausa de mediodia
+const double          InpNYPIni         = @@NY_P_INI@@;   // Nueva York: inicio de la pausa (hora local)
+const double          InpNYPFin         = @@NY_P_FIN@@;   // Nueva York: fin de la pausa (hora local)
 const double          InpServerOffset   = @@SRV_OFFSET@@; // Desfase del servidor en INVIERNO respecto de GMT (GMT+2 -> 2)
 const bool            InpServerDST      = @@SRV_DST@@;    // El servidor cambia de hora con EE.UU. (GMT+2/+3)
 
@@ -527,19 +544,19 @@ bool InSession(const datetime t_servidor)
    if(InpSesTokio)
    {
       const double h = HoraLocal(utc, 9.0);
-      if(EnVentana(h, InpTokioIni, InpTokioFin)) return true;
+      if(EnVentana(h, InpTokioIni, InpTokioFin) && !(InpTokioSinPausa && EnVentana(h, InpTokioPIni, InpTokioPFin))) return true;
    }
    if(InpSesLondres)
    {
       const bool bst = (utc >= LastSunday(u.year, 3) + 3600 && utc < LastSunday(u.year, 10) + 3600);
       const double h = HoraLocal(utc, bst ? 1.0 : 0.0);
-      if(EnVentana(h, InpLondresIni, InpLondresFin)) return true;
+      if(EnVentana(h, InpLondresIni, InpLondresFin) && !(InpLondresSinPausa && EnVentana(h, InpLondresPIni, InpLondresPFin))) return true;
    }
    if(InpSesNY)
    {
       const bool edt = (utc >= NthSunday(u.year, 3, 2) + 7 * 3600 && utc < NthSunday(u.year, 11, 1) + 6 * 3600);
       const double h = HoraLocal(utc, edt ? -4.0 : -5.0);
-      if(EnVentana(h, InpNYIni, InpNYFin)) return true;
+      if(EnVentana(h, InpNYIni, InpNYFin) && !(InpNYSinPausa && EnVentana(h, InpNYPIni, InpNYPFin))) return true;
    }
    return false;
 }

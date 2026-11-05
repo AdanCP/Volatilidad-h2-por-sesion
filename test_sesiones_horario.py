@@ -93,3 +93,46 @@ def test_bot_lleva_las_ventanas_locales():
     src2 = gb.generar_mq5(eng.Config(sesion_activo=True, servidor_offset_horas=2.0), "XAUUSD", "M15", 0.1,
                           veredicto={"nivel": "ok", "titulo": "x"})
     assert "InpNYIni          = 9.5" in src2 and "InpNYFin          = 16.0" in src2
+
+
+# ---------------------------------------------------------------- pausa de mediodia
+def test_pausa_m5_tokio_excluye_de_1130_a_1225():
+    # Tokio 11:30-12:30 locales = 02:30-03:30 UTC; velas M5
+    idx = pd.date_range("2024-01-09 02:00", "2024-01-09 04:00", freq="5min")      # invierno, sin DST en Tokio
+    m = ses.mascara_sesiones(idx, ("Tokio",), None, sin_pausa=("Tokio",))
+    ok = lambda hhmm: bool(m[list(idx.strftime("%H:%M")).index(hhmm)])
+    assert ok("02:25") and not ok("02:30") and not ok("03:25") and ok("03:30")
+    sin = ses.mascara_sesiones(idx, ("Tokio",))
+    assert sin.all() and m.sum() == len(idx) - 12
+
+
+def test_pausa_en_hora_argentina_y_verano():
+    assert tuple(round(x, 2) for x in ses.pausa_art("Nueva York", INVIERNO)) == (14.0, 16.0)
+    assert tuple(round(x, 2) for x in ses.pausa_art("Londres", INVIERNO)) == (9.0, 10.0)
+    assert tuple(round(x, 2) for x in ses.pausa_art("Tokio", INVIERNO)) == (23.5, 0.5)
+    for n, esp in (("Nueva York", (13.0, 15.0)), ("Londres", (8.0, 9.0)), ("Tokio", (23.5, 0.5))):
+        assert tuple(round(x, 2) for x in ses.pausa_art(n, date(2024, 7, 15))) == esp
+
+
+def test_pausa_solo_de_su_sesion_y_con_rango():
+    # NY 12:00-14:00 locales (invierno = 17:00-19:00 UTC). Con Londres+NY, a esa hora Londres ya cerro: se excluye igual
+    idx = pd.date_range("2024-01-09 16:00", "2024-01-09 20:00", freq="30min")
+    m = ses.mascara_sesiones(idx, ("Nueva York",), None, sin_pausa=("Nueva York",))
+    assert list(m) == [True, True, False, False, False, False, True, True, True][:len(idx)]
+    # pausa fuera del rango limitado: no cambia nada
+    h = ses.horarios_con_rangos({"Nueva York": (11.5, 13.5)}, INVIERNO)      # 9:30-11:30 locales
+    assert (ses.mascara_sesiones(idx, ("Nueva York",), h, ("Nueva York",)) == ses.mascara_sesiones(idx, ("Nueva York",), h)).all()
+
+
+def test_motor_y_bot_con_pausa():
+    df = _df()
+    base = dict(sesion_activo=True, sesiones=("Nueva York",), servidor_offset_horas=2.0)
+    n_ok = lambda P: sum(1 for _, _, m in P.cruces if m is None)
+    a = n_ok(eng.preparar(df, eng.Config(**base)))
+    b = n_ok(eng.preparar(df, eng.Config(**base, sin_pausa=("Nueva York",))))
+    assert 0 < b < a
+    src = gb.generar_mq5(eng.Config(**base, sin_pausa=("Nueva York",)), "XAUUSD", "M15", 0.1, veredicto={"nivel": "ok", "titulo": "x"})
+    assert "InpNYSinPausa     = true" in src and "InpNYPIni         = 12.0" in src and "InpNYPFin         = 14.0" in src
+    assert "InpTokioSinPausa  = false" in src
+    assert "&& !(InpNYSinPausa && EnVentana(h, InpNYPIni, InpNYPFin))" in src
+    assert "sin pausa 12:00-14:00" in src

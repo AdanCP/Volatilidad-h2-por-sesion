@@ -36,6 +36,49 @@ def _curva(seed: int, w: int, h: int, color: str, deriva: float = .9, vol: float
     return f'<svg width="100%" viewBox="0 0 {w} {h}"><path d="M{pts}" fill="none" stroke="{color}" stroke-width="2.2" stroke-linejoin="round"/></svg>'
 
 
+def _media(x: np.ndarray, k: int, exp: bool) -> np.ndarray:
+    if exp:
+        a, o = 2 / (k + 1), [x[0]]
+        for v in x[1:]:
+            o.append(a * v + (1 - a) * o[-1])
+        return np.array(o)
+    return np.array([x[max(0, i - k + 1):i + 1].mean() for i in range(len(x))])
+
+
+def _cruce(tipo: str, w: int, h: int, p: dict) -> str:
+    """Miniatura de un cruce real: EMA = dos medias exponenciales (3 y 13) que se cruzan; SMA = precio que cruza una media simple (10).
+    Los datos son un precio de ejemplo (baja, gira y sube); el círculo marca el punto exacto del cruce."""
+    n = 70
+    rng = np.random.default_rng(11 if tipo == "ema" else 4)
+    if tipo == "ema":
+        base = np.r_[np.linspace(0, -22, 26), np.linspace(-22, -4, 10), np.linspace(-4, 26, 34)]
+        precio = base + np.cumsum(rng.normal(0, 1.5, n)) * .5
+        rap, lenta = _media(precio, 3, True), _media(precio, 13, True)
+        capas = [(precio, p["EJE"], 1.4, .7), (lenta, p["ROSA"], 2.4, 1), (rap, p["INDIGO"], 2.4, 1)]
+        a, b, col, desde = rap, lenta, p["INDIGO"], 1
+    else:
+        base = np.r_[np.linspace(0, -12, 24), np.linspace(-12, -2, 10), np.linspace(-2, 24, 36)]
+        precio = base + np.cumsum(rng.normal(0, 2.2, n)) * .6
+        media = _media(precio, 10, False)
+        capas = [(precio, p["EJE"], 1.6, .9), (media, p["ROSA"], 2.6, 1)]
+        a, b, col, desde = precio, media, p["ROSA"], 10
+    todo = np.concatenate([c[0] for c in capas])
+    lo, hi = todo.min(), todo.max()
+    X = lambda i: 4 + i * (w - 8) / (n - 1)
+    Y = lambda v: 6 + (1 - (v - lo) / (hi - lo)) * (h - 12)
+    d = a - b
+    ups = [i for i in range(desde, n) if d[i - 1] < 0 <= d[i]]
+    k = min(ups, key=lambda i: abs(i - 33))                     # el cruce alcista más cercano al centro
+    t = -d[k - 1] / (d[k] - d[k - 1])
+    cx, cy = X(k - 1) + t * (X(k) - X(k - 1)), Y(b[k - 1] + t * (b[k] - b[k - 1]))
+    trazos = "".join(
+        f'<path d="M' + " L".join(f"{X(i):.1f},{Y(v):.1f}" for i, v in enumerate(s)) +
+        f'" fill="none" stroke="{c}" stroke-width="{g}" stroke-linejoin="round" stroke-linecap="round" opacity="{o}"/>' for s, c, g, o in capas)
+    marca = (f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="7" fill="none" stroke="{col}" stroke-width="1.6" opacity=".35"/>'
+             f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3.6" fill="{p["CARD"]}" stroke="{col}" stroke-width="2"/>')
+    return f'<svg width="100%" viewBox="0 0 {w} {h}">{trazos}{marca}</svg>'
+
+
 def _codigo(w: int, h: int, color: str) -> str:
     lin = "".join(f'<rect y="{8 + i * 14}" width="{a}" height="6" rx="3" fill="{color}" opacity="{o}"/>'
                   for i, (a, o) in enumerate([(120, .95), (170, .45), (95, .45), (150, .45)]))
@@ -47,8 +90,8 @@ def html(p: dict, ruta: dict, oscuro: bool) -> str:
     W, H = 300, 64
     mods = [
         ("sesiones", "Sesiones XAU/USD", "Volatilidad del oro por sesión y por hora", _horas(W, H, p["PISTA"], p["INDIGO"])),
-        ("ema", "Backtester EMA", "Cruce de dos medias exponenciales", _curva(21, W, H, p["INDIGO"])),
-        ("sma", "Backtester SMA", "Precio contra una media simple o cruce de dos", _curva(8, W, H, p["ROSA"], .7, 2.6)),
+        ("ema", "Backtester EMA", "Cruce de dos medias exponenciales", _cruce("ema", W, 72, p)),
+        ("sma", "Backtester SMA", "Precio contra una media simple o cruce de dos", _cruce("sma", W, 72, p)),
         ("bot", "Generar bot (.mq5)", "Exporta los parámetros del backtest a MetaTrader 5", _codigo(W, H, p["INDIGO"])),
     ]
     tarjetas = ""

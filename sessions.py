@@ -15,6 +15,15 @@ SESIONES_LOCAL = {
     "Nueva York": ("America/New_York", 9.5, 16.0),     # NYSE: 9:30 a 16:00
 }
 
+# Pausa de mediodia de cada sesion (definicion del usuario), en HORA LOCAL de la plaza: asi el horario de verano de Londres y
+# Nueva York la corre solo en hora Argentina. Valores fijos. Hoy en hora Argentina: Tokio 23:30-00:30, Londres 09:00-10:00,
+# Nueva York 14:00-16:00.
+PAUSAS_LOCAL = {
+    "Tokio": ("Asia/Tokyo", 11.5, 12.5),
+    "Londres": ("Europe/London", 12.0, 13.0),
+    "Nueva York": ("America/New_York", 12.0, 14.0),
+}
+
 
 def _domingo(anio: int, mes: int, n: int) -> pd.Timestamp:
     d = pd.Timestamp(anio, mes, 1)
@@ -42,9 +51,11 @@ def servidor_a_utc(indice: pd.DatetimeIndex, offset_horas: float, dst_eeuu: bool
     return indice - pd.to_timedelta(off, unit="h")
 
 
-def mascara_sesiones(indice_utc: pd.DatetimeIndex, nombres, horarios=None) -> np.ndarray:
+def mascara_sesiones(indice_utc: pd.DatetimeIndex, nombres, horarios=None, sin_pausa=()) -> np.ndarray:
     """True si la vela cae en AL MENOS UNA de las sesiones elegidas (solapamientos
-    validos). Ventana [inicio, fin) en hora local; admite ventanas que cruzan medianoche."""
+    validos). Ventana [inicio, fin) en hora local; admite ventanas que cruzan medianoche.
+    `sin_pausa`: sesiones a las que se les saca su pausa de mediodia (PAUSAS_LOCAL, tambien [inicio, fin) por hora de APERTURA
+    de la vela); la pausa se saca solo de su propia sesion."""
     horarios = horarios or SESIONES_LOCAL
     ok = np.zeros(len(indice_utc), dtype=bool)
     base = indice_utc.tz_localize("UTC")
@@ -57,7 +68,11 @@ def mascara_sesiones(indice_utc: pd.DatetimeIndex, nombres, horarios=None) -> np
         except Exception as e:  # ZoneInfoNotFoundError en Windows sin tzdata
             raise RuntimeError(f"No se pudo cargar la zona horaria {zona} (pip install tzdata): {e}")
         h = loc.hour.to_numpy() + loc.minute.to_numpy() / 60.0
-        ok |= (h >= ini) & (h < fin) if ini < fin else (h >= ini) | (h < fin)
+        en = (h >= ini) & (h < fin) if ini < fin else (h >= ini) | (h < fin)
+        if nombre in (sin_pausa or ()):
+            _z, p_ini, p_fin = PAUSAS_LOCAL[nombre]
+            en &= ~((h >= p_ini) & (h < p_fin))
+        ok |= en
     return ok
 
 
@@ -109,6 +124,12 @@ def horarios_con_rangos(rangos_art: dict, fecha: date) -> dict:
         zona = SESIONES_LOCAL[nombre][0]
         out[nombre] = (zona, art_a_local(desde, zona, fecha), art_a_local(hasta, zona, fecha))
     return out
+
+
+def pausa_art(nombre: str, fecha: date) -> tuple:
+    """(inicio, fin) de la pausa de mediodia de una sesion en hora Argentina, en `fecha`."""
+    zona, ini, fin = PAUSAS_LOCAL[nombre]
+    return local_a_art(ini, zona, fecha), local_a_art(fin, zona, fecha)
 
 
 def rebasar_horas(valores: dict, pares: list, hoy: date) -> dict:

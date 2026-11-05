@@ -209,3 +209,4 @@ def test_anillo_acepta_alto_minimo():
     import ui_estilo as v
     assert "min-height:284px" in v.anillo(20, "t", "s", 16.7, min_alto=284)
     assert "min-height" not in v.anillo(20, "t", "s", 16.7)
+

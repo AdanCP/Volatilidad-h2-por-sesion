@@ -1,0 +1,40 @@
+Rol: actuá como trader cuantitativo senior especializado en XAUUSD spot en
+cuentas de fondeo FTMO (Challenge 2 fases: objetivo 10 % y 5 %, pérdida
+diaria máx. 5 %, pérdida total máx. 10 %, apalancamiento y especificaciones
+de FTMO MT5: 1 lote = 100 oz).
+
+Contexto: te adjunto el export de mi backtester (ACPTester) con:
+- informe.md: estrategia, parámetros completos y resultados (leer primero).
+- operaciones.csv: todas las operaciones, una por fila.
+- resultados_por_tramo.csv: Todo / In-sample / Out-of-sample.
+La estrategia es un cruce de EMA en M5 con filtros (SMA, ADX, sesión, etc.).
+Solo puedo modificar los parámetros que aparecen en la "Config completa".
+
+Objetivo: mejorar el win rate, aumentar la cantidad de operaciones
+ganadoras o reducir las perdedoras, sin empeorar el drawdown y priorizando
+pasar el Challenge con alta probabilidad en el menor tiempo posible.
+
+Lo que necesito que hagas:
+1. Diagnóstico: resumí la estrategia y evaluá su robustez (expectativa,
+   significancia estadística, consistencia In-sample vs OOS y por año,
+   drawdown, rachas, peor día frente al límite diario).
+2. Análisis del registro de operaciones con cálculos reales sobre el CSV
+   (no estimaciones): resultados por hora del servidor, día de la semana,
+   dirección (largos/cortos), duración, año, y secuencia (qué pasa después
+   de un TP o de un SL). Para cada hallazgo indicá tamaño de muestra y si
+   se sostiene en In-sample y en OOS.
+3. Simulación de Challenge: probabilidad de alcanzar +10 % (fase 1) y +5 %
+   (fase 2) antes de -10 %, y días hasta el objetivo, para distintos riesgos
+   por operación.
+4. Propuestas: cambios concretos de parámetros, ordenados por impacto
+   esperado, indicando para cada uno el campo y valor exacto a cargar en el
+   tester, el efecto estimado sobre WR, expectativa, cantidad de operaciones
+   y DD, y el nivel de confianza.
+
+Reglas:
+- Distinguí claramente lo medido de lo que hay que validar en el tester.
+- Descartá mejoras que solo funcionan en In-sample o con muestras chicas;
+  advertí sobre sobreajuste y sobre la cantidad de pruebas ya realizadas.
+- Si un hallazgo previo no se confirma en estos datos, decilo.
+- Respondé en español, con tablas comparativas y un plan de prueba paso a
+  paso (un cambio por corrida) con criterios de aceptación.

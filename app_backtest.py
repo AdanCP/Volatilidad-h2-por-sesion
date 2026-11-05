@@ -531,6 +531,7 @@ with st.sidebar:
         if not ses_on:
             st.caption("Sin marcar: 24/5, todo el mercado.")
         horarios_ses = None
+        _sin_pausa = []
         if ses_on:
             sesiones = _W(st).multiselect("Sesiones permitidas", SESIONES, SESIONES)
             _hoy = date.today()
@@ -557,6 +558,18 @@ with st.sidebar:
                 else:
                     st.caption(f"{_nom} completa: {_ini_a // 1:02.0f}:{round((_ini_a % 1) * 60):02d} a "
                                f"{_fin_a // 1:02.0f}:{round((_fin_a % 1) * 60):02d} hora Argentina (hoy).")
+                _pa, _pb = sesmod.pausa_art(_nom, _hoy)
+                _hm = lambda x: f"{int(round(x * 60)) % 1440 // 60:02d}:{int(round(x * 60)) % 60:02d}"
+                if _W(st).checkbox(f"Excluir pausa de mediodía de {_nom}", key=f"excluir_pausa_de_{cio.slug(_nom)}", help=(
+                        "Opera la sesión salvo en su pausa de mediodía. Se excluyen las velas que abren desde el inicio de la pausa "
+                        "hasta antes del fin (en M5 con la pausa de 11:30 a 12:30, de la vela 11:30 a la 12:25). Solo bloquea "
+                        "entradas nuevas: lo que ya está abierto sigue. La pausa es fija y se guarda en hora de esa plaza, "
+                        "así que sigue el horario de verano sola.")):
+                    _sin_pausa.append(_nom)
+                    _z = sesmod.PAUSAS_LOCAL[_nom][0]
+                    st.caption(f"Sin pausa: {_hm(_pa)} a {_hm(_pb)} hora Argentina (hoy) = "
+                               f"{_hm(sesmod.PAUSAS_LOCAL[_nom][1])} a {_hm(sesmod.PAUSAS_LOCAL[_nom][2])} hora local de {_nom}. "
+                               + ("Tokio no cambia de horario." if _nom == "Tokio" else "Se corre sola con el horario de verano."))
             try:
                 horarios_ses = sesmod.horarios_con_rangos(_rangos, _hoy) if _rangos else None
             except ValueError as e:
@@ -633,6 +646,7 @@ def construir_config(simbolo: str = None) -> eng.Config:
         atr_activo=atr_on, atr_unidad="pct", atr_min=float(atr_min) or None, atr_max=float(atr_max) or None,
         atr_rel_n=int(rel_n), atr_rel_min=float(rel_min) or None, atr_rel_max=float(rel_max) or None,
         sesion_activo=ses_on, sesiones=tuple(sesiones), horarios=(horarios_ses if ses_on else None),
+        sin_pausa=(tuple(_sin_pausa) if ses_on else ()),
         servidor_offset_horas=offset if ses_on else (offset_dia if reglas_on else None), servidor_dst_eeuu=dst,
         reglas_activas=bool(reglas_on), capital=float(capital),
         usd_por_unidad=float(met.valor_por_unidad(p["tick_size"], p["tick_value"], lotes)),
