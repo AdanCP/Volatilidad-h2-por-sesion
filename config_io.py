@@ -1,13 +1,13 @@
 """Guardar y cargar la configuración del backtester (archivo .json). Sin dependencias de Streamlit: se puede probar suelto."""
 import json
 import re
-from datetime import date
+from datetime import date, time
 import unicodedata
 from datetime import datetime
 
 APP = "ACPTester"
 VERSION = 1
-TIPOS = ("number_input", "slider", "checkbox", "radio", "selectbox", "multiselect", "date_input", "text_input")
+TIPOS = ("number_input", "slider", "checkbox", "radio", "selectbox", "multiselect", "date_input", "text_input", "time_input")
 
 
 def slug(texto: str) -> str:
@@ -66,6 +66,14 @@ def con_valor(tipo: str, a: tuple, k: dict, v):
                 a[0] = v
             else:
                 k["value"] = v
+        elif tipo == "time_input":
+            if not isinstance(v, str) or len(v) < 5:
+                return tuple(a), k
+            nv = time(int(v[:2]), int(v[3:5]))
+            if len(a) > 0:
+                a[0] = nv
+            else:
+                k["value"] = nv
         elif tipo == "date_input":
             orig = a[0] if len(a) > 0 else k.get("value")
             if isinstance(orig, (tuple, list)):                      # período: (desde, hasta)
@@ -96,6 +104,8 @@ def con_valor(tipo: str, a: tuple, k: dict, v):
 
 def a_bytes(tipo: str, valores: dict, nota: str = "") -> bytes:
     def _json(o):
+        if isinstance(o, time):
+            return f"{o.hour:02d}:{o.minute:02d}"
         return o.item() if hasattr(o, "item") else str(o)
     paquete = {"app": APP, "tipo": tipo, "version": VERSION,
                "guardado": datetime.now().strftime("%Y-%m-%d %H:%M"), "nota": nota, "valores": valores}

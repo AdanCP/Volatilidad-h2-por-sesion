@@ -1006,7 +1006,7 @@ def test_ema_cruce_con_salida_por_cruce_contrario():
     assert "senal" not in set(eng.ejecutar(eng.preparar(df, base), base).trades["motivo"])
 
 
-@pytest.mark.parametrize("ref,pb", [("larga", False), ("corta", False), ("larga", True), ("corta", True)])
+@pytest.mark.parametrize("ref,pb", [("larga", False), ("corta", False), ("larga", True), ("corta", True), ("cruce", False), ("cruce", True)])
 def test_sl_anclado_a_la_media_nivel_fijo_y_r_consistente(ref, pb):
     df = _df()
     cfg = eng.Config(ema_corta=13, ema_larga=34, sl_modo="ema", sl_valor=2.0, sl_ema_ref=ref, rr=2.0,
@@ -1016,7 +1016,7 @@ def test_sl_anclado_a_la_media_nivel_fijo_y_r_consistente(ref, pb):
     assert len(tr) > 20
     lado = tr["lado"].to_numpy()
     base = (tr["i"] - 1 if pb else tr["señal"]).to_numpy()            # media conocida al entrar: la de la vela anterior al llenado
-    media = P.ema_c if ref == "corta" else P.ema_l
+    media = (P.ema_c + P.ema_l) / 2.0 if ref == "cruce" else (P.ema_c if ref == "corta" else P.ema_l)
     assert np.allclose(tr["sl"].to_numpy(), media[base] - lado * 2.0)                      # nivel = media -/+ distancia
     assert (tr["dist"] > 0).all() and np.allclose(tr["dist"].to_numpy(), lado * (tr["entrada"].to_numpy() - tr["sl"].to_numpy()))
     tp = tr[tr["res"] == "TP"]
@@ -1163,3 +1163,31 @@ def test_claves_dia_cortan_a_medianoche_de_europa_central():
     assert k[0] == k[1] - 1 and k[1] == k[2]                                # 00:30 servidor = 23:30 CET del dia anterior
     k2 = eng.claves_dia(idx, eng.Config())                                  # sin desfase: dia de los datos
     assert k2[0] == k2[1] == k2[2]
+
+
+@pytest.mark.parametrize("ref,pb", [("cruce", False), ("cruce", True), ("larga", False)])
+def test_sl_anclado_en_porcentaje_del_nivel(ref, pb):
+    df = _df()
+    cfg = eng.Config(ema_corta=13, ema_larga=34, sl_modo="ema", sl_valor=0.2, sl_ema_pct=True, sl_ema_ref=ref, rr=2.0,
+                     pullback_activo=pb, pullback_pct=40.0, pullback_velas=8)
+    P = eng.preparar(df, cfg)
+    tr = eng.ejecutar(P, cfg).trades
+    assert len(tr) > 20
+    lado = tr["lado"].to_numpy()
+    base = (tr["i"] - 1 if pb else tr["señal"]).to_numpy()
+    media = (P.ema_c + P.ema_l) / 2.0 if ref == "cruce" else P.ema_l
+    nivel = media[base] - lado * media[base] * 0.2 / 100.0                      # nivel -/+ 0,2 % del propio nivel
+    assert np.allclose(tr["sl"].to_numpy(), nivel)
+    assert (tr["dist"] > 0).all()
+    tp = tr[tr["res"] == "TP"]
+    assert len(tp) and np.allclose(tp["R"].to_numpy(), 2.0)
+
+
+def test_sl_en_porcentaje_equivale_a_precio_cuando_coinciden():
+    # con el mismo desplazamiento en unidades de precio, los dos modos dan el mismo SL
+    df = _df()
+    P_pct = eng.preparar(df, eng.Config(sl_modo="ema", sl_valor=0.1, sl_ema_pct=True, sl_ema_ref="cruce"))
+    off = np.abs(P_pct.sl_ref) * 0.1 / 100.0
+    assert isinstance(P_pct.sl_off, np.ndarray) and np.allclose(P_pct.sl_off, off, equal_nan=True)
+    P_px = eng.preparar(df, eng.Config(sl_modo="ema", sl_valor=2.0, sl_ema_ref="cruce"))
+    assert P_px.sl_off == 2.0

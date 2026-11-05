@@ -93,7 +93,7 @@ def informe(r: dict, cfg, simbolo: str, pdin: dict, meta: dict, veredicto: dict 
     L += ["### Parámetros de la estrategia (Config completa)", ""]
     L += [_clave_valor({f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg)}), ""]
     L += ["_Notas de unidades: con `sl_modo` = precio el `sl_valor` está en unidades de precio (ya convertido desde dólares); con "
-          "`sl_modo` = ema es la distancia en unidades de precio entre la media y el SL (ya convertida desde pips si correspondía); "
+          "`sl_modo` = ema es la distancia en unidades de precio entre la media y el SL (ya convertida desde pips si correspondía) o, con `sl_ema_pct` = True, un porcentaje del nivel de referencia; "
           "con atr es un múltiplo del ATR y con pct un porcentaje del precio._", ""]
 
     # ---- datos y corrida

@@ -106,9 +106,13 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
     dir_txt = {"ambas": "largos y cortos", "largos": "solo largos", "cortos": "solo cortos"}[cfg.direccion]
     if cfg.sl_modo == "ema":
         _m = cfg.media_tipo.upper()
-        _ref = (f"{_m} {cfg.media_unica}" if cfg.modo_senal == "precio" else
-                f"{_m} {'corta' if cfg.sl_ema_ref == 'corta' else 'larga'} ({cfg.ema_corta if cfg.sl_ema_ref == 'corta' else cfg.ema_larga})")
-        _sl_txt = f"SL a {n(cfg.sl_valor, 2)} de precio de la {_ref}"
+        _dist = f"{n(cfg.sl_valor, 2)} %" if cfg.sl_ema_pct else f"{n(cfg.sl_valor, 2)} de precio"
+        if cfg.sl_ema_ref == "cruce" and cfg.modo_senal != "precio":
+            _sl_txt = f"SL a {_dist} del cruce de las {_m} {cfg.ema_corta}/{cfg.ema_larga}"
+        else:
+            _ref = (f"{_m} {cfg.media_unica}" if cfg.modo_senal == "precio" else
+                    f"{_m} {'corta' if cfg.sl_ema_ref == 'corta' else 'larga'} ({cfg.ema_corta if cfg.sl_ema_ref == 'corta' else cfg.ema_larga})")
+            _sl_txt = f"SL a {_dist} de la {_ref}"
     else:
         _sl_txt = None
     if cfg.salida_modo == "senal":
@@ -168,7 +172,12 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
             x += f", relativo a {cfg.atr_rel_n} velas entre {n(cfg.atr_rel_min or 0, 1)} y {n(cfg.atr_rel_max or 0, 1)}"
         filtros.append(x)
     if cfg.sesion_activo:
-        filtros.append("sesión " + " + ".join(cfg.sesiones))
+        from sessions import SESIONES_LOCAL as _SL
+        _hh = lambda x: f"{int(x):02d}:{int(round((x % 1) * 60)):02d}"
+        _tx = [f"{n_} {_hh(cfg.horarios[n_][1])}-{_hh(cfg.horarios[n_][2])} hora local"
+               if cfg.horarios and n_ in cfg.horarios and tuple(cfg.horarios[n_]) != tuple(_SL[n_]) else n_
+               for n_ in cfg.sesiones]
+        filtros.append("sesión " + " + ".join(_tx))
     filtros_txt = ("filtros: " + "; ".join(filtros)) if filtros else "sin filtros"
     if cfg.pb_efectivo():
         filtros_txt += (f", entrando en pullback del {n(cfg.pullback_pct, 0)}% hacia {_ref_pullback(cfg)} "

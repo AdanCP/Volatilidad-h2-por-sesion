@@ -8,6 +8,8 @@ import re
 from datetime import datetime
 from typing import Optional
 
+from sessions import SESIONES_LOCAL as _SES_LOCAL
+
 
 _TF = {"M1": "PERIOD_M1", "M5": "PERIOD_M5", "M15": "PERIOD_M15", "M30": "PERIOD_M30",
        "H1": "PERIOD_H1", "H4": "PERIOD_H4", "D1": "PERIOD_D1"}
@@ -42,7 +44,7 @@ def _magic(cfg, simbolo: str) -> int:
     if cfg.salida_modo != "rr":
         clave += f"|{cfg.salida_modo}"
     if cfg.sl_modo == "ema":
-        clave += f"|{cfg.sl_ema_ref}"
+        clave += f"|{cfg.sl_ema_ref}" + ("|pct" if cfg.sl_ema_pct else "")
     h = 0
     for ch in clave:
         h = (h * 31 + ord(ch)) % 90000
@@ -101,10 +103,15 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
     if sl_modo == "usd":
         cab.append(f"// SL: US${_f(usd, 2)} por operacion (se convierte a precio con el valor del tick del broker)")
     elif sl_modo == "ema":
-        _ref = (f"{cfg.media_tipo.upper()} {cfg.media_unica}" if cfg.modo_senal == "precio" else
-                f"{cfg.media_tipo.upper()} {'corta' if cfg.sl_ema_ref == 'corta' else 'larga'} "
-                f"({cfg.ema_corta if cfg.sl_ema_ref == 'corta' else cfg.ema_larga})")
-        cab.append(f"// SL: fijo en la {_ref} de la vela de la senal menos (compras) o mas (ventas) {_f(sl_valor, 5)} de precio")
+        _dist_txt = f"{_f(sl_valor, 3)} % del nivel" if cfg.sl_ema_pct else f"{_f(sl_valor, 5)} de precio"
+        if cfg.sl_ema_ref == "cruce" and cfg.modo_senal != "precio":
+            cab.append(f"// SL: fijo en el cruce de las {cfg.media_tipo.upper()} {cfg.ema_corta}/{cfg.ema_larga} (punto medio de las dos medias en la vela de la "
+                       f"senal) menos (compras) o mas (ventas) {_dist_txt}")
+        else:
+            _ref = (f"{cfg.media_tipo.upper()} {cfg.media_unica}" if cfg.modo_senal == "precio" else
+                    f"{cfg.media_tipo.upper()} {'corta' if cfg.sl_ema_ref == 'corta' else 'larga'} "
+                    f"({cfg.ema_corta if cfg.sl_ema_ref == 'corta' else cfg.ema_larga})")
+            cab.append(f"// SL: fijo en la {_ref} de la vela de la senal menos (compras) o mas (ventas) {_dist_txt}")
     elif sl_modo == "pct":
         cab.append(f"// SL: {_f(sl_valor, 3)} % del precio")
     else:
@@ -116,6 +123,11 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
     act = [n for n, on in (("SMA", cfg.sma_activo), ("VWAP", cfg.vwap_activo), ("ADX", cfg.adx_activo),
                            ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo())) if on]
     cab.append("// Filtros/opciones activos: " + (", ".join(act) if act else "ninguno"))
+    if cfg.sesion_activo:
+        _hor = {**_SES_LOCAL, **(cfg.horarios or {})}
+        _hh = lambda x: f"{int(x):02d}:{int(round((x % 1) * 60)):02d}"
+        cab.append("// Sesiones (hora LOCAL de cada plaza; el horario de verano se ajusta solo): " + ", ".join(
+            f"{n_} {_hh(_hor[n_][1])}-{_hh(_hor[n_][2])}" for n_ in ("Tokio", "Londres", "Nueva York") if n_ in cfg.sesiones))
     cab.append(f"// Veredicto del backtester: {_sin_ascii(veredicto.get('titulo', ''))}")
     cab.append("// Parametros FIJOS: para cambiarlos hay que regenerar el bot desde la app (no se editan a mano).")
     cab += [
@@ -125,6 +137,7 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
     ]
 
     sesiones = set(cfg.sesiones)
+    hor = {**_SES_LOCAL, **(cfg.horarios or {})}          # ventanas en hora LOCAL de cada plaza (el bot ajusta el horario de verano)
     valores = {
         "NOMBRE": f"Bot {_sin_ascii(simbolo)} {tf}".strip(),
         "CABECERA": "\n".join(cab),
@@ -138,7 +151,8 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "MA_UNICA": str(int(cfg.media_unica)),
         "DIR": _DIR[cfg.direccion], "RR": _f(cfg.rr, 4),
         "SL_MODO": _SL[sl_modo], "SL_VALOR": _f(sl_valor, 6), "SL_USD": _f(usd, 4),
-        "SL_REF": "0" if cfg.sl_ema_ref == "corta" else "1",
+        "SL_REF": {"corta": "0", "larga": "1", "cruce": "2"}[cfg.sl_ema_ref],
+        "SL_EMA_PCT": _b(cfg.sl_ema_pct),
         "ATR_PER": str(int(cfg.atr_periodo)), "LOTES": _f(lotes, 4),
         "PB_ON": _b(cfg.pb_efectivo()), "PB_PCT": _f(cfg.pullback_pct, 4), "PB_EMA": _PBEMA[cfg.pullback_ema],
         "PB_VELAS": str(int(cfg.pullback_velas)),
@@ -153,6 +167,9 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "ATR_REL_MAX": _f(cfg.atr_rel_max or 0.0, 4),
         "SES_ON": _b(cfg.sesion_activo), "SES_TOKIO": _b("Tokio" in sesiones),
         "SES_LONDRES": _b("Londres" in sesiones), "SES_NY": _b("Nueva York" in sesiones),
+        "TOKIO_INI": _f(hor["Tokio"][1], 4), "TOKIO_FIN": _f(hor["Tokio"][2], 4),
+        "LONDRES_INI": _f(hor["Londres"][1], 4), "LONDRES_FIN": _f(hor["Londres"][2], 4),
+        "NY_INI": _f(hor["Nueva York"][1], 4), "NY_FIN": _f(hor["Nueva York"][2], 4),
         "SRV_OFFSET": _f(cfg.servidor_offset_horas if cfg.servidor_offset_horas is not None else 2.0, 2),
         "SRV_DST": _b(cfg.servidor_dst_eeuu),
         "VEREDICTO_OK": "true",
@@ -210,7 +227,8 @@ const int             InpExitSignal     = @@SAL_SENAL@@;      // Salida: 0 = TP 
 const ENUM_BOT_SL     InpSLMode         = @@SL_MODO@@;    // SL en: ATR / % del precio / dolares fijos / distancia a una media
 const double          InpSLValue        = @@SL_VALOR@@;   // Valor del SL (multiplo de ATR o % del precio)
 const double          InpSLUsd          = @@SL_USD@@;     // SL en dolares por operacion (con SL en dolares)
-const int             InpSlEmaRef       = @@SL_REF@@;     // Con SL a una media: 0 = media corta, 1 = media larga (en modo precio, la unica)
+const bool            InpSlEmaPct       = @@SL_EMA_PCT@@;   // Con SL a una media: true = la distancia es un % del nivel de referencia
+const int             InpSlEmaRef       = @@SL_REF@@;     // Con SL a una media: 0 = media corta, 1 = media larga (en modo precio, la unica), 2 = cruce (punto medio de las dos)
 const int             InpAtrPeriod      = @@ATR_PER@@;    // Periodo del ATR
 const double          InpLots           = @@LOTES@@;      // Lotes
 
@@ -247,9 +265,15 @@ const double          InpAtrRelMin      = @@ATR_REL_MIN@@; // ATR relativo: mini
 const double          InpAtrRelMax      = @@ATR_REL_MAX@@; // ATR relativo: maximo (0 = sin)
 
 const bool            InpSesOn          = @@SES_ON@@;     // Filtro de sesion
-const bool            InpSesTokio       = @@SES_TOKIO@@;  // Sesion Tokio (09-18 hora local)
-const bool            InpSesLondres     = @@SES_LONDRES@@; // Sesion Londres (08-17 hora local)
-const bool            InpSesNY          = @@SES_NY@@;     // Sesion Nueva York (08-17 hora local)
+const bool            InpSesTokio       = @@SES_TOKIO@@;  // Sesion Tokio
+const double          InpTokioIni       = @@TOKIO_INI@@;  // Tokio: inicio de la ventana (hora local de Tokio)
+const double          InpTokioFin       = @@TOKIO_FIN@@;  // Tokio: fin de la ventana (hora local de Tokio)
+const bool            InpSesLondres     = @@SES_LONDRES@@; // Sesion Londres
+const double          InpLondresIni     = @@LONDRES_INI@@; // Londres: inicio de la ventana (hora local de Londres)
+const double          InpLondresFin     = @@LONDRES_FIN@@; // Londres: fin de la ventana (hora local de Londres)
+const bool            InpSesNY          = @@SES_NY@@;     // Sesion Nueva York
+const double          InpNYIni          = @@NY_INI@@;     // Nueva York: inicio de la ventana (hora local de Nueva York)
+const double          InpNYFin          = @@NY_FIN@@;     // Nueva York: fin de la ventana (hora local de Nueva York)
 const double          InpServerOffset   = @@SRV_OFFSET@@; // Desfase del servidor en INVIERNO respecto de GMT (GMT+2 -> 2)
 const bool            InpServerDST      = @@SRV_DST@@;    // El servidor cambia de hora con EE.UU. (GMT+2/+3)
 
@@ -489,6 +513,12 @@ double HoraLocal(const datetime utc, const double offset_h)
    return s.hour + s.min / 60.0;
 }
 
+// ventana [ini, fin) en hora local; admite ventanas que cruzan la medianoche
+bool EnVentana(const double h, const double ini, const double fin)
+{
+   return (ini < fin) ? (h >= ini && h < fin) : (h >= ini || h < fin);
+}
+
 bool InSession(const datetime t_servidor)
 {
    const datetime utc = ServidorAUtc(t_servidor);
@@ -497,19 +527,19 @@ bool InSession(const datetime t_servidor)
    if(InpSesTokio)
    {
       const double h = HoraLocal(utc, 9.0);
-      if(h >= 9.0 && h < 18.0) return true;
+      if(EnVentana(h, InpTokioIni, InpTokioFin)) return true;
    }
    if(InpSesLondres)
    {
       const bool bst = (utc >= LastSunday(u.year, 3) + 3600 && utc < LastSunday(u.year, 10) + 3600);
       const double h = HoraLocal(utc, bst ? 1.0 : 0.0);
-      if(h >= 8.0 && h < 17.0) return true;
+      if(EnVentana(h, InpLondresIni, InpLondresFin)) return true;
    }
    if(InpSesNY)
    {
       const bool edt = (utc >= NthSunday(u.year, 3, 2) + 7 * 3600 && utc < NthSunday(u.year, 11, 1) + 6 * 3600);
       const double h = HoraLocal(utc, edt ? -4.0 : -5.0);
-      if(h >= 8.0 && h < 17.0) return true;
+      if(EnVentana(h, InpNYIni, InpNYFin)) return true;
    }
    return false;
 }
@@ -778,9 +808,10 @@ double Px(const double price)
 double SlLevel(const int i, const int side)
 {
    if(InpSLMode != BOT_SL_EMA) return 0.0;
-   const double ref = (InpSlEmaRef == 0) ? g_ef[i] : g_es[i];
+   const double ref = (InpSlEmaRef == 2) ? 0.5 * (g_ef[i] + g_es[i]) : ((InpSlEmaRef == 0) ? g_ef[i] : g_es[i]);
    if(!V(ref)) return 0.0;
-   return ref - side * InpSLValue;
+   const double off = InpSlEmaPct ? MathAbs(ref) * InpSLValue / 100.0 : InpSLValue;
+   return ref - side * off;
 }
 
 // distancia de precio del SL (misma regla que el backtester, medida en la vela de la senal). Con el SL anclado a una media es la

@@ -14,7 +14,7 @@ Fuentes de datos:
 """
 import io
 import os
-from datetime import date
+from datetime import date, time as _hora
 
 import numpy as np
 import pandas as pd
@@ -29,6 +29,7 @@ import metrics as met
 import ui_estilo as vis
 import veredicto as vd
 import ui_helpers as ui
+import sessions as sesmod
 import ui_guardar as ug
 
 TIPO = globals().get("TIPO_MEDIA", "ema")       # "sma" lo define app_backtest_sma.py antes de ejecutar este archivo
@@ -73,7 +74,8 @@ COLS_TABLA = ["resueltas", "TP", "SL", "abiertas", "ambiguas", "%TP", "%equilibr
               "R_total", "maxDD_R", "racha_SL", "azar_exp_R", "mejor_que_%azar",
               "cruces", "tomados", "ignoradas"]
 SL_ATR, SL_PCT, SL_USD = "Múltiplo de ATR", "% del precio", "Dólares fijos"
-SL_EMA = "Distancia a una media"
+SL_EMA_CRUCE, SL_EMA_PRECIO = "Distancia al cruce de medias", "Distancia a la media"
+SL_EMA = SL_EMA_CRUCE
 TP_RR, TP_USD = "Ratio R:R", "Dólares fijos"
 ETQ_MT5 = "MT5 directo (FTMO)" if MT5_OK else "MT5 directo (solo en tu PC con Windows)"
 ETQ_CSV = "CSV exportado de MT5"
@@ -177,6 +179,10 @@ class _W:
         return _envolver(self._dg, n) if n in cio.TIPOS else getattr(self._dg, n)
 
 
+_PARES_HORA = [(cio.slug(f"{n_}: desde (hora Argentina)"), cio.slug(f"{n_}: hasta (hora Argentina)"), z_)
+               for n_, (z_, _i, _f) in sesmod.SESIONES_LOCAL.items()]
+
+
 def _cargar_cfg(clave_up):
     f = st.session_state.get(clave_up)
     if f is None:
@@ -185,6 +191,7 @@ def _cargar_cfg(clave_up):
     if err:
         estado.cfg_msg = ("error", err)
         return
+    vals = sesmod.rebasar_horas(vals, _PARES_HORA, date.today())      # las horas Argentina se reajustan al horario de verano de hoy
     if vals.get("fuente_de_datos") == ETQ_MT5 and not MT5_OK:      # MT5 directo no existe en esta máquina
         vals = {k_: v_ for k_, v_ in vals.items() if k_ != "fuente_de_datos"}
     estado.cfg_cargada = vals
@@ -312,26 +319,32 @@ with st.sidebar:
         _k_sal = f"salida_tp_{modo_senal}"
         # Primero va el Stop Loss y después el Take Profit; la salida elegida se lee de session_state (el radio se dibuja más abajo).
         salida_modo = "senal" if str(_sv(_k_sal)).startswith("Cuando") else "rr"
+        SL_EMA = SL_EMA_PRECIO if modo_senal == "precio" else SL_EMA_CRUCE        # el nombre depende de la señal
         sl_modo = _W(st).radio("Stop Loss (SL) en", [SL_ATR, SL_PCT, SL_USD, SL_EMA],
-                               help="Distancia a una media: el SL queda fijo en el nivel de la media (al entrar) más o menos una "
-                                    "distancia en pips o en dólares de precio. Los otros modos miden el SL desde el precio de entrada.")
-        sl_ema_ref, sl_ema_unidad = "larga", "precio"
+                               help=f"{SL_EMA}: el SL queda fijo en el nivel "
+                                    + ("de la media" if modo_senal == "precio" else "del cruce de las dos medias (el punto medio entre ambas en la vela de la señal)")
+                                    + " más o menos una distancia en pips o en dólares de precio. Los otros modos miden el SL desde el precio de entrada.")
+        sl_ema_ref, sl_ema_unidad = ("larga" if modo_senal == "precio" else "cruce"), "precio"   # en modo precio hay una sola media
         sl_usd = tp_usd = 0.0
         tp_modo = TP_RR
         if sl_modo == SL_EMA:
             if modo_senal == "precio":
                 st.caption(f"Media de referencia: la {MEDIA} de {int(media_unica)} períodos.")
             else:
-                sl_ema_ref = {f"{MEDIA} corta": "corta", f"{MEDIA} larga": "larga"}[_W(st).radio(
-                    "Media de referencia", [f"{MEDIA} corta", f"{MEDIA} larga"], index=1, horizontal=True)]
-            sl_ema_unidad = {"Pips": "pips", "Dólares (precio)": "precio"}[_W(st).radio(
-                "Distancia en", ["Pips", "Dólares (precio)"], horizontal=True,
+                st.caption(f"Referencia: el cruce de las {MEDIA} {int(ema_c)}/{int(ema_l)} (punto medio de las dos en la vela de la señal).")
+            sl_ema_unidad = {"Pips": "pips", "Dólares (precio)": "precio", "% del precio": "pct"}[_W(st).radio(
+                "Distancia en", ["Pips", "Dólares (precio)", "% del precio"], horizontal=True,
                 help="Pips: 1 pip = 10 puntos = 10 × tick_size del símbolo (en el oro 0,10; en EURUSD 0,0001). "
-                     "Dólares (precio): la distancia en el precio del activo (en el oro, 3 = el precio se mueve 3,00).")]
-            sl_valor = _W(st).number_input("Distancia a la media (pips)" if sl_ema_unidad == "pips" else "Distancia a la media (dólares de precio)",
-                                       0.0, 1_000_000.0, 30.0 if sl_ema_unidad == "pips" else 3.0, 1.0 if sl_ema_unidad == "pips" else 0.5)
-            st.caption("El SL queda fijo en la media menos la distancia (compras) o más la distancia (ventas), con la media de la "
-                       "vela de la señal. Si al entrar la media quedó del lado equivocado del precio, esa señal no se opera.")
+                     "Dólares (precio): la distancia en el precio del activo (en el oro, 3 = el precio se mueve 3,00). "
+                     "% del precio: un porcentaje del nivel de referencia (0,15 % de 2.350 son 3,53).")]
+            if sl_ema_unidad == "pct":
+                sl_valor = _W(st).number_input("Distancia a la media (% del precio)", 0.0, 100.0, 0.15, 0.05, format="%.3f")
+            else:
+                sl_valor = _W(st).number_input("Distancia a la media (pips)" if sl_ema_unidad == "pips" else "Distancia a la media (dólares de precio)",
+                                               0.0, 1_000_000.0, 30.0 if sl_ema_unidad == "pips" else 3.0, 1.0 if sl_ema_unidad == "pips" else 0.5)
+            st.caption(("El SL queda fijo en el nivel del cruce" if modo_senal == "cruce" else "El SL queda fijo en la media")
+                       + " menos la distancia (compras) o más la distancia (ventas), tomado en la vela de la señal. "
+                       "Si al entrar ese nivel quedó del lado equivocado del precio, la señal no se opera.")
         elif sl_modo == SL_USD:
             sl_usd = _W(st).number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
             sl_valor = sl_usd
@@ -509,15 +522,45 @@ with st.sidebar:
                 rel_n, rel_min, rel_max = 0, 0.0, 0.0
         else:
             atr_min = atr_max = rel_n = rel_min = rel_max = 0
-        ses_on = _W(st).checkbox("Filtro de sesión",
+        ses_on = _W(st).checkbox("Filtro de sesión y horario", key="filtro_de_sesion",
                              help="Sin marcar, el bot opera 24/5: toma cruces a cualquier hora en que el mercado esté "
-                                  "abierto, sin filtro de sesión y sin necesitar el desfase del servidor. Tokio + Londres + "
-                                  "Nueva York juntas dejan afuera unas 2-3 horas por día (después del cierre de Nueva York "
-                                  "y antes de Tokio).")
+                                  "abierto, sin filtro y sin necesitar el desfase del servidor. Marcado, solo toma cruces dentro de las "
+                                  "sesiones elegidas (Tokio, Londres, Nueva York) y, si querés, dentro de un rango horario "
+                                  "de cada una, en hora Argentina. Las tres sesiones juntas dejan afuera unas 4 a 5 horas por día "
+                                  "(después del cierre de Nueva York y antes de Tokio, y entre Tokio y Londres).")
         if not ses_on:
             st.caption("Sin marcar: 24/5, todo el mercado.")
+        horarios_ses = None
         if ses_on:
             sesiones = _W(st).multiselect("Sesiones permitidas", SESIONES, SESIONES)
+            _hoy = date.today()
+            _rangos, _nombre_plaza = {}, {"Tokio": "Tokio", "Londres": "Londres", "Nueva York": "Nueva York"}
+            for _nom in sesiones:
+                _ini_a, _fin_a = sesmod.ventana_art(_nom, _hoy)
+                _lim = _W(st).checkbox(f"Limitar horario de {_nom} (hora Argentina)", key=f"limitar_horario_de_{cio.slug(_nom)}", help=(
+                    "Por defecto la sesión se mide completa. Al marcarlo elegís el rango en hora Argentina; arranca cuando abre la "
+                    "bolsa de esa plaza. Se guarda como hora de esa plaza, así que sigue el horario de verano solo."))
+                if _lim:
+                    _c1, _c2 = st.columns(2)
+                    _d = _W(_c1).time_input("Desde", _hora(int(_ini_a), int(round((_ini_a % 1) * 60))), step=900,
+                                            key=cio.slug(f"{_nom}: desde (hora Argentina)"))
+                    _h = _W(_c2).time_input("Hasta", _hora(int(_fin_a), int(round((_fin_a % 1) * 60))), step=900,
+                                            key=cio.slug(f"{_nom}: hasta (hora Argentina)"))
+                    _rangos[_nom] = (_d.hour + _d.minute / 60.0, _h.hour + _h.minute / 60.0)
+                    try:
+                        _zona = sesmod.SESIONES_LOCAL[_nom][0]
+                        _l1, _l2 = (sesmod.art_a_local(x, _zona, _hoy) for x in _rangos[_nom])
+                        st.caption(f"= {_l1 // 1:02.0f}:{round((_l1 % 1) * 60):02d} a {_l2 // 1:02.0f}:{round((_l2 % 1) * 60):02d} hora local de "
+                                   f"{_nom}. " + ("Tokio no cambia de horario." if _nom == "Tokio" else "Se corre solo con el horario de verano."))
+                    except Exception:
+                        pass
+                else:
+                    st.caption(f"{_nom} completa: {_ini_a // 1:02.0f}:{round((_ini_a % 1) * 60):02d} a "
+                               f"{_fin_a // 1:02.0f}:{round((_fin_a % 1) * 60):02d} hora Argentina (hoy).")
+            try:
+                horarios_ses = sesmod.horarios_con_rangos(_rangos, _hoy) if _rangos else None
+            except ValueError as e:
+                st.error(str(e))
             offset = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)
             dst = _W(st).checkbox("El servidor cambia de hora con EE.UU.", True)
             st.caption("Confirmá el desfase midiéndolo con el mercado abierto. Los horarios de "
@@ -536,7 +579,7 @@ with st.sidebar:
     estado.cfg_wk = dict(_WK)
     _nombre_auto = (f"ACPTester_config_{MEDIA}_{int(ema_c)}-{int(ema_l)}" if modo_senal == "cruce"
                     else f"ACPTester_config_{MEDIA}_{int(media_unica)}") + ".json"
-    _cfg_bytes = cio.a_bytes(TIPO, _REG)
+    _cfg_bytes = cio.a_bytes(TIPO, {**_REG, "_ref_fecha": date.today().isoformat()})
     # Guarda todos los campos de la barra lateral (fuente, símbolos, período, señal, SL, TP, dinero, costos, filtros y
     # sobreajuste). Los CSV no se guardan. Abre «Guardar como» del navegador para elegir carpeta y nombre.
     with st.container(key="cfg_guardar"):
@@ -573,13 +616,13 @@ def construir_config(simbolo: str = None) -> eng.Config:
         modo, valor = "precio", float(sl_usd) / vpu
     elif sl_modo == SL_EMA:
         # pips -> distancia de precio: 1 pip = 10 x tick_size (se recalcula por símbolo)
-        modo, valor = "ema", float(sl_valor) * (10.0 * p["tick_size"] if sl_ema_unidad == "pips" else 1.0)
+        modo, valor = "ema", float(sl_valor) * (10.0 * p["tick_size"] if sl_ema_unidad == "pips" else 1.0)   # en % no se convierte
     else:
         modo, valor = ("pct" if sl_modo == SL_PCT else "atr"), float(sl_valor)
     return eng.Config(
         ema_corta=int(ema_c), ema_larga=int(ema_l), rr=float(rr), salida_modo=salida_modo,
         media_tipo=TIPO, modo_senal=modo_senal, media_unica=int(media_unica),
-        sl_modo=modo, sl_valor=valor, sl_ema_ref=sl_ema_ref, atr_periodo=int(atr_per),
+        sl_modo=modo, sl_valor=valor, sl_ema_ref=sl_ema_ref, sl_ema_pct=(sl_modo == SL_EMA and sl_ema_unidad == "pct"), atr_periodo=int(atr_per),
         pullback_activo=bool(pb_on), pullback_pct=float(pb_pct), pullback_ema=pb_ema, pullback_velas=int(pb_velas),
         direccion=direccion, spread=spread, spread_fijo=float(spread_fijo), costo_extra=float(costo_extra),
         vwap_activo=vwap_on, vwap_dist_min_atr=float(vwap_dist), vwap_min_minutos=float(vwap_min),
@@ -589,7 +632,7 @@ def construir_config(simbolo: str = None) -> eng.Config:
         rango_activo=rango_on, rango_ventana=int(rango_vent), rango_min=float(rango_min),
         atr_activo=atr_on, atr_unidad="pct", atr_min=float(atr_min) or None, atr_max=float(atr_max) or None,
         atr_rel_n=int(rel_n), atr_rel_min=float(rel_min) or None, atr_rel_max=float(rel_max) or None,
-        sesion_activo=ses_on, sesiones=tuple(sesiones),
+        sesion_activo=ses_on, sesiones=tuple(sesiones), horarios=(horarios_ses if ses_on else None),
         servidor_offset_horas=offset if ses_on else (offset_dia if reglas_on else None), servidor_dst_eeuu=dst,
         reglas_activas=bool(reglas_on), capital=float(capital),
         usd_por_unidad=float(met.valor_por_unidad(p["tick_size"], p["tick_value"], lotes)),
@@ -663,11 +706,12 @@ if sl_modo == SL_USD:
 
 if sl_modo == SL_EMA:
     try:
-        conv = [(s_, f"{vis.n(construir_config(s_).sl_valor, 5 if construir_config(s_).sl_valor < 1 else 2)} de precio")
+        conv = [(s_, f"{vis.n(construir_config(s_).sl_valor, 3)} % del nivel" if sl_ema_unidad == "pct" else
+                 f"{vis.n(construir_config(s_).sl_valor, 5 if construir_config(s_).sl_valor < 1 else 2)} de precio")
                 for s_ in list(datos)[:8]]
         st.write("")
-        html(vis.tarjeta(f"SL a {vis.n(sl_valor)} {'pips' if sl_ema_unidad == 'pips' else 'dólares de precio'} de la media: "
-                         "distancia en precio", vis.chips(conv),
+        html(vis.tarjeta(f"SL a {vis.n(sl_valor)} {'pips' if sl_ema_unidad == 'pips' else ('% del precio' if sl_ema_unidad == 'pct' else 'dólares de precio')} "
+                         + ("del cruce" if sl_ema_ref == "cruce" else "de la media") + (": distancia en % del nivel" if sl_ema_unidad == "pct" else ": distancia en precio"), vis.chips(conv),
                          "El SL real de cada operación es la media (al entrar) menos o más esa distancia, así que el riesgo en dólares "
                          "cambia de una operación a otra con el lote fijo. Para limitarlo, usá «Riesgo máximo por operación» en "
                          "«4. Lotaje y dinero»."))
@@ -763,7 +807,7 @@ if comp:
             _tabla, _notas = met.comparar_simbolos(
                 datos, cfgs, oos / 100, int(azar_n), 42, estado.contador, recortar)
             _gest = (f"SL US${vis.n(sl_usd, 0)}" if sl_modo == SL_USD
-                     else (f"SL a {vis.n(sl_valor, 1)} {'pips' if sl_ema_unidad == 'pips' else 'de precio'} de la {sl_ema_ref}"
+                     else (f"SL a {vis.n(sl_valor, 1)} {'pips' if sl_ema_unidad == 'pips' else ('%' if sl_ema_unidad == 'pct' else 'de precio')} {'del cruce' if sl_ema_ref == 'cruce' else 'de la ' + sl_ema_ref}"
                            if sl_modo == SL_EMA else f"SL {vis.n(sl_valor, 1)}{'×ATR' if sl_modo == SL_ATR else '%'}"))
             _gest += (" · salida por cruce contrario" if modo_senal == "cruce" else " · salida por cambio de lado") if salida_modo == "senal" else (
                 f" · TP US${vis.n(sl_usd * rr, 0)}" if sl_modo == SL_USD else f" · TP 1:{vis.n(rr, 1)}")

@@ -14,12 +14,12 @@ def _js_str(x: str) -> str:
 def html(p: dict, nombre: str, texto: str, etiqueta: str = "💾 Guardar configuración") -> str:
     css = f"""
 html,body{{margin:0;background:transparent;overflow:hidden;}}
-body{{font-family:"Source Sans","Source Sans Pro","Source Sans 3","Segoe UI",system-ui,sans-serif;padding-top:6px;}}
-button{{display:block;width:100%;height:{BOTON}px;border:0;border-radius:12px;cursor:pointer;
+body{{font-family:"Source Sans","Source Sans Pro","Source Sans 3","Segoe UI",system-ui,sans-serif;padding:6px 4px 0;box-sizing:border-box;}}
+button{{display:block;width:100%;height:{BOTON}px;border:1px solid rgba(255,255,255,.55);border-radius:12px;cursor:pointer;
   background:{p['BTNG']};color:{p['BTNTXT']};font:inherit;font-weight:700;font-size:.9rem;line-height:1.6;
   box-shadow:0 4px 14px {p['GLOW']};transition:filter .15s,transform .15s,box-shadow .15s;}}
 button:hover{{filter:brightness(1.2) saturate(1.12);transform:translateY(-2px);
-  box-shadow:0 0 0 3px {p['SIDETXT']},0 0 22px 6px {p['GLOW']};}}
+  box-shadow:0 0 0 2px {p['SIDETXT']},0 3px 8px {p['GLOW']};}}
 button:active{{transform:translateY(0);filter:brightness(.97);}}
 button:focus-visible{{outline:2px solid {p['SIDETXT']};outline-offset:2px;}}
 """

@@ -171,6 +171,9 @@ _CSS_SIDEBAR = """
 [data-testid="stSidebar"] [data-testid="stExpander"]{background:@VEIL@;box-shadow:none;
   border:1px solid @VEILB@;border-radius:14px;}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary{padding:.55rem .8rem;}
+/* los menús se levantan un poco al pasar el mouse por el título (sin cambiar color ni líneas) */
+[data-testid="stSidebar"] [data-testid="stExpander"]{transition:transform .15s;}
+[data-testid="stSidebar"] [data-testid="stExpander"]:has(> details > summary:hover){transform:translateY(-2px);}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary :is(p,span){color:@SIDETXT@ !important;font-weight:700;}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary svg{fill:@SIDETXT@;color:@SIDETXT@;}
 .fte{font-size:1.05rem;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:@SIDETXT@ !important;
@@ -186,12 +189,12 @@ _CSS_SIDEBAR = """
   filter:brightness(1.2) saturate(1.12);transform:translateY(-2px);
   box-shadow:0 0 0 3px @SIDETXT@,0 0 22px 6px @GLOW@;}
 /* «Guardar configuración» (iframe con el cuadro «Guardar como»): se compensa el aire para la sombra */
-[data-testid="stSidebar"] .st-key-cfg_guardar iframe{margin:-6px 0 -6px;}
+[data-testid="stSidebar"] .st-key-cfg_guardar iframe{display:block;width:calc(100% + 8px) !important;margin:-6px -4px -6px;}
 /* «Cargar configuración»: el contenedor del selector es el botón (alto fijo, igual al de guardar); el selector real
    queda encima, invisible, para recibir el clic y los archivos arrastrados */
 [data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"]{
   position:relative;height:2.5rem !important;min-height:2.5rem !important;box-sizing:border-box;overflow:hidden;
-  padding:0 !important;margin:0 !important;background:@BTNG@ !important;border-radius:12px;box-shadow:0 4px 14px @GLOW@;
+  padding:0 !important;margin:0 !important;background:@BTNG@ !important;border:1px solid rgba(255,255,255,.55);border-radius:12px;box-shadow:0 4px 14px @GLOW@;
   display:flex;align-items:center;justify-content:center;cursor:pointer;
   transition:filter .15s,transform .15s,box-shadow .15s;}
 [data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"]::before{
@@ -202,10 +205,12 @@ _CSS_SIDEBAR = """
 [data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"] :is(label,[data-testid="stWidgetLabel"],
   [data-testid="stFileUploaderFile"],[data-testid="stFileUploaderFileList"]){display:none !important;}
 [data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"]:hover{
-  filter:brightness(1.2) saturate(1.12);transform:translateY(-2px);box-shadow:0 0 0 3px @SIDETXT@,0 0 22px 6px @GLOW@;}
+  filter:brightness(1.2) saturate(1.12);transform:translateY(-2px);box-shadow:0 0 0 2px @SIDETXT@,0 3px 8px @GLOW@;}
 /* «Generar bot»: es la acción final, va más grande y con más peso */
 [data-testid="stSidebar"] .st-key-bot_gen :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button{
-  min-height:3.8rem;border-radius:14px;box-shadow:0 8px 24px @GLOW@;}
+  min-height:3.8rem;border-radius:14px;border:1px solid rgba(255,255,255,.55) !important;box-shadow:0 8px 24px @GLOW@;}
+[data-testid="stSidebar"] .st-key-bot_gen :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button:not(:disabled):hover{
+  box-shadow:0 0 0 2px @SIDETXT@,0 4px 14px @GLOW@;}
 [data-testid="stSidebar"] .st-key-bot_gen button :is(p,span,div){font-size:1.2rem;font-weight:800;letter-spacing:.01em;}
 [data-testid="stSidebarNav"] a{border-radius:10px;}
 [data-testid="stSidebarNav"] a span{color:@SIDETXT@ !important;}

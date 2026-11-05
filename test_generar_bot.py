@@ -400,3 +400,20 @@ def test_sl_a_la_media_coincide_con_python(ref, modo, tipo):
     P = eng.preparar(pd.DataFrame({"Open": cl, "High": cl + 1, "Low": cl - 1, "Close": cl, "Volume": 1.0},
                                   index=pd.date_range("2024-01-01", periods=n, freq="5min")), c)
     assert np.allclose(P.sl_ref, ref_arr, equal_nan=True)
+
+
+def test_sl_en_el_cruce_usa_la_referencia_2():
+    c = _cfg(sl_modo="ema", sl_valor=2.0, sl_ema_ref="cruce")
+    src = _gen(c, "XAUUSD", "H1", 0.1)
+    assert "InpSlEmaRef       = 2;" in src
+    assert "0.5 * (g_ef[i] + g_es[i])" in src
+    assert "cruce de las EMA 13/34" in src
+    assert "InpSlEmaRef       = 1;" in _gen(_cfg(sl_modo="ema", sl_valor=2.0, sl_ema_ref="larga"), "XAUUSD", "H1", 0.1)
+
+
+def test_sl_en_porcentaje_del_nivel():
+    src = _gen(_cfg(sl_modo="ema", sl_valor=0.15, sl_ema_pct=True, sl_ema_ref="cruce"), "XAUUSD", "H1", 0.1)
+    assert "InpSlEmaPct       = true;" in src
+    assert "MathAbs(ref) * InpSLValue / 100.0" in src
+    assert "0.15 % del nivel" in src
+    assert "InpSlEmaPct       = false;" in _gen(_cfg(sl_modo="ema", sl_valor=2.0, sl_ema_ref="cruce"), "XAUUSD", "H1", 0.1)
