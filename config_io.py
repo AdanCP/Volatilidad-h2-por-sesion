@@ -1,12 +1,13 @@
 """Guardar y cargar la configuración del backtester (archivo .json). Sin dependencias de Streamlit: se puede probar suelto."""
 import json
 import re
+from datetime import date
 import unicodedata
 from datetime import datetime
 
 APP = "ACPTester"
 VERSION = 1
-TIPOS = ("number_input", "slider", "checkbox", "radio", "selectbox", "multiselect")
+TIPOS = ("number_input", "slider", "checkbox", "radio", "selectbox", "multiselect", "date_input", "text_input")
 
 
 def slug(texto: str) -> str:
@@ -57,6 +58,28 @@ def con_valor(tipo: str, a: tuple, k: dict, v):
                 a[1] = opciones.index(v)
             else:
                 k["index"] = opciones.index(v)
+        elif tipo == "text_input":
+            orig = a[0] if len(a) > 0 else k.get("value", "")
+            if not isinstance(v, str):
+                return tuple(a), k
+            if len(a) > 0:
+                a[0] = v
+            else:
+                k["value"] = v
+        elif tipo == "date_input":
+            orig = a[0] if len(a) > 0 else k.get("value")
+            if isinstance(orig, (tuple, list)):                      # período: (desde, hasta)
+                if not isinstance(v, list) or not 1 <= len(v) <= 2:
+                    return tuple(a), k
+                nv = tuple(date.fromisoformat(str(x)[:10]) for x in v)
+            else:
+                if not isinstance(v, str):
+                    return tuple(a), k
+                nv = date.fromisoformat(v[:10])
+            if len(a) > 0:
+                a[0] = nv
+            else:
+                k["value"] = nv
         elif tipo == "multiselect":
             opciones = list(a[0] if len(a) > 0 else k.get("options", []))
             if not isinstance(v, list):
@@ -91,3 +114,11 @@ def leer(contenido: bytes, tipo: str):
         return None, (f"Esta configuración es del backtester de {str(d.get('tipo')).upper()}; "
                       f"cargala en esa página (estás en la de {tipo.upper()}).")
     return d["valores"], None
+
+
+def nombre_archivo(escrito: str, por_defecto: str) -> str:
+    """Nombre de archivo seguro (sin rutas ni caracteres prohibidos) y con la extensión .json."""
+    base = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", str(escrito or "")).strip(" ._")
+    if base.lower().endswith(".json"):
+        base = base[:-5].rstrip(" ._")
+    return (base or por_defecto)[:120] + ".json"

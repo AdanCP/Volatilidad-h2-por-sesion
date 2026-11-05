@@ -185,6 +185,8 @@ _CSS_SIDEBAR = """
 [data-testid="stSidebar"] :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button:not(:disabled):hover{
   filter:brightness(1.2) saturate(1.12);transform:translateY(-2px);
   box-shadow:0 0 0 3px @SIDETXT@,0 0 22px 6px @GLOW@;}
+/* «Guardar configuración» (iframe con el cuadro «Guardar como»): se compensa el aire para la sombra */
+[data-testid="stSidebar"] .st-key-cfg_guardar iframe{margin:-6px 0 -6px;}
 /* «Cargar configuración»: el contenedor del selector es el botón (alto fijo, igual al de guardar); el selector real
    queda encima, invisible, para recibir el clic y los archivos arrastrados */
 [data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"]{

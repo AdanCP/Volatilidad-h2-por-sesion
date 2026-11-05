@@ -29,6 +29,7 @@ import metrics as met
 import ui_estilo as vis
 import veredicto as vd
 import ui_helpers as ui
+import ui_guardar as ug
 
 TIPO = globals().get("TIPO_MEDIA", "ema")       # "sma" lo define app_backtest_sma.py antes de ejecutar este archivo
 ES_SMA = TIPO == "sma"
@@ -128,9 +129,15 @@ _CARGADA = estado.get("cfg_cargada") or {}
 _REG, _WK, _VISTOS = {}, {}, {}
 
 
+def _wk(clave):
+    """Clave interna del widget. Lleva el número de carga: al cargar una configuración cambia, y Streamlit trata a todos
+    los campos como nuevos (con el valor del archivo como valor inicial)."""
+    return f"cfg{estado.cfg_n}_{_PFX}{clave}"
+
+
 def _sv(clave):
-    """Valor actual de un campo con clave propia; si todavía no se dibujó (recién cargada una configuración), el cargado."""
-    return st.session_state.get(clave, _CARGADA.get(clave))
+    """Valor actual de un campo; si todavía no se dibujó (recién cargada una configuración), el cargado."""
+    return st.session_state.get(_wk(clave), _CARGADA.get(clave))
 
 
 def _clave_unica(label):
@@ -144,7 +151,7 @@ def _envolver(dg, tipo):
 
     def g(label, *a, **k):
         clave = k.get("key") or _clave_unica(label)
-        wk = k.get("key") or f"cfg_{_PFX}{clave}"
+        wk = _wk(clave)
         k0 = {**k, "key": wk}
         a1, k1, cambio = a, k0, False
         if clave in _CARGADA:
@@ -178,8 +185,8 @@ def _cargar_cfg(clave_up):
     if err:
         estado.cfg_msg = ("error", err)
         return
-    for wk in estado.get("cfg_wk", {}).values():      # los campos vuelven a nacer con los valores del archivo
-        st.session_state.pop(wk, None)
+    if vals.get("fuente_de_datos") == ETQ_MT5 and not MT5_OK:      # MT5 directo no existe en esta máquina
+        vals = {k_: v_ for k_, v_ in vals.items() if k_ != "fuente_de_datos"}
     estado.cfg_cargada = vals
     estado.cfg_n = estado.cfg_n + 1
     estado.cfg_msg = ("ok", f"Configuración cargada ({len(vals)} campos). Los que no estaban en el archivo quedaron como de fábrica.")
@@ -191,7 +198,7 @@ st.markdown(vis.css(), unsafe_allow_html=True)
 with st.sidebar:
     # La fuente es la base de todo: va fuera de los menús, como un título, debajo del modo oscuro.
     st.markdown('<div class="fte">Fuente de datos</div>', unsafe_allow_html=True)
-    fuente = st.radio("Fuente de datos", [ETQ_MT5, ETQ_CSV, ETQ_SINT], index=0 if MT5_OK else 1,
+    fuente = _W(st).radio("Fuente de datos", [ETQ_MT5, ETQ_CSV, ETQ_SINT], index=0 if MT5_OK else 1,
                       label_visibility="collapsed")
     st.markdown('<div class="fte-fin"></div>', unsafe_allow_html=True)
     exp_instr = st.expander("1. Instrumento a operar", expanded=False)
@@ -214,24 +221,24 @@ with st.sidebar:
                 for familia, items in grupos.items():
                     opciones = [nombre for _, nombre in items]
                     por_defecto = [nombre for etiqueta, nombre in items if etiqueta == "oro"]
-                    elegidos += st.multiselect(familia, opciones, por_defecto)
+                    elegidos += _W(st).multiselect(familia, opciones, por_defecto)
                 if faltan:
                     st.caption("No detectados automáticamente: " + ", ".join(faltan))
                 # Cualquier símbolo del servidor (escribí para buscar: US30, GER40, EURUSD...)
-                elegidos += st.multiselect("Cualquier otro símbolo del servidor (escribí para buscar)",
+                elegidos += _W(st).multiselect("Cualquier otro símbolo del servidor (escribí para buscar)",
                                            [s for s in todos if s not in elegidos], [])
-                otros = st.text_input("O escribilos a mano (separados por coma)", "")
+                otros = _W(st).text_input("O escribilos a mano (separados por coma)", "")
                 simbolos = ui.unir_simbolos(elegidos, otros)
             elif fuente == ETQ_CSV:
                 archivos = st.file_uploader("Archivos CSV (uno por símbolo)", type=["csv", "txt"],
                                             accept_multiple_files=True)
-                point = st.number_input("Point del símbolo (solo si el CSV no trae columna 'point')",
+                point = _W(st).number_input("Point del símbolo (solo si el CSV no trae columna 'point')",
                                         value=0.01, format="%.5f")
                 for archivo in archivos or []:
                     datos[ui.simbolo_desde_archivo(archivo.name)] = _csv(archivo.getvalue(), point)
             else:
-                tend = st.slider("Tendencia (0 = azar puro)", 0.0, 1.0, 0.0, 0.1)
-                n_series = st.slider("Cantidad de series de demo", 1, 4, 1)
+                tend = _W(st).slider("Tendencia (0 = azar puro)", 0.0, 1.0, 0.0, 0.1)
+                n_series = _W(st).slider("Cantidad de series de demo", 1, 4, 1)
                 for k in range(n_series):
                     datos[f"SINT{k + 1}"] = _sintetico(30000, tend, k + 1)
         except (data.ErrorDatos, ValueError, KeyError) as e:
@@ -241,10 +248,10 @@ with st.sidebar:
     with exp_datos:
         try:
             if fuente == ETQ_MT5 and MT5_OK:
-                tf = st.selectbox("Temporalidad", ["D1", "H4", "H1", "M30", "M15", "M5", "M1"], index=2)
+                tf = _W(st).selectbox("Temporalidad", ["D1", "H4", "H1", "M30", "M15", "M5", "M1"], index=2)
                 c1, c2 = st.columns(2)
-                desde = c1.date_input("Desde", date(2020, 1, 1))
-                hasta = c2.date_input("Hasta", _hoy())
+                desde = _W(c1).date_input("Desde", date(2020, 1, 1))
+                hasta = _W(c2).date_input("Hasta", _hoy())
                 if desde >= hasta:
                     st.error("La fecha 'desde' debe ser anterior a 'hasta'.")
                 elif not simbolos:
@@ -272,12 +279,12 @@ with st.sidebar:
             datos, specs = {}, {}
 
         if datos:
-            regla = st.selectbox("Remuestrear a", ["No", "15min", "30min", "1h", "4h", "1D"])
+            regla = _W(st).selectbox("Remuestrear a", ["No", "15min", "30min", "1h", "4h", "1D"])
             if regla != "No":
                 datos = {s: data.resamplear(d_, regla) for s, d_ in datos.items()}
             primero = next(iter(datos.values()))
             if fuente != ETQ_MT5:       # con MT5 el período ya lo define "Desde / Hasta"
-                rango = st.date_input("Recortar período", (primero.index[0].date(), primero.index[-1].date()))
+                rango = _W(st).date_input("Recortar período", (primero.index[0].date(), primero.index[-1].date()))
                 if isinstance(rango, tuple) and len(rango) == 2:
                     datos = {s: d_.loc[str(rango[0]):str(rango[1])] for s, d_ in datos.items()}
             datos = {s: d_ for s, d_ in datos.items() if len(d_)}
@@ -334,8 +341,8 @@ with st.sidebar:
         st.divider()
         _OP_RR, _OP_USD = "Objetivo fijo: RR (1:x)", "Objetivo fijo: US$ por operación"
         _opciones = [_OP_RR] + ([_OP_USD] if sl_modo == SL_USD else []) + [_op_sal]   # el TP en US$ pide el SL en dólares fijos
-        if st.session_state.get(_k_sal) not in _opciones:
-            st.session_state.pop(_k_sal, None)
+        if st.session_state.get(_wk(_k_sal)) not in _opciones:
+            st.session_state.pop(_wk(_k_sal), None)
         salida_txt = _W(st).radio(
             "Take Profit (TP) en", _opciones, key=_k_sal,
             help="Objetivo fijo: TP a una distancia fija del SL (en múltiplos del riesgo, RR, o en US$ por operación; el de US$ "
@@ -527,12 +534,13 @@ with st.sidebar:
     # ---- guardar y cargar la configuración
     st.markdown('<div class="fte">Configuración</div>', unsafe_allow_html=True)
     estado.cfg_wk = dict(_WK)
-    st.download_button("💾 Guardar configuración", cio.a_bytes(TIPO, _REG),
-                       file_name=f"ACPTester_config_{MEDIA}_{int(ema_c)}-{int(ema_l)}.json" if modo_senal == "cruce"
-                       else f"ACPTester_config_{MEDIA}_{int(media_unica)}.json",
-                       mime="application/json", use_container_width=True, key=f"cfg_dl_{_PFX}",
-                       help="Baja un archivo con todos los parámetros de las secciones 3 a 7 (señal, SL, TP, dinero, costos, "
-                            "filtros y sobreajuste). No incluye la fuente de datos ni los símbolos.")
+    _nombre_auto = (f"ACPTester_config_{MEDIA}_{int(ema_c)}-{int(ema_l)}" if modo_senal == "cruce"
+                    else f"ACPTester_config_{MEDIA}_{int(media_unica)}") + ".json"
+    _cfg_bytes = cio.a_bytes(TIPO, _REG)
+    # Guarda todos los campos de la barra lateral (fuente, símbolos, período, señal, SL, TP, dinero, costos, filtros y
+    # sobreajuste). Los CSV no se guardan. Abre «Guardar como» del navegador para elegir carpeta y nombre.
+    with st.container(key="cfg_guardar"):
+        ug.render(vis.TEMAS[vis.TEMA], _nombre_auto, _cfg_bytes)
     _k_up = f"cfg_up_{_PFX}{estado.cfg_n}"
     with st.container(key="cfg_cargar"):        # el selector de archivo se dibuja como un botón (ver ui_estilo)
         st.file_uploader("Cargar configuración", type=["json"], key=_k_up, on_change=_cargar_cfg, args=(_k_up,),

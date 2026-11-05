@@ -53,3 +53,22 @@ def test_rechazos():
     assert c.leer(b'{"hola": 1}', "ema")[1]
     out, err = c.leer(c.a_bytes("ema", {"a": 1}), "sma")
     assert out is None and "EMA" in err
+
+
+def test_fechas_y_texto():
+    from datetime import date
+    a, k = c.con_valor("date_input", (date(2020, 1, 1),), {}, "2023-05-02")
+    assert a[0] == date(2023, 5, 2)
+    a, k = c.con_valor("date_input", ((date(2020, 1, 1), date(2021, 1, 1)),), {}, ["2022-01-01", "2022-06-30"])
+    assert a[0] == (date(2022, 1, 1), date(2022, 6, 30))
+    a, k = c.con_valor("date_input", (date(2020, 1, 1),), {}, 5)              # tipo incorrecto: se ignora
+    assert a[0] == date(2020, 1, 1)
+    a, k = c.con_valor("text_input", ("",), {}, "US30, GER40")
+    assert a[0] == "US30, GER40"
+
+
+def test_fechas_ida_y_vuelta():
+    from datetime import date
+    b = c.a_bytes("ema", {"desde": date(2021, 3, 4), "periodo": (date(2022, 1, 1), date(2022, 2, 1))})
+    out, err = c.leer(b, "ema")
+    assert out == {"desde": "2021-03-04", "periodo": ["2022-01-01", "2022-02-01"]}
