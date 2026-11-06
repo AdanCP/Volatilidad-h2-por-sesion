@@ -1119,7 +1119,7 @@ if len(res):
                      "La zona rosada es el out-of-sample: lo que el modelo no vio al ajustarse. "
                      + (f"Empieza el {str(pdin_corte)[:10]}: {len(res) - pos_oos} de {len(res)} operaciones."
                         if pdin_corte is not None else "")
-                     + (f" <b>La cuenta dejó de operar el {str(res['fecha_entrada'].iloc[-1])[:10]}, antes de ese punto, y por eso no se marca la zona.</b> "
+                     + (f" La cuenta dejó de operar el {str(res['fecha_entrada'].iloc[-1])[:10]}, antes de ese punto, y por eso no queda operación dentro de la zona."
                         "Con las reglas de cuenta (sobre todo con retiros: el balance vuelve al capital pero el piso trailing queda arriba) "
                         "el margen puede quedar tan chico que el SL ya no entra y se saltean todas las señales. "
                         "El out-of-sample se simula aparte con una cuenta nueva, por eso el medidor sí tiene datos."
@@ -1256,7 +1256,11 @@ if _retiro_sim:
     st.write("")
     html(vis.titulo_seccion("Retiros de la cuenta", "Retirando toda la ganancia al llegar al objetivo: cuántos retiros se pudieron hacer y si la cuenta aguantó"))
     _cu_r, _cap_r = r["cuenta"], float(cfg_usada.capital)
-    _rt = ret.resumen(_cu_r, r["P"].indice, _cap_r)
+    try:
+        _riesgo_ref = float((res["dist"] * float(cfg_usada.usd_por_unidad)).quantile(0.9))
+    except Exception:
+        _riesgo_ref = None
+    _rt = ret.resumen(_cu_r, r["P"].indice, _cap_r, _riesgo_ref)
     _meta_r = f"+{vis.n(cfg_usada.retiro_pct, 1)}% (US$ {vis.n(_cap_r * cfg_usada.retiro_pct / 100, 0)})"
     t1, t2, t3, t4 = st.columns(4)
     with t1:
@@ -1268,7 +1272,10 @@ if _retiro_sim:
                          f"del {_rt['inicio']:%d/%m/%Y} al {_rt['quemada_ts']:%d/%m/%Y} · {_rt['dias_operados']} días con operaciones · "
                          f"{met.fmt_duracion(_rt['desde_ultimo_min'])} desde el último retiro", vis.ROSA, 165))
         else:
-            html(vis.kpi("Tiempo hasta quemarse", "No se quemó", "la cuenta llegó al final del período", vis.INDIGO, 165))
+            html(vis.kpi("Tiempo hasta quemarse", "No se quemó",
+                         ("pero sin margen para operar desde el " + f"{_rt['sin_margen_ts']:%d/%m/%Y}") if _rt["sin_margen_ts"] is not None
+                         else "la cuenta llegó al final del período",
+                         vis.ROSA if _rt["sin_margen_ts"] is not None else vis.INDIGO, 165))
     with t3:
         if _rt["n"]:
             html(vis.kpi("Tiempo medio entre retiros", met.fmt_duracion(_rt["medio"]),
@@ -1280,14 +1287,26 @@ if _retiro_sim:
         html(vis.kpi("Ciclo en curso", f"{vis.n(100 * _rt['ciclo_avance'] / _cap_r, 1, True)}%",
                      f"US$ {vis.n(_rt['ciclo_avance'], 0, True)} sobre el capital inicial al cierre del período"
                      + (" (la cuenta se quemó)" if _rt["quemada"] else ""), vis.tono(_rt["ciclo_avance"]), 165))
+    if _rt["sin_margen_ts"] is not None:
+        st.warning(f"**La cuenta quedó sin margen para operar desde el {_rt['sin_margen_ts']:%d/%m/%Y}.** No se quemó, pero desde ahí se "
+                   f"descartaron {_rt['sin_margen_n']} señales porque el SL arriesgaba más que lo que le queda hasta el límite, así que no "
+                   "puede recuperarse. Lo que pasa después de esa fecha no está probado en el backtest.")
     if _rt["n"]:
         with st.expander("Ver cada retiro"):
             _filas_r, _prev = [], _rt["inicio"]
             for _k, (_f, _m, _t) in enumerate(zip(_rt["fechas"], _rt["montos"], _rt["tiempos_min"]), 1):
                 _filas_r.append([str(_k), _prev.strftime("%d/%m/%Y %H:%M"), _f.strftime("%d/%m/%Y %H:%M"), met.fmt_duracion(_t),
-                                 f"{vis.n(_m, 0, True)} ({vis.n(100 * _m / _cap_r, 1, True)}%)"])
+                                 f"{vis.n(_m, 0, True)} ({vis.n(100 * _m / _cap_r, 1, True)}%)",
+                                 "–" if _rt["margen_tras"][_k - 1] is None else vis.n(_rt["margen_tras"][_k - 1], 0),
+                                 "–" if _rt["margen_tras"][_k - 1] is None else vis.n(_rt["sugeridos"][_k - 1], 0)])
                 _prev = _f
-            html(vis.tabla_html(["#", "Desde", "Hasta", "Tiempo", "Retirado (US$)"], _filas_r))
+            html(vis.tabla_html(["#", "Desde", "Hasta", "Tiempo", "Retirado (US$)", "Margen al límite tras retirar (US$)",
+                                 "Retiro sugerido (US$)"], _filas_r))
+            if _rt["colchon"]:
+                st.caption(f"Retiro sugerido: lo máximo que podés sacar dejando al menos US$ {vis.n(_rt['colchon'], 0)} de margen sobre el límite total "
+                           f"({ret.COLCHON_OPS} veces la pérdida de un SL grande, el percentil 90 de este historial). Con límite total estático "
+                           "el margen tras retirar siempre es el mismo y casi nunca limita; con trailing, retirar más sube el piso y "
+                           "te deja menos colchón. Si el sugerido es menor que lo retirado, convenía sacar menos y dejar el resto en la cuenta.")
     st.caption("Es la misma simulación de la cuenta: al llegar al objetivo se retira TODA la ganancia del ciclo y el balance vuelve al "
                "capital inicial. El piso de pérdida total trailing se mantiene en el máximo anterior y el retiro no cuenta como "
                "pérdida del día. No incluye plazos ni reparto de ganancias de la firma. Tiempo calendario (incluye fines de semana).")

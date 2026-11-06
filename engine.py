@@ -436,7 +436,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         ts_min = P.indice.to_numpy().astype("datetime64[s]").astype("int64") / 60.0
         cs = {"saltadas_dia": 0, "saltadas_pausa": 0, "saltadas_pausa_gan": 0, "saltadas_retroceso": 0, "saltadas_riesgo": 0, "saltadas_proteccion": 0, "forzadas": 0,
               "dias_bloqueados": 0, "quemada": False, "quemada_en": None, "peor_dia_usd": 0.0,
-              "balance_final": cap, "balance_min": cap, "balance_max": cap, "retiros": [], "retirado": 0.0}
+              "balance_final": cap, "balance_min": cap, "balance_max": cap, "retiros": [], "retirado": 0.0, "prot_desde": None, "prot_n": 0}
         S = {"bal": cap, "pico": cap, "dia": None, "bal_dia": cap, "bloq": None, "perd_j": {1: None, -1: None}, "gan_j": {1: None, -1: None}, "gan_ref": {1: None, -1: None}}
 
     def frena(minutos, ultimos, sentido, lado, i):
@@ -520,9 +520,11 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             # retiro: se saca TODA la ganancia del ciclo y el balance vuelve al capital inicial. El piso trailing se mantiene
             # (S["pico"] no baja) y el retiro no cuenta como perdida del dia: se resta tambien del balance de inicio del dia.
             w = S["bal"] - cap
+            bal_antes = float(S["bal"])
             S["bal"] = cap
             S["bal_dia"] -= w
-            cs["retiros"].append({"j": int(j_out), "monto": float(w)})
+            cs["retiros"].append({"j": int(j_out), "monto": float(w), "bal_antes": bal_antes,
+                                  "piso": float(pt_) if np.isfinite(pt_) else None})
             cs["retirado"] += float(w)
 
     def recorrer(desde, lado, sl, tp, entrada=None, lim=None):
@@ -586,6 +588,10 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 motivo_p, lim = puerta(d)
                 if motivo_p != "ok":
                     cs[motivo_p] += 1
+                    if motivo_p == "saltadas_proteccion":       # sin margen: desde cuando, y cuantas señales desde la ultima operacion abierta
+                        cs["prot_n"] += 1
+                        if cs["prot_desde"] is None:
+                            cs["prot_desde"] = i
                     continue
             sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
             res, amb, j_out = recorrer(i + 1, lado, sl, tp, entrada, lim)
@@ -632,6 +638,10 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 motivo_p, lim = puerta(d)
                 if motivo_p != "ok":
                     cs[motivo_p] += 1
+                    if motivo_p == "saltadas_proteccion":       # sin margen: desde cuando, y cuantas señales desde la ultima operacion abierta
+                        cs["prot_n"] += 1
+                        if cs["prot_desde"] is None:
+                            cs["prot_desde"] = i
                     libre = k + 1
                     continue
             st["llenadas"] += 1
@@ -657,6 +667,8 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             r = rr if res == "TP" else (-1.0 if res == "SL" else 0.0)
         if res != "ABIERTA" and costo_extra:
             r -= costo_extra / d
+        if ct:
+            cs["prot_desde"], cs["prot_n"] = None, 0          # se abrio una operacion: la cuenta tiene margen
         filas.append({"i": k, "señal": i, "lado": lado, "entrada": entrada, "sl": sl, "tp": tp, "dist": d,
                       "res": res, "amb": amb, "salida": j_out, "R": r, "motivo": motivo_sal})
         if res == "ABIERTA":

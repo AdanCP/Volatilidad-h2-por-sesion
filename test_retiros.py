@@ -37,3 +37,19 @@ def test_barrido_elige_el_que_mas_retira_y_marca_las_quemadas():
     assert por[1.0]["n"] == 6 and por[2.0]["n"] == 6 and por[4.0]["n"] == 3        # 200 US$ por operacion ganadora
     assert por[1.0]["total"] == 1200.0 and por[4.0]["total"] == 1200.0 and not any(f["quemada"] for f in b["filas"])
     assert b["ideal"] == 1.0                                                      # empate en total y en quemada: mas retiros
+
+
+def test_resumen_sugiere_retiro_y_avisa_si_quedo_sin_margen():
+    idx = pd.date_range("2024-01-01", periods=100, freq="D")
+    cu = {"retiros": [{"j": 10, "monto": 500.0, "bal_antes": 10500.0, "piso": 9900.0},
+                      {"j": 20, "monto": 500.0, "bal_antes": 10500.0, "piso": 9000.0},
+                      {"j": 30, "monto": 500.0, "bal_antes": 10500.0, "piso": None}],
+          "quemada": False, "balance_final": 9500.0, "prot_desde": 50, "prot_n": 7}
+    rs = ret.resumen(cu, idx, 10000.0, riesgo_usd=100.0)          # colchon = 3 * 100
+    assert rs["colchon"] == 300.0
+    assert rs["sugeridos"] == [300.0, 500.0, 500.0]               # 10500-9900-300 = 300; el resto no limita
+    assert rs["margen_tras"][0] == 100.0 and rs["margen_sug"][0] == 300.0
+    assert rs["margen_tras"][2] is None
+    assert rs["sin_margen_ts"] == idx[50] and rs["sin_margen_n"] == 7
+    assert ret.resumen({**cu, "prot_desde": None}, idx, 10000.0)["sin_margen_ts"] is None
+    assert ret.resumen({**cu, "quemada": True, "quemada_en": 60}, idx, 10000.0)["sin_margen_ts"] is None
