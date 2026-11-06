@@ -145,12 +145,12 @@ _CSS_NATIVOS = """/* widgets nativos: colores forzados para que no dependan del 
 [data-baseweb="select"] div,[data-baseweb="select"] span{color:@TXT@ !important;}
 [data-baseweb="popover"] ul,[data-baseweb="popover"] [role="listbox"],[data-baseweb="menu"]{background:@CARD@ !important;}
 [data-baseweb="popover"] li,[data-baseweb="popover"] li *{color:@TXT@ !important;}
-[data-testid="stNumberInput"] button{background:@INBG@ !important;color:@TXT@ !important;}
+[data-testid="stNumberInput"] :is([data-testid="stNumberInputStepUp"],[data-testid="stNumberInputStepDown"]){background:@INBG@ !important;color:@TXT@ !important;}
 [data-testid="stMain"] [data-testid="stNumberInput"] :is(input,[data-baseweb="input"],[data-baseweb="base-input"],[data-testid="stNumberInputContainer"]){background:@INBG@ !important;color:@ACC@ !important;-webkit-text-fill-color:@ACC@ !important;font-weight:800;}
 [data-testid="stMain"] [data-testid="stNumberInput"] [data-baseweb="input"]{border:1.5px solid @VIO@ !important;border-radius:12px !important;overflow:hidden;box-shadow:0 2px 10px rgba(124,92,240,.16);}
-[data-testid="stMain"] [data-testid="stNumberInput"] button{background:linear-gradient(135deg,@ACC@,@VIO@) !important;color:@BTNTXT@ !important;border:0 !important;border-left:1px solid rgba(255,255,255,.35) !important;border-radius:0 !important;}
-[data-testid="stMain"] [data-testid="stNumberInput"] button :is(svg,path){fill:@BTNTXT@ !important;color:@BTNTXT@ !important;}
-[data-testid="stMain"] [data-testid="stNumberInput"] button:hover{filter:brightness(1.12) saturate(1.1);}
+[data-testid="stMain"] [data-testid="stNumberInput"] :is([data-testid="stNumberInputStepUp"],[data-testid="stNumberInputStepDown"]){background:linear-gradient(135deg,@ACC@,@VIO@) !important;color:@BTNTXT@ !important;border:0 !important;border-left:1px solid rgba(255,255,255,.35) !important;border-radius:0 !important;}
+[data-testid="stMain"] [data-testid="stNumberInput"] :is([data-testid="stNumberInputStepUp"],[data-testid="stNumberInputStepDown"]) :is(svg,path){fill:@BTNTXT@ !important;color:@BTNTXT@ !important;}
+[data-testid="stMain"] [data-testid="stNumberInput"] :is([data-testid="stNumberInputStepUp"],[data-testid="stNumberInputStepDown"]):hover{filter:brightness(1.12) saturate(1.1);}
 [data-testid="stFileUploaderDropzone"]{background:@INBG@ !important;}
 [data-testid="stFileUploaderDropzone"] :is(span,small,p,div){color:@TXT@ !important;}
 [data-testid="stExpander"] summary :is(p,span){color:@TXT@ !important;}
@@ -176,6 +176,7 @@ _CSS_SIDEBAR = """
 [data-testid="stSidebar"] [data-testid="stExpander"]:has(> details > summary:hover){transform:translateY(-2px);}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary :is(p,span){color:@SIDETXT@ !important;font-weight:700;}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary svg{fill:@SIDETXT@;color:@SIDETXT@;}
+[data-testid="stSidebar"] .sep-filtro{border-top:1px solid rgba(255,255,255,.35);margin:-.15rem 0;}
 .fte{font-size:1.05rem;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:@SIDETXT@ !important;
   border-top:1px solid @VEILB@;padding-top:.7rem;margin-top:.4rem;}
 .fte-fin{border-bottom:1px solid @VEILB@;margin:.2rem 0 .7rem;}
@@ -459,8 +460,11 @@ def _muestrear(vals, maximo=320):
     return idx, [vals[i] for i in idx]
 
 
-def curva_equity(valores: list, etiqueta_ini: str = "", etiqueta_fin: str = "", pos_oos=None, uid: str = "e") -> str:
-    """Área de la equity acumulada (en R). `pos_oos`: posición (0..len) donde empieza el out-of-sample."""
+def curva_equity(valores: list, etiqueta_ini: str = "", etiqueta_fin: str = "", pos_oos=None, uid: str = "e",
+                 xs=None, x_oos=None) -> str:
+    """Área de la equity acumulada (en R). `pos_oos`: posición (0..len) donde empieza el out-of-sample.
+    Con `xs` (fracción 0..1 del tiempo de cada punto) y `x_oos` (fracción donde empieza el out-of-sample) el eje es el tiempo:
+    si la cuenta dejó de operar, la curva termina antes y el out-of-sample se marca igual."""
     if not valores:
         return '<div class="note">Sin operaciones resueltas.</div>'
     W, H, pl, pr, pt, pb = 640, 230, 46, 14, 14, 30
@@ -469,7 +473,7 @@ def curva_equity(valores: list, etiqueta_ini: str = "", etiqueta_fin: str = "", 
     lo, hi = min(0.0, min(v)), max(0.0, max(v))
     if hi == lo:
         hi = lo + 1
-    X = lambda i: pl + (W - pl - pr) * i / total
+    X = (lambda i: pl + (W - pl - pr) * xs[i]) if xs is not None else (lambda i: pl + (W - pl - pr) * i / total)
     Y = lambda y: pt + (H - pt - pb) * (1 - (y - lo) / (hi - lo))
     pts = " ".join(f"{X(i):.1f},{Y(y):.1f}" for i, y in zip(idx, v))
     area = f"{X(idx[0]):.1f},{Y(0):.1f} {pts} {X(idx[-1]):.1f},{Y(0):.1f}"
@@ -479,8 +483,13 @@ def curva_equity(valores: list, etiqueta_ini: str = "", etiqueta_fin: str = "", 
                  f'<text x="{pl - 6}" y="{Y(g) + 4:.1f}" text-anchor="end" font-size="10.5" fill="{SUAVE}">{n(g, 0)}</text>')
     cero = f'<line x1="{pl}" x2="{W - pr}" y1="{Y(0):.1f}" y2="{Y(0):.1f}" stroke="{EJE}" stroke-dasharray="4 4"/>'
     oos = ""
-    if pos_oos is not None and 0 < pos_oos < len(valores):
+    if xs is not None and x_oos is not None and 0 < x_oos < 1:
+        x = pl + (W - pl - pr) * x_oos
+    elif xs is None and pos_oos is not None and 0 < pos_oos < len(valores):
         x = X(pos_oos)
+    else:
+        x = None
+    if x is not None:
         oos = (f'<rect x="{x:.1f}" y="{pt}" width="{W - pr - x:.1f}" height="{H - pt - pb}" fill="{ROSA}" opacity=".07"/>'
                f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{pt}" y2="{H - pb}" stroke="{ROSA}" stroke-dasharray="3 3"/>'
                f'<text x="{x + 6:.1f}" y="{pt + 12}" font-size="10.5" font-weight="700" fill="{MAGENTA}">Out-of-sample</text>')

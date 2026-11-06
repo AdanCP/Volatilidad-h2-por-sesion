@@ -270,12 +270,15 @@ def test_salida_por_senal_coincide_con_el_backtester(pb, modo, tipo):
 def test_reglas_de_cuenta_en_la_plantilla():
     c = _cfg(capital=25000.0, usd_por_unidad=10.0, perd_dia_pct=5.0, perd_dia_modo="estatico", perd_tot_pct=10.0,
              perd_tot_modo="trailing", colchon_pct=1.0, proteger_sl=False, riesgo_op_activo=True, riesgo_op_pct=0.5,
-             pausa_activa=True, pausa_min=45.0, comision_op_usd=3.5)
+             pausa_activa=True, pausa_min=45.0, pausa_gan_activa=True, pausa_gan_min=20.0,
+             pausa_sentido="contrario", pausa_gan_sentido="mismo", comision_op_usd=3.5)
     t = _gen(c, "XAUUSD", "M5", 0.1)
     assert "@@" not in t and t.count("{") == t.count("}")
     for frag in ["InpMaxDailyLossPct = 4.0", "InpMaxTotalLossPct = 9.0", "InpInitialBalance = 25000.0", "InpDailyMode      = 1",
                  "InpTotalMode      = 1", "InpProtectSL      = false", "InpRiskOn         = true", "InpRiskPct        = 0.5",
-                 "InpPauseOn        = true", "InpPauseMin       = 45.0", "InpCommissionUsd  = 3.5"]:
+                 "InpPauseOn        = true", "InpPauseMin       = 45.0", "InpCommissionUsd  = 3.5",
+                 "InpPauseWinOn     = true", "InpPauseWinMin    = 20.0", "if(PauseWinBlocks(i, cr))", "if(PauseBlocks(i, cr))", "LASTWIN_B", "LASTLOSS_S",
+                 "InpPauseDir       = 2", "InpPauseWinDir    = 1"]:
         assert frag in t, frag
     sin = _gen(_cfg(), "XAUUSD", "M5", 0.1, capital=25000.0)               # sin capital en la config: limites de siempre
     assert "InpMaxDailyLossPct = 4.0" in sin and "InpMaxTotalLossPct = 8.0" in sin and "InpInitialBalance = 25000.0" in sin
@@ -293,8 +296,8 @@ def test_pisos_y_dia_cet_coinciden_con_el_backtester(dia, tot):
     main = '''int main(){int q;std::cin>>q;g_initBal=InpInitialBalance;
  while(q--){double bd,pk;long long u;std::cin>>bd>>pk>>u;g_dayBal=bd;g_peak=pk;
   printf("%.6f %.6f %d\\n",FloorDay(),FloorTotal(),DayKeyCET(u));}
- g_time.assign(3,0);g_time[0]=1000;g_time[1]=1000+60*30;g_time[2]=1000+60*60;g_lastLossBar=1000;
- printf("%d %d %d\\n",PauseBlocks(0)?1:0,PauseBlocks(1)?1:0,PauseBlocks(2)?1:0);}'''
+ g_time.assign(3,0);g_time[0]=1000;g_time[1]=1000+60*30;g_time[2]=1000+60*60;g_lastLoss[0]=1000;
+ printf("%d %d %d\\n",PauseBlocks(0,1)?1:0,PauseBlocks(1,1)?1:0,PauseBlocks(2,1)?1:0);}'''
     casos = [(25000.0, 25000.0, "2026-01-15 12:00"), (25800.0, 26500.0, "2026-03-29 00:30"), (24000.0, 25200.0, "2026-10-25 01:30"),
              (25300.0, 25300.0, "2026-11-03 23:30"), (25000.0, 25900.0, "2026-07-01 22:30")]
     entrada = f"{len(casos)}\n" + "\n".join(f"{bd} {pk} {int(pd.Timestamp(ts).timestamp())}" for bd, pk, ts in casos)
@@ -417,3 +420,45 @@ def test_sl_en_porcentaje_del_nivel():
     assert "MathAbs(ref) * InpSLValue / 100.0" in src
     assert "0.15 % del nivel" in src
     assert "InpSlEmaPct       = false;" in _gen(_cfg(sl_modo="ema", sl_valor=2.0, sl_ema_ref="cruce"), "XAUUSD", "H1", 0.1)
+
+
+def _prueba_pausa(cfg_k, ult_buy, ult_sell, es_ganancia):
+    """Compila la plantilla y devuelve (bloquea compra, bloquea venta) para la senal de la vela 0, con la ultima ganadora/perdedora."""
+    t = _gen(_cfg(**cfg_k), "XAUUSD", "M5", 0.1)
+    arr = "g_lastWin" if es_ganancia else "g_lastLoss"
+    fn = "PauseWinBlocks" if es_ganancia else "PauseBlocks"
+    main = f'''int main(){{ g_time.assign(2,0);g_time[0]=1000+60*10;g_time[1]=1000+60*90;
+ {arr}[0]={ult_buy};{arr}[1]={ult_sell};
+ printf("%d %d %d %d\\n",{fn}(0,1)?1:0,{fn}(0,-1)?1:0,{fn}(1,1)?1:0,{fn}(1,-1)?1:0);}}'''
+    with tempfile.TemporaryDirectory() as d:
+        exe = _compilar(t, main, d)
+        return subprocess.run([exe], capture_output=True, text=True).stdout.strip()
+
+
+def test_sentido_de_las_pausas_en_el_bot():
+    # una compra ganadora cerro en t=1000 (la venta nunca); la senal esta 10 min despues (vela 0) y 90 min despues (vela 1); pausa de 30 min
+    k = dict(capital=10000.0, usd_por_unidad=10.0, pausa_gan_activa=True, pausa_gan_min=30.0)
+    assert _prueba_pausa({**k, "pausa_gan_sentido": "mismo"}, 1000, 0, True) == "1 0 0 0"        # frena la compra, no la venta
+    assert _prueba_pausa({**k, "pausa_gan_sentido": "contrario"}, 1000, 0, True) == "0 1 0 0"    # frena la venta, no la compra
+    assert _prueba_pausa({**k, "pausa_gan_sentido": "ambos"}, 1000, 0, True) == "1 1 0 0"
+    # pausa tras perdida, mismo reloj: una venta perdedora cerro en t=1000
+    kp = dict(capital=10000.0, usd_por_unidad=10.0, pausa_activa=True, pausa_min=30.0)
+    assert _prueba_pausa({**kp, "pausa_sentido": "contrario"}, 0, 1000, False) == "1 0 0 0"      # venta perdedora frena la compra
+    assert _prueba_pausa({**kp, "pausa_sentido": "mismo"}, 0, 1000, False) == "0 1 0 0"
+
+
+def test_retroceso_tras_ganancia_en_el_bot():
+    # compra ganadora cerro en t=1000 a 120 con recorrido 20, 50% -> nivel 110. La senal esta en t=1600 (10 min) o t=6400 (90 min)
+    k = dict(capital=10000.0, usd_por_unidad=10.0, pausa_gan_retroceso_activo=True, pausa_gan_retroceso_pct=50.0)
+
+    def prueba(extra, px):
+        t = _gen(_cfg(**{**k, **extra}), "XAUUSD", "M5", 0.1)
+        main = f'''int main(){{ g_time.assign(2,0);g_time[0]=1000+60*10;g_time[1]=1000+3600*30;
+ g_lastWin[0]=1000; g_winRef[0]=120.0; g_winDist[0]=20.0; g_lastWin[1]=0;
+ printf("%d %d %d\\n",WinRetraceBlocks(0,1,{px})?1:0,WinRetraceBlocks(0,-1,{px})?1:0,WinRetraceBlocks(1,1,{px})?1:0);}}'''
+        with tempfile.TemporaryDirectory() as d:
+            return subprocess.run([_compilar(t, main, d)], capture_output=True, text=True).stdout.strip()
+    assert prueba({}, 118.0) == "1 0 1"                    # arriba del nivel: bloquea la compra; la venta no tiene ganadora previa
+    assert prueba({}, 105.0) == "0 0 0"                    # ya retrocedio
+    assert prueba({"pausa_gan_vence": "horas", "pausa_gan_vence_h": 24.0}, 118.0) == "1 0 0"   # a las 30 h ya vencio
+    assert prueba({"pausa_gan_retroceso_activo": False}, 118.0) == "0 0 0"

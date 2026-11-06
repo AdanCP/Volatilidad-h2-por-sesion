@@ -189,6 +189,12 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "PROTEGER": _b(cfg.proteger_sl),
         "RIESGO_ON": _b(cfg.riesgo_op_activo), "RIESGO_PCT": _f(cfg.riesgo_op_pct, 4),
         "PAUSA_ON": _b(cfg.pausa_activa), "PAUSA_MIN": _f(cfg.pausa_min, 2),
+        "PAUSA_DIR": str(("ambos", "mismo", "contrario").index(cfg.pausa_sentido)),
+        "PAUSA_GAN_DIR": str(("ambos", "mismo", "contrario").index(cfg.pausa_gan_sentido)),
+        "PAUSA_GAN_ON": _b(cfg.pausa_gan_activa), "PAUSA_GAN_MIN": _f(cfg.pausa_gan_min, 2),
+        "PAUSA_GAN_RETRO": _f(cfg.pausa_gan_retroceso_pct if cfg.pausa_gan_retroceso_activo else 0.0, 2),
+        "PAUSA_GAN_VENCE": str(("nunca", "dia", "horas").index(cfg.pausa_gan_vence)),
+        "PAUSA_GAN_VENCE_H": _f(cfg.pausa_gan_vence_h, 2),
         "COMISION": _f(cfg.comision_op_usd, 4),
     }
     txt = _PLANTILLA
@@ -307,6 +313,13 @@ const bool            InpRiskOn         = @@RIESGO_ON@@;          // Riesgo maxi
 const double          InpRiskPct        = @@RIESGO_PCT@@;         // ... en % del capital inicial (si lo supera, no se opera)
 const bool            InpPauseOn        = @@PAUSA_ON@@;           // Tiempo minimo tras una operacion perdedora
 const double          InpPauseMin       = @@PAUSA_MIN@@;          // ... en minutos (las senales dentro de ese tiempo se descartan)
+const int             InpPauseDir       = @@PAUSA_DIR@@;          // ... a que senales frena: 0 ambos, 1 mismo sentido, 2 sentido contrario (al de la operacion cerrada)
+const bool            InpPauseWinOn     = @@PAUSA_GAN_ON@@;       // Tiempo minimo tras una operacion ganadora
+const double          InpPauseWinMin    = @@PAUSA_GAN_MIN@@;      // ... en minutos (las senales dentro de ese tiempo se descartan)
+const int             InpPauseWinDir    = @@PAUSA_GAN_DIR@@;      // ... a que senales frena: 0 ambos, 1 mismo sentido, 2 sentido contrario
+const double          InpPauseWinRetro  = @@PAUSA_GAN_RETRO@@;    // Retroceso para volver a operar tras una ganancia, en % del recorrido (0 = sin condicion). Solo mismo sentido
+const int             InpPauseWinVence  = @@PAUSA_GAN_VENCE@@;    // ... vencimiento de esa condicion: 0 nunca, 1 al terminar el dia (CET), 2 despues de N horas
+const double          InpPauseWinVenceH = @@PAUSA_GAN_VENCE_H@@;  // ... horas de vigencia (si el vencimiento es 2)
 const double          InpCommissionUsd  = @@COMISION@@;           // Comision por operacion (US$)
 
 // ============================ estado ==========================================
@@ -336,7 +349,11 @@ int      g_dayKey    = 0;
 double   g_initBal   = 0.0;
 double   g_dayBal    = 0.0;
 double   g_peak      = 0.0;                    // balance maximo alcanzado (limite total trailing)
-datetime g_lastLossBar = 0;                    // vela (hora servidor) en que cerro la ultima operacion perdedora
+datetime g_lastWin[2];                         // vela (hora servidor) en que cerro la ultima operacion ganadora: [0] compra, [1] venta
+double   g_winRef[2];                          // precio de cierre de la ultima ganadora: [0] compra, [1] venta
+double   g_winDist[2];                         // recorrido de esa operacion (entrada -> cierre), en precio
+double   g_entryPx[2];                         // precio de entrada de la operacion abierta: [0] compra, [1] venta
+datetime g_lastLoss[2];                        // vela (hora servidor) en que cerro la ultima operacion perdedora: [0] compra, [1] venta
 string   g_gv        = "";
 
 bool V(const double x) { return x > -1.0e299; }
@@ -794,10 +811,42 @@ bool AccountRulesOK(const double d)
    return true;
 }
 
-// tiempo minimo tras una perdida: true si la senal de la vela i cae dentro de la pausa
-bool PauseBlocks(const int i)
+// vela de cierre que cuenta para una pausa segun el sentido elegido (0 ambos, 1 mismo, 2 contrario) y el lado de la senal (1 compra, -1 venta)
+datetime PauseRef(const datetime compra, const datetime venta, const int dir, const int lado)
 {
-   return InpPauseOn && g_lastLossBar > 0 && (double)(g_time[i] - g_lastLossBar) / 60.0 < InpPauseMin;
+   if(dir == 1) return (lado == 1) ? compra : venta;
+   if(dir == 2) return (lado == 1) ? venta : compra;
+   return (compra > venta) ? compra : venta;
+}
+
+// tiempo minimo tras una ganancia: true si la senal de la vela i (lado) cae dentro de la pausa
+bool PauseWinBlocks(const int i, const int lado)
+{
+   if(!InpPauseWinOn) return false;
+   const datetime r = PauseRef(g_lastWin[0], g_lastWin[1], InpPauseWinDir, lado);
+   return r > 0 && (double)(g_time[i] - r) / 60.0 < InpPauseWinMin;
+}
+
+// retroceso tras una ganancia (solo mismo sentido): true si el precio `px` de la senal de la vela i (lado) todavia no retrocedio
+// el % pedido del recorrido de la ultima ganadora de ese lado, medido desde su cierre, y la condicion no vencio
+bool WinRetraceBlocks(const int i, const int lado, const double px)
+{
+   if(InpPauseWinRetro <= 0.0) return false;
+   const int k = (lado == 1) ? 0 : 1;
+   const datetime r = g_lastWin[k];
+   if(r <= 0 || g_winDist[k] <= 0.0) return false;
+   if(InpPauseWinVence == 1 && DayKeyCET(ServidorAUtc(g_time[i])) != DayKeyCET(ServidorAUtc(r))) return false;
+   if(InpPauseWinVence == 2 && (double)(g_time[i] - r) / 3600.0 >= InpPauseWinVenceH) return false;
+   const double nivel = g_winRef[k] - lado * InpPauseWinRetro / 100.0 * g_winDist[k];   // compra: debajo del cierre; venta: encima
+   return (lado == 1) ? (px > nivel) : (px < nivel);
+}
+
+// tiempo minimo tras una perdida: true si la senal de la vela i (lado) cae dentro de la pausa
+bool PauseBlocks(const int i, const int lado)
+{
+   if(!InpPauseOn) return false;
+   const datetime r = PauseRef(g_lastLoss[0], g_lastLoss[1], InpPauseDir, lado);
+   return r > 0 && (double)(g_time[i] - r) / 60.0 < InpPauseMin;
 }
 
 // ============================ ordenes =========================================
@@ -1144,9 +1193,19 @@ void OnNewBar()
       return;
    }
 
-   if(PauseBlocks(i))
+   if(PauseBlocks(i, cr))
    {
       Print("Senal descartada: dentro del tiempo minimo (", DoubleToString(InpPauseMin, 0), " min) tras una operacion perdedora.");
+      return;
+   }
+   if(PauseWinBlocks(i, cr))
+   {
+      Print("Senal descartada: dentro del tiempo minimo (", DoubleToString(InpPauseWinMin, 0), " min) tras una operacion ganadora.");
+      return;
+   }
+   if(WinRetraceBlocks(i, cr, (cr == 1) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID)))
+   {
+      Print("Senal descartada: el precio todavia no retrocedio ", DoubleToString(InpPauseWinRetro, 1), "% del recorrido de la ultima ganadora.");
       return;
    }
    if(!conPullback)
@@ -1219,7 +1278,17 @@ int OnInit()
    g_dayKey = DayKeyCET(TimeGMT());
    g_peak = GlobalVariableCheck(g_gv + "PEAK") ? GlobalVariableGet(g_gv + "PEAK") : MathMax(g_initBal, AccountInfoDouble(ACCOUNT_BALANCE));
    GlobalVariableSet(g_gv + "PEAK", g_peak);
-   g_lastLossBar = GlobalVariableCheck(g_gv + "LASTLOSS") ? (datetime)GlobalVariableGet(g_gv + "LASTLOSS") : 0;
+   g_lastLoss[0] = GlobalVariableCheck(g_gv + "LASTLOSS_B") ? (datetime)GlobalVariableGet(g_gv + "LASTLOSS_B") : 0;
+   g_lastLoss[1] = GlobalVariableCheck(g_gv + "LASTLOSS_S") ? (datetime)GlobalVariableGet(g_gv + "LASTLOSS_S") : 0;
+   g_lastWin[0]  = GlobalVariableCheck(g_gv + "LASTWIN_B")  ? (datetime)GlobalVariableGet(g_gv + "LASTWIN_B")  : 0;
+   g_lastWin[1]  = GlobalVariableCheck(g_gv + "LASTWIN_S")  ? (datetime)GlobalVariableGet(g_gv + "LASTWIN_S")  : 0;
+   const string sfx[2] = {"_B", "_S"};
+   for(int q = 0; q < 2; q++)
+   {
+      g_winRef[q]  = GlobalVariableCheck(g_gv + "WINREF" + sfx[q])  ? GlobalVariableGet(g_gv + "WINREF" + sfx[q])  : 0.0;
+      g_winDist[q] = GlobalVariableCheck(g_gv + "WINDIST" + sfx[q]) ? GlobalVariableGet(g_gv + "WINDIST" + sfx[q]) : 0.0;
+      g_entryPx[q] = GlobalVariableCheck(g_gv + "ENTRYPX" + sfx[q]) ? GlobalVariableGet(g_gv + "ENTRYPX" + sfx[q]) : 0.0;
+   }
    if(GlobalVariableCheck(g_gv + "DAYKEY") && (int)GlobalVariableGet(g_gv + "DAYKEY") == g_dayKey)
       g_dayBal = GlobalVariableGet(g_gv + "DAYBAL");
    else
@@ -1372,6 +1441,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
 
    if(entrada == DEAL_ENTRY_IN)
    {
+      const int kIn = (tipo == DEAL_TYPE_BUY) ? 0 : 1;
+      g_entryPx[kIn] = precio;                        // para medir el recorrido de la ganadora cuando cierre
+      GlobalVariableSet(g_gv + "ENTRYPX" + ((kIn == 0) ? "_B" : "_S"), precio);
       double sl = 0.0, tp = 0.0;
       if(PositionSelectByTicket((ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID)))
       {
@@ -1394,13 +1466,27 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       else if(motivo == DEAL_REASON_CLIENT || motivo == DEAL_REASON_MOBILE || motivo == DEAL_REASON_WEB) que = "CIERRE MANUAL";
       const double res = HistoryDealGetDouble(trans.deal, DEAL_PROFIT) + HistoryDealGetDouble(trans.deal, DEAL_SWAP)
                          + HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
-      if(res < 0.0)                                  // operacion perdedora: arranca el tiempo minimo (si esta activo)
+      if(res != 0.0)                                 // operacion perdedora o ganadora: arranca el tiempo minimo que corresponda (si esta activo)
       {
          datetime b = (datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME);
          b -= (datetime)((long)b % PeriodSeconds());
          if(g_salidaSenal) b -= (datetime)PeriodSeconds();      // la salida por senal es de la vela que acaba de cerrar
-         g_lastLossBar = b;
-         GlobalVariableSet(g_gv + "LASTLOSS", (double)b);
+         const int ladoPos = (tipo == DEAL_TYPE_SELL) ? 0 : 1;   // el cierre de una compra es una venta: 0 = la operacion era una compra
+         const string suf = (ladoPos == 0) ? "_B" : "_S";
+         if(res < 0.0)
+         {
+            g_lastLoss[ladoPos] = b;
+            GlobalVariableSet(g_gv + "LASTLOSS" + suf, (double)b);
+         }
+         else
+         {
+            g_lastWin[ladoPos] = b;
+            GlobalVariableSet(g_gv + "LASTWIN" + suf, (double)b);
+            g_winRef[ladoPos]  = precio;                // cierre y recorrido de la ganadora (para el retroceso)
+            g_winDist[ladoPos] = MathAbs(precio - g_entryPx[ladoPos]);
+            GlobalVariableSet(g_gv + "WINREF" + suf, g_winRef[ladoPos]);
+            GlobalVariableSet(g_gv + "WINDIST" + suf, g_winDist[ladoPos]);
+         }
       }
       g_salidaSenal = false;
       Avisar(que + ": " + string(tipo == DEAL_TYPE_SELL ? "compra" : "venta") + " cerrada a " + DoubleToString(precio, dig)

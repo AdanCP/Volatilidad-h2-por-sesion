@@ -26,6 +26,7 @@ import config_io as cio
 import exportar_ia as xia
 import generar_bot as gb
 import metrics as met
+import retiros as ret
 import ui_estilo as vis
 import veredicto as vd
 import ui_helpers as ui
@@ -202,6 +203,18 @@ def _cargar_cfg(clave_up):
 st.markdown(vis.css(), unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ datos
+_SENT = {"Ambos": "ambos", "Mismo sentido": "mismo", "Sentido contrario": "contrario"}
+_AYUDA_SENT = ("A qué señales frena la pausa, según el sentido de la operación que cerró. Ambos: a todas (compras y ventas). "
+               "Mismo sentido: solo a las del mismo lado (si cerró una compra, espera antes de otra compra). Sentido contrario: "
+               "solo a las del lado opuesto (si cerró una compra, espera antes de una venta). Cada operación cerrada arranca su "
+               "propio reloj.")
+
+
+def _sep_filtro():
+    """Línea divisoria entre filtros del menú 6 (solo estilo)."""
+    st.markdown('<div class="sep-filtro"></div>', unsafe_allow_html=True)
+
+
 with st.sidebar:
     # La fuente es la base de todo: va fuera de los menús, como un título, debajo del modo oscuro.
     st.markdown('<div class="fte">Fuente de datos</div>', unsafe_allow_html=True)
@@ -458,10 +471,34 @@ with st.sidebar:
                                 help="Si el riesgo del SL de una operación supera este porcentaje, la operación se saltea. "
                                      "Los lotes siguen siendo fijos.")
         riesgo_pct = _W(st).number_input("Máximo por operación (%)", 0.05, 100.0, 1.0, 0.25, disabled=not riesgo_on)
-        pausa_on = _W(st).checkbox("Tiempo mínimo tras una pérdida (minutos)",
+        pausa_on = _W(st).checkbox("Pausa para volver a operar tras una pérdida", key=cio.slug("Tiempo mínimo tras una pérdida (minutos)"),
                                help="Después de una operación que cierra en pérdida, las señales que caen dentro de este "
                                     "tiempo se descartan.")
         pausa_min = _W(st).number_input("Minutos sin operar tras una pérdida", 0.0, 100_000.0, 60.0, 5.0, disabled=not pausa_on)
+        pausa_sent = _SENT[_W(st).selectbox("Sentido de la pausa tras una pérdida", list(_SENT), disabled=not pausa_on, help=_AYUDA_SENT)]
+        pausa_gan_on = _W(st).checkbox("Pausa para volver a operar tras una ganancia", key=cio.slug("Tiempo mínimo tras una ganancia (minutos)"),
+                                   help="Después de una operación que cierra en ganancia, las señales que caen dentro de este "
+                                        "tiempo se descartan, no se posponen. Podés sumar una condición de precio (abajo).")
+        pausa_gan_min = _W(st).number_input("Minutos sin operar tras una ganancia", 0.0, 100_000.0, 60.0, 5.0, disabled=not pausa_gan_on)
+        pausa_gan_sent = _SENT[_W(st).selectbox("Sentido de la pausa tras una ganancia", list(_SENT), disabled=not pausa_gan_on, help=_AYUDA_SENT)]
+        retro_on = _W(st).checkbox("Retroceso de precio para volver a operar tras una ganancia",
+                                   help="Independiente de la pausa por minutos: se pueden usar juntas (se exigen las dos) o cada una por separado.")
+        pausa_gan_retro = _W(st).number_input("Retroceso para volver a operar tras una ganancia (%)", 0.1, 1000.0, 50.0, 5.0, disabled=not retro_on,
+                                          help="En el MISMO sentido solo se vuelve a operar cuando el precio "
+                                               "retrocede este % del recorrido de la ganancia (de la entrada al cierre), medido desde el cierre. "
+                                               "Ej.: compra a 4000, TP 4050, 50% → la próxima compra solo con precio ≤ 4025. En una venta es al revés. "
+                                               "Si también está activa la pausa por minutos, se exigen las dos cosas.")
+        _VENCE = {"Nunca": "nunca", "Al terminar el día": "dia", "Después de N horas": "horas"}
+        pausa_gan_vence = _VENCE[_W(st).selectbox("Vencimiento del retroceso", list(_VENCE), disabled=not retro_on,
+                                                  help="Hasta cuándo rige la condición de precio. Pasado ese momento se vuelve a operar sin exigir el retroceso.")]
+        pausa_gan_vence_h = _W(st).number_input("Horas de vigencia del retroceso", 0.5, 10_000.0, 24.0, 1.0,
+                                                disabled=not (retro_on and pausa_gan_vence == "horas"))
+        retiro_on = _W(st).checkbox("Retirar al llegar al objetivo",
+                                help="La cuenta retira TODA la ganancia del ciclo cuando llega al objetivo y el balance vuelve al capital "
+                                     "inicial. «Cuenta quemada» pasa a contar los retiros: sin el colchón de lo ganado, una mala racha "
+                                     "puede quemarla. El piso trailing se mantiene en el máximo anterior y el retiro no cuenta como "
+                                     "pérdida del día. Solo el backtest: el bot opera con el balance real y los retiros los hacés vos.")
+        retiro_pct = _W(st).number_input("Objetivo por retiro (% del capital inicial)", 0.5, 100.0, 5.0, 0.5, disabled=not retiro_on)
         offset_dia = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="offset_dia")
         st.caption("Sirve para cortar el día a medianoche de Europa Central (hora CE(S)T), como FTMO. Medilo con el "
                    "mercado abierto; es el mismo dato del filtro de sesión.")
@@ -480,6 +517,7 @@ with st.sidebar:
             sma_pend = _W(st).number_input("Pendiente a favor: N velas (0 = sin)", 0, 500, 0)
         else:
             sma_per, sma_dist, sma_pend = 200, 0.0, 0
+        _sep_filtro()
         vwap_on = _W(st).checkbox("Filtro VWAP (diario)", key="f_vwap")
         if vwap_on:
             vwap_dist = _W(st).number_input("Distancia mínima al VWAP (múltiplos de ATR, 0 = sin)", 0.0, value=0.5, step=0.1, key="f_vwap_dist",
@@ -491,6 +529,7 @@ with st.sidebar:
                        "Largos solo con el cierre sobre el VWAP; cortos solo debajo. Necesita velas menores a D1.")
         else:
             vwap_dist, vwap_min = 0.5, 30
+        _sep_filtro()
         adx_on = _W(st).checkbox("Filtro ADX")
         if adx_on:
             adx_per = _W(st).number_input("Período ADX", 2, 100, 14)
@@ -499,6 +538,7 @@ with st.sidebar:
             adx_cre = _W(st).number_input("ADX creciente: N velas (0 = sin)", 0, 200, 0)
         else:
             adx_per, adx_min, adx_max, adx_cre = 14, 20.0, 0.0, 0
+        _sep_filtro()
         rango_on = _W(st).checkbox("Filtro de rango (ratio de eficiencia)", key="f_rango",
                                help="Mide cuánto avanzó el precio en las últimas N velas respecto de todo lo que se movió: 1 = tendencia "
                                     "limpia, 0 = va y viene sin avanzar (rango). Si el ratio es menor al mínimo, la señal no se opera.")
@@ -509,6 +549,7 @@ with st.sidebar:
                        "Se parece al ADX: probá uno u otro con la ablación antes de usar los dos.")
         else:
             rango_vent, rango_min = 20, 0.30
+        _sep_filtro()
         atr_on = _W(st).checkbox("Filtro ATR", key="f_atr")
         if atr_on:
             atr_min = _W(st).number_input("ATR mínimo (% del precio, 0 = sin)", 0.0, value=0.0, step=0.01, format="%.3f")
@@ -522,6 +563,7 @@ with st.sidebar:
                 rel_n, rel_min, rel_max = 0, 0.0, 0.0
         else:
             atr_min = atr_max = rel_n = rel_min = rel_max = 0
+        _sep_filtro()
         ses_on = _W(st).checkbox("Filtro de sesión y horario", key="filtro_de_sesion",
                              help="Sin marcar, el bot opera 24/5: toma cruces a cualquier hora en que el mercado esté "
                                   "abierto, sin filtro y sin necesitar el desfase del servidor. Marcado, solo toma cruces dentro de las "
@@ -654,7 +696,10 @@ def construir_config(simbolo: str = None) -> eng.Config:
         perd_dia_pct=float(perd_dia), perd_dia_modo=modo_dia, perd_tot_pct=float(perd_tot), perd_tot_modo=modo_tot,
         colchon_pct=float(colchon), proteger_sl=bool(proteger),
         riesgo_op_activo=bool(riesgo_on), riesgo_op_pct=float(riesgo_pct),
-        pausa_activa=bool(pausa_on), pausa_min=float(pausa_min))
+        pausa_activa=bool(pausa_on), pausa_min=float(pausa_min), pausa_sentido=pausa_sent,
+        pausa_gan_activa=bool(pausa_gan_on), pausa_gan_min=float(pausa_gan_min), pausa_gan_sentido=pausa_gan_sent,
+        pausa_gan_retroceso_activo=bool(retro_on), pausa_gan_retroceso_pct=float(pausa_gan_retro), pausa_gan_vence=pausa_gan_vence, pausa_gan_vence_h=float(pausa_gan_vence_h),
+        retiro_activo=bool(retiro_on), retiro_pct=float(retiro_pct))
 
 
 # ------------------------------------------------------------------ cuerpo
@@ -1011,11 +1056,14 @@ if cfg_usada.reglas_activas and r.get("cuenta"):
     _cu = r["cuenta"]
     _cap_u = float(cfg_usada.capital)
     _dias_tot = int(len(np.unique(r["P"].dia))) if r["P"].dia is not None else 0
-    _salt = (_cu["saltadas_dia"] + _cu["saltadas_proteccion"] + _cu["saltadas_riesgo"] + _cu["saltadas_pausa"])
+    _salt = (_cu["saltadas_dia"] + _cu["saltadas_proteccion"] + _cu["saltadas_riesgo"] + _cu["saltadas_pausa"]
+             + _cu.get("saltadas_pausa_gan", 0) + _cu.get("saltadas_retroceso", 0))
     if _cu["quemada"]:
         _gmax = float(_cu.get("balance_max", _cap_u)) - _cap_u
+        _ret_q = (f"Antes de quemarse retiraste {vis.n(_cu['retirado'], 0)} US$ en {len(_cu['retiros'])} "
+                  f"retiro{'s' if len(_cu['retiros']) != 1 else ''}. " if _cu.get("retiros") else "")
         st.error(f"Con estas reglas la cuenta se habría quemado el {str(r['P'].indice[int(_cu['quemada_en'])])[:10]}: "
-                 "el resultado termina ahí y el resto del período no se opera. "
+                 "el resultado termina ahí y el resto del período no se opera. " + _ret_q
                  + (f"Antes de quemarse llegó a ganar como máximo {vis.n(_gmax, 0)} US$ ({vis.n(100 * _gmax / _cap_u, 1)} % del capital)."
                     if _gmax > 0 else "Antes de quemarse nunca estuvo por encima del capital inicial."))
     st.write("")
@@ -1027,14 +1075,21 @@ if cfg_usada.reglas_activas and r.get("cuenta"):
     with q2:
         html(vis.kpi("Señales salteadas", vis.n(_salt, 0),
                      f"{_cu['saltadas_dia']} día bloqueado · {_cu['saltadas_proteccion']} protección · "
-                     f"{_cu['saltadas_riesgo']} riesgo · {_cu['saltadas_pausa']} pausa", vis.VIOLETA, 140))
+                     f"{_cu['saltadas_riesgo']} riesgo · {_cu['saltadas_pausa']} pausa tras pérdida · "
+                     f"{_cu.get('saltadas_pausa_gan', 0)} pausa tras ganancia, {_cu.get('saltadas_retroceso', 0)} sin retroceso", vis.VIOLETA, 140))
     with q3:
-        html(vis.kpi("Cuenta quemada", "Sí" if _cu["quemada"] else "No",
-                     ((f"llegó a +{vis.n(max(float(_cu.get('balance_max', _cap_u)) - _cap_u, 0), 0)} US$ antes de quemarse"
-                       + (f" · {_cu['forzadas']} cierres forzados" if _cu["forzadas"] else ""))
-                      if _cu["quemada"] else
-                      (f"{_cu['forzadas']} cierres forzados por límite" if _cu["forzadas"] else "límite total no alcanzado")),
-                     vis.ROSA if _cu["quemada"] else vis.INDIGO, 140))
+        _ret_n, _ret_t = len(_cu.get("retiros") or []), float(_cu.get("retirado", 0.0))
+        if _cu["quemada"]:
+            _sub_q = (f"retiraste {vis.n(_ret_t, 0)} US$ en {_ret_n} retiros antes de quemarse" if _ret_n else
+                      f"llegó a +{vis.n(max(float(_cu.get('balance_max', _cap_u)) - _cap_u, 0), 0)} US$ antes de quemarse")
+            if _cu["forzadas"]:
+                _sub_q += f" · {_cu['forzadas']} cierres forzados"
+        elif _cu["forzadas"]:
+            _sub_q = f"{_cu['forzadas']} cierres forzados por límite"
+        else:
+            _sub_q = (f"con {_ret_n} retiros ({vis.n(_ret_t, 0)} US$) · límite total no alcanzado" if _ret_n
+                      else "límite total no alcanzado")
+        html(vis.kpi("Cuenta quemada", "Sí" if _cu["quemada"] else "No", _sub_q, vis.ROSA if _cu["quemada"] else vis.INDIGO, 140))
     with q4:
         html(vis.kpi("Peor día", vis.n(_cu["peor_dia_usd"], 0, True) + " US$",
                      f"{vis.n(100 * _cu['peor_dia_usd'] / _cap_u, 1, True)} % del capital · balance mínimo "
@@ -1047,11 +1102,28 @@ if len(res):
     g1, g2 = st.columns([2, 1])
     acumulado = res["R"].cumsum().tolist()
     pos_oos = int((res["i"] < r["corte"]).sum())
+    _fe = pd.to_datetime(res["fecha_entrada"])
+    _t1 = r["P"].indice[-1]
+    _den = (_t1 - _fe.iloc[0]).total_seconds() or 1.0
+    _xs = [d_ / _den for d_ in (_fe - _fe.iloc[0]).dt.total_seconds()]
+    _x_oos = None
+    try:
+        pdin_corte = r["P"].indice[min(int(r["corte"]), len(r["P"].indice) - 1)]
+        _x_oos = (pdin_corte - _fe.iloc[0]).total_seconds() / _den
+    except Exception:
+        pdin_corte = None
     with g1:
         tarjeta_html("Curva de equity (R)",
                      vis.curva_equity(acumulado, str(res["fecha_entrada"].iloc[0])[:10],
-                                      str(res["fecha_entrada"].iloc[-1])[:10], pos_oos),
-                     "La zona rosada es el out-of-sample: lo que el modelo no vio al ajustarse.", "acumulado")
+                                      str(_t1)[:10], pos_oos, xs=_xs, x_oos=_x_oos),
+                     "La zona rosada es el out-of-sample: lo que el modelo no vio al ajustarse. "
+                     + (f"Empieza el {str(pdin_corte)[:10]}: {len(res) - pos_oos} de {len(res)} operaciones."
+                        if pdin_corte is not None else "")
+                     + (f" <b>La cuenta dejó de operar el {str(res['fecha_entrada'].iloc[-1])[:10]}, antes de ese punto, y por eso no se marca la zona.</b> "
+                        "Con las reglas de cuenta (sobre todo con retiros: el balance vuelve al capital pero el piso trailing queda arriba) "
+                        "el margen puede quedar tan chico que el SL ya no entra y se saltean todas las señales. "
+                        "El out-of-sample se simula aparte con una cuenta nueva, por eso el medidor sí tiene datos."
+                        if pos_oos >= len(res) else ""), "acumulado")
     with g2:
         html(vis.tarjeta("Mejor que el azar (out-of-sample)",
                          vis.medidor(to["mejor_que_%azar"], "percentil frente a entradas al azar",
@@ -1178,8 +1250,71 @@ if len(res):
     st.caption("El win rate es sobre las operaciones resueltas (TP o SL). La duración va desde la entrada hasta la vela en que se "
                "cerró, contada en velas (la vela de salida cuenta entera) y pasada a tiempo con la temporalidad; no incluye fines de semana.")
 
-# ------------------------------------------------------------- objetivo y retiros
-if len(res) and dinero:
+# ------------------------------------------------------------- retiros de la cuenta (simulados) u objetivo y retiros (teorico)
+_retiro_sim = bool(cfg_usada.reglas_activas and cfg_usada.retiro_activo and r.get("cuenta"))
+if _retiro_sim:
+    st.write("")
+    html(vis.titulo_seccion("Retiros de la cuenta", "Retirando toda la ganancia al llegar al objetivo: cuántos retiros se pudieron hacer y si la cuenta aguantó"))
+    _cu_r, _cap_r = r["cuenta"], float(cfg_usada.capital)
+    _rt = ret.resumen(_cu_r, r["P"].indice, _cap_r)
+    _meta_r = f"+{vis.n(cfg_usada.retiro_pct, 1)}% (US$ {vis.n(_cap_r * cfg_usada.retiro_pct / 100, 0)})"
+    t1, t2, t3, t4 = st.columns(4)
+    with t1:
+        html(vis.kpi("Retiros logrados", str(_rt["n"]),
+                     f"cada vez que suma {_meta_r} · retirado en total US$ {vis.n(_rt['total'], 0)}", vis.VIOLETA, 165))
+    with t2:
+        if _rt["quemada"]:
+            html(vis.kpi("Tiempo hasta quemarse", met.fmt_duracion(_rt["hasta_quemarse_min"]),
+                         f"del {_rt['inicio']:%d/%m/%Y} al {_rt['quemada_ts']:%d/%m/%Y} · {_rt['dias_operados']} días con operaciones · "
+                         f"{met.fmt_duracion(_rt['desde_ultimo_min'])} desde el último retiro", vis.ROSA, 165))
+        else:
+            html(vis.kpi("Tiempo hasta quemarse", "No se quemó", "la cuenta llegó al final del período", vis.INDIGO, 165))
+    with t3:
+        if _rt["n"]:
+            html(vis.kpi("Tiempo medio entre retiros", met.fmt_duracion(_rt["medio"]),
+                         f"mediana {met.fmt_duracion(_rt['mediana'])} · mín {met.fmt_duracion(_rt['minimo'])} · "
+                         f"máx {met.fmt_duracion(_rt['maximo'])}", vis.AZUL, 165))
+        else:
+            html(vis.kpi("Tiempo medio entre retiros", "–", "todavía no hubo ningún retiro", vis.AZUL, 165))
+    with t4:
+        html(vis.kpi("Ciclo en curso", f"{vis.n(100 * _rt['ciclo_avance'] / _cap_r, 1, True)}%",
+                     f"US$ {vis.n(_rt['ciclo_avance'], 0, True)} sobre el capital inicial al cierre del período"
+                     + (" (la cuenta se quemó)" if _rt["quemada"] else ""), vis.tono(_rt["ciclo_avance"]), 165))
+    if _rt["n"]:
+        with st.expander("Ver cada retiro"):
+            _filas_r, _prev = [], _rt["inicio"]
+            for _k, (_f, _m, _t) in enumerate(zip(_rt["fechas"], _rt["montos"], _rt["tiempos_min"]), 1):
+                _filas_r.append([str(_k), _prev.strftime("%d/%m/%Y %H:%M"), _f.strftime("%d/%m/%Y %H:%M"), met.fmt_duracion(_t),
+                                 f"{vis.n(_m, 0, True)} ({vis.n(100 * _m / _cap_r, 1, True)}%)"])
+                _prev = _f
+            html(vis.tabla_html(["#", "Desde", "Hasta", "Tiempo", "Retirado (US$)"], _filas_r))
+    st.caption("Es la misma simulación de la cuenta: al llegar al objetivo se retira TODA la ganancia del ciclo y el balance vuelve al "
+               "capital inicial. El piso de pérdida total trailing se mantiene en el máximo anterior y el retiro no cuenta como "
+               "pérdida del día. No incluye plazos ni reparto de ganancias de la firma. Tiempo calendario (incluye fines de semana).")
+
+    # ---- monto ideal: repite la simulacion con distintos objetivos
+    st.write("")
+    html(vis.titulo_seccion("Monto ideal a retirar", "El objetivo por retiro que más retira en este historial, probando varios con las mismas reglas"))
+    _firma_b = (repr(cfg_usada), len(r["P"].indice), str(r["P"].indice[0]), str(r["P"].indice[-1]))
+    if st.button("Calcular el monto ideal", key="btn_barrido_retiro"):
+        with st.spinner("Probando distintos objetivos…"):
+            estado.barrido = {"firma": _firma_b, "datos": ret.barrido(r["P"], cfg_usada)}
+    _bar = estado.get("barrido")
+    if _bar and _bar["firma"] == _firma_b:
+        _ideal = _bar["datos"]["ideal"]
+        _filas_b = [[("★ " if f["pct"] == _ideal else "") + f"{vis.n(f['pct'], 1)} %", vis.n(f["usd"], 0), str(f["n"]),
+                     vis.n(f["total"], 0), "Sí" if f["quemada"] else "No",
+                     met.fmt_duracion(f["hasta_quemarse_min"]) if f["quemada"] else "–"] for f in _bar["datos"]["filas"]]
+        html(vis.tabla_html(["Objetivo", "US$ por retiro", "Retiros", "Total retirado (US$)", "¿Se quemó?", "Duró"], _filas_b))
+        _fi = next(f for f in _bar["datos"]["filas"] if f["pct"] == _ideal)
+        st.caption(f"★ El que más retira en este historial: {vis.n(_ideal, 1)} % (US$ {vis.n(_fi['usd'], 0)} por retiro), "
+                   f"{_fi['n']} retiros por US$ {vis.n(_fi['total'], 0)}" + (", pero la cuenta se quema." if _fi["quemada"] else ".")
+                   + " Es el mejor de ESTA secuencia de operaciones: con otro punto de arranque puede cambiar, así que tomalo como "
+                   "orientación y no como un valor exacto. Retirar chico y seguido cobra más veces pero te saca el colchón cada vez; "
+                   "retirar grande junta colchón pero tarda más.")
+    elif _bar:
+        st.info("Cambiaron las reglas o los datos desde el último cálculo: volvé a calcular el monto ideal.")
+if len(res) and dinero and not _retiro_sim:
     st.write("")
     html(vis.titulo_seccion("Objetivo y retiros", "Cuánto tarda en ganar un % del balance inicial y, si retiraras cada vez, en volver a ganarlo"))
     _cap = float(pdin.get("capital", 0.0))
@@ -1287,7 +1422,7 @@ if cfg_usada.reglas_activas and r.get("cuenta"):
     _cu2 = r["cuenta"]
     _ed, _et = cfg_usada.limites_efectivos()
     relato += (f"<br><br>Con las reglas de cuenta aplicadas (límite diario {vis.n(_ed, 1)} %, total {vis.n(_et, 1)} %): "
-               f"{_cu2['dias_bloqueados']} días bloqueados, {_cu2['saltadas_dia'] + _cu2['saltadas_proteccion'] + _cu2['saltadas_riesgo'] + _cu2['saltadas_pausa']} "
+               f"{_cu2['dias_bloqueados']} días bloqueados, {_cu2['saltadas_dia'] + _cu2['saltadas_proteccion'] + _cu2['saltadas_riesgo'] + _cu2['saltadas_pausa'] + _cu2.get('saltadas_pausa_gan', 0)} "
                f"señales salteadas y la cuenta " + ("<b>se habría quemado</b>." if _cu2["quemada"] else "no se quemó."))
 html(vis.titulo_seccion("Conclusión final", "Qué habría pasado, si vale la pena intentarla y con qué probabilidad"))
 html(vis.tarjeta("Qué habría pasado", f'<div style="font-size:.95rem;line-height:1.6;color:{vis.TEXTO}">{relato}</div>',

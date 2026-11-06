@@ -130,6 +130,10 @@ def informe(r: dict, cfg, simbolo: str, pdin: dict, meta: dict, veredicto: dict 
         cu2 = dict(cu)
         if cu2.get("quemada_en") is not None and cu2.get("quemada"):
             cu2["quemada_en_fecha"] = idx[int(cu2["quemada_en"])]
+        if cu2.get("retiros"):
+            cu2["retiros"] = [f"{idx[int(x['j'])]}: {x['monto']:.2f} US$" for x in cu2["retiros"]]
+        if getattr(cfg, "retiro_activo", False):
+            cu2["objetivo_por_retiro_%"] = cfg.retiro_pct
         cu2["limite_diario_efectivo_%"], cu2["limite_total_efectivo_%"] = lim_d, lim_t
         L += [_clave_valor(cu2), ""]
 

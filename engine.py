@@ -26,6 +26,9 @@ import indicators as ind
 import sessions as ses
 
 
+SENTIDOS_PAUSA = ("ambos", "mismo", "contrario")
+
+
 @dataclass
 class Config:
     # señal y gestion
@@ -100,6 +103,17 @@ class Config:
     riesgo_op_pct: float = 1.0              # riesgo maximo por operacion (% del capital); si lo supera, se saltea
     pausa_activa: bool = False
     pausa_min: float = 60.0                 # minutos sin operar tras una operacion perdedora; las señales dentro se descartan
+    pausa_sentido: str = "ambos"            # a que señales frena la pausa tras una perdida: "ambos" | "mismo" | "contrario" (sentido de la operacion cerrada)
+    pausa_gan_activa: bool = False
+    pausa_gan_min: float = 60.0             # minutos sin operar tras una operacion ganadora; las señales dentro se descartan
+    pausa_gan_sentido: str = "ambos"        # idem para la pausa tras una ganancia
+    pausa_gan_retroceso_activo: bool = False  # condicion de precio independiente de la pausa por minutos (pueden ir juntas o por separado)
+    pausa_gan_retroceso_pct: float = 50.0   # (solo si esta activo). >0: tras una ganancia, para volver a operar en el MISMO sentido el precio
+                                            # tiene que retroceder este % del recorrido de esa operacion (entrada -> cierre), medido desde el cierre
+    pausa_gan_vence: str = "nunca"          # hasta cuando rige la condicion de precio: "nunca" | "dia" (fin del dia CE(S)T) | "horas"
+    pausa_gan_vence_h: float = 24.0
+    retiro_activo: bool = False             # retirar toda la ganancia del ciclo al llegar al objetivo (solo con reglas de cuenta)
+    retiro_pct: float = 5.0                 # objetivo por retiro (% del capital inicial)
 
     def pb_efectivo(self) -> bool:
         """El pullback solo actua si esta activo y el porcentaje es mayor que 0 (0 % = entrada al cierre, como sin pullback)."""
@@ -118,12 +132,19 @@ class Config:
             raise ValueError("Los limites de perdida deben estar entre 0 y 100 %.")
         if self.colchon_pct < 0:
             raise ValueError("El colchon no puede ser negativo.")
+        if self.retiro_activo and not (0 < self.retiro_pct <= 100):
+            raise ValueError("El objetivo por retiro debe ser mayor que 0 y no pasar de 100 %.")
         for nombre, p in (("diario", self.perd_dia_pct), ("total", self.perd_tot_pct)):
             if 0 < p <= self.colchon_pct:
                 raise ValueError(f"El colchon ({self.colchon_pct:g} %) debe ser menor que el limite {nombre} ({p:g} %).")
         if self.riesgo_op_activo and not 0 < self.riesgo_op_pct <= 100:
             raise ValueError("El riesgo maximo por operacion debe estar entre 0 y 100 %.")
-        if self.pausa_activa and self.pausa_min < 0:
+        if self.pausa_sentido not in SENTIDOS_PAUSA or self.pausa_gan_sentido not in SENTIDOS_PAUSA:
+            raise ValueError("El sentido de la pausa debe ser 'ambos', 'mismo' o 'contrario'.")
+        if self.pausa_gan_retroceso_pct < 0 or self.pausa_gan_vence not in ("nunca", "dia", "horas") or \
+                (self.pausa_gan_vence == "horas" and self.pausa_gan_vence_h <= 0):
+            raise ValueError("El retroceso debe ser >= 0 y el vencimiento 'nunca', 'dia' u 'horas' (con horas > 0).")
+        if (self.pausa_activa and self.pausa_min < 0) or (self.pausa_gan_activa and self.pausa_gan_min < 0):
             raise ValueError("El tiempo minimo entre operaciones no puede ser negativo.")
         if self.reglas_activas and (self.capital <= 0 or self.usd_por_unidad <= 0):
             raise ValueError("Las reglas de cuenta necesitan el capital de la cuenta y el valor por unidad de precio "
@@ -379,7 +400,12 @@ def cuenta_de(P: Preparado, cfg: Config):
     return {"capital": float(cfg.capital), "vu": float(cfg.usd_por_unidad), "comision": float(cfg.comision_op_usd),
             "p_dia": p_dia, "modo_dia": cfg.perd_dia_modo, "p_tot": p_tot, "modo_tot": cfg.perd_tot_modo,
             "proteger": bool(cfg.proteger_sl), "riesgo_pct": float(cfg.riesgo_op_pct) if cfg.riesgo_op_activo else None,
-            "pausa_min": float(cfg.pausa_min) if cfg.pausa_activa else None, "dia": P.dia}
+            "pausa_min": float(cfg.pausa_min) if cfg.pausa_activa else None, "dia": P.dia,
+            "pausa_gan_min": float(cfg.pausa_gan_min) if cfg.pausa_gan_activa else None,
+            "pausa_sentido": cfg.pausa_sentido, "pausa_gan_sentido": cfg.pausa_gan_sentido,
+            "gan_retro_pct": float(cfg.pausa_gan_retroceso_pct) if (cfg.pausa_gan_retroceso_activo and cfg.pausa_gan_retroceso_pct > 0) else None,
+            "gan_vence": cfg.pausa_gan_vence, "gan_vence_h": float(cfg.pausa_gan_vence_h),
+            "retiro_usd": float(cfg.capital) * float(cfg.retiro_pct) / 100.0 if (cfg.retiro_activo and cfg.retiro_pct > 0) else None}
 
 
 def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None):
@@ -408,10 +434,41 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         cap, vu, comm = ct["capital"], ct["vu"], ct["comision"]
         dia = ct["dia"] if ct.get("dia") is not None else P.dia
         ts_min = P.indice.to_numpy().astype("datetime64[s]").astype("int64") / 60.0
-        cs = {"saltadas_dia": 0, "saltadas_pausa": 0, "saltadas_riesgo": 0, "saltadas_proteccion": 0, "forzadas": 0,
+        cs = {"saltadas_dia": 0, "saltadas_pausa": 0, "saltadas_pausa_gan": 0, "saltadas_retroceso": 0, "saltadas_riesgo": 0, "saltadas_proteccion": 0, "forzadas": 0,
               "dias_bloqueados": 0, "quemada": False, "quemada_en": None, "peor_dia_usd": 0.0,
-              "balance_final": cap, "balance_min": cap, "balance_max": cap}
-        S = {"bal": cap, "pico": cap, "dia": None, "bal_dia": cap, "bloq": None, "perd_j": None}
+              "balance_final": cap, "balance_min": cap, "balance_max": cap, "retiros": [], "retirado": 0.0}
+        S = {"bal": cap, "pico": cap, "dia": None, "bal_dia": cap, "bloq": None, "perd_j": {1: None, -1: None}, "gan_j": {1: None, -1: None}, "gan_ref": {1: None, -1: None}}
+
+    def frena(minutos, ultimos, sentido, lado, i):
+        """True si la señal `lado` de la vela i cae dentro del tiempo minimo. `ultimos` = ultima operacion cerrada de ese tipo
+        (perdedora o ganadora) por sentido; sentido: ambos = la mas reciente de las dos, mismo = la del mismo lado de la señal,
+        contrario = la del lado opuesto."""
+        if minutos is None:
+            return False
+        if sentido == "mismo":
+            j = ultimos[lado]
+        elif sentido == "contrario":
+            j = ultimos[-lado]
+        else:
+            vistos = [x for x in ultimos.values() if x is not None]
+            j = max(vistos) if vistos else None
+        return j is not None and ts_min[i] - ts_min[j] < minutos
+
+    def sin_retroceso(lado, i):
+        """True si la señal `lado` de la vela i NO cumple el retroceso exigido tras la ultima ganadora del MISMO sentido."""
+        pct = ct.get("gan_retro_pct")
+        if pct is None or S["gan_j"][lado] is None:
+            return False
+        j = S["gan_j"][lado]
+        venc = ct.get("gan_vence", "nunca")
+        if venc == "horas" and ts_min[i] - ts_min[j] >= ct.get("gan_vence_h", 24.0) * 60.0:
+            return False
+        if venc == "dia" and dia[i] != dia[j]:
+            return False
+        ref, recorrido = S["gan_ref"][lado]
+        px = c[i] + sp[i] if lado == 1 else c[i]                 # precio al que entraria la señal
+        nivel = ref - lado * pct / 100.0 * recorrido             # compra: por debajo del cierre; venta: por encima
+        return px > nivel if lado == 1 else px < nivel
 
     def rodar_dia(k):
         if S["dia"] != dia[k]:
@@ -439,7 +496,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         lim = max(margen, 0.0) / vu
         return "ok", (lim if lim < d else None)
 
-    def cerrar(r, d, j_out):
+    def cerrar(r, d, j_out, lado, entrada):
         """Aplica el resultado de la operacion a la cuenta y revisa los limites."""
         pnl = r * d * vu - comm
         rodar_dia(j_out)                 # si cruzo la medianoche, el dia nuevo parte del balance previo a este cierre
@@ -449,13 +506,24 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         cs["balance_min"] = min(cs["balance_min"], S["bal"])
         cs["balance_max"] = S["pico"]                    # si se quema, es lo maximo que llego a ganar antes de quemarse
         if pnl < 0:
-            S["perd_j"] = j_out
+            S["perd_j"][lado] = j_out
+        elif pnl > 0:
+            S["gan_j"][lado] = j_out
+            S["gan_ref"][lado] = (entrada + lado * r * d, abs(r) * d)       # (precio de cierre, recorrido entrada -> cierre)
         pd_, pt_ = pisos()
         if S["bal"] <= pt_ + 1e-9:
             cs["quemada"], cs["quemada_en"] = True, j_out
         elif S["bal"] <= pd_ + 1e-9 and S["bloq"] != dia[j_out]:
             S["bloq"] = dia[j_out]
             cs["dias_bloqueados"] += 1
+        if not cs["quemada"] and ct.get("retiro_usd") and S["bal"] - cap >= ct["retiro_usd"] - 1e-9:
+            # retiro: se saca TODA la ganancia del ciclo y el balance vuelve al capital inicial. El piso trailing se mantiene
+            # (S["pico"] no baja) y el retiro no cuenta como perdida del dia: se resta tambien del balance de inicio del dia.
+            w = S["bal"] - cap
+            S["bal"] = cap
+            S["bal_dia"] -= w
+            cs["retiros"].append({"j": int(j_out), "monto": float(w)})
+            cs["retirado"] += float(w)
 
     def recorrer(desde, lado, sl, tp, entrada=None, lim=None):
         for j in range(desde, n):
@@ -492,8 +560,14 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             if S["bloq"] == dia[i]:                     # dia bloqueado por el limite diario
                 cs["saltadas_dia"] += 1
                 continue
-            if ct["pausa_min"] is not None and S["perd_j"] is not None and ts_min[i] - ts_min[S["perd_j"]] < ct["pausa_min"]:
+            if frena(ct["pausa_min"], S["perd_j"], ct.get("pausa_sentido", "ambos"), lado, i):
                 cs["saltadas_pausa"] += 1
+                continue
+            if frena(ct.get("pausa_gan_min"), S["gan_j"], ct.get("pausa_gan_sentido", "ambos"), lado, i):
+                cs["saltadas_pausa_gan"] += 1
+                continue
+            if sin_retroceso(lado, i):
+                cs["saltadas_retroceso"] += 1
                 continue
         lim = None
         if pb is None:
@@ -589,7 +663,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             break
         libre = j_out + 1
         if ct:
-            cerrar(r, d, j_out)
+            cerrar(r, d, j_out, lado, entrada)
     cols = ["i", "señal", "lado", "entrada", "sl", "tp", "dist", "res", "amb", "salida", "R", "motivo"]
     out = pd.DataFrame(filas, columns=cols)
     out.attrs["pb"] = st

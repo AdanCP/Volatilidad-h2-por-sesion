@@ -144,7 +144,7 @@ def test_campo_numerico_del_area_principal():
     for t in ("claro", "oscuro"):
         ui.set_tema(t)
         c = ui.css()
-        assert '[data-testid="stMain"] [data-testid="stNumberInput"] button{background:linear-gradient(135deg,' in c
+        assert '[data-testid="stMain"] [data-testid="stNumberInput"] :is([data-testid="stNumberInputStepUp"],[data-testid="stNumberInputStepDown"]){background:linear-gradient(135deg,' in c
         assert "@ACC@" not in c and "@VIO@" not in c and "\n\n" not in c
         assert ui.TEMAS[t]["VIOLETA"] in c        # el borde usa el violeta del tema
     ui.set_tema("claro")

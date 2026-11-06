@@ -1191,3 +1191,171 @@ def test_sl_en_porcentaje_equivale_a_precio_cuando_coinciden():
     assert isinstance(P_pct.sl_off, np.ndarray) and np.allclose(P_pct.sl_off, off, equal_nan=True)
     P_px = eng.preparar(df, eng.Config(sl_modo="ema", sl_valor=2.0, sl_ema_ref="cruce"))
     assert P_px.sl_off == 2.0
+
+
+# ---------------------------------------------------------------- retiros dentro de la cuenta
+def _gana(P, idx):
+    P.h[idx + 1] = 200.0
+
+
+def _corre(P, señales, **k):
+    tr, _ = eng.simular(P, [(i, 1) for i in señales], 2.0, 0.0, None, "rr", _cuenta(**k))
+    return tr, tr.attrs["cuenta"]
+
+
+def test_retiro_saca_toda_la_ganancia_del_ciclo_y_no_cuenta_como_perdida_del_dia():
+    P = _P_cuenta()
+    for i in (0, 3, 6):
+        _gana(P, i)
+    tr, cs = _corre(P, (0, 3, 6), retiro_usd=300.0, p_dia=3.0)
+    assert [x["monto"] for x in cs["retiros"]] == [400.0] and abs(cs["retirado"] - 400.0) < 1e-9
+    assert cs["retiros"][0]["j"] == 4                       # sale en la vela de salida de la 2da ganadora
+    assert abs(cs["balance_final"] - 10200.0) < 1e-6        # tras el retiro arranco otro ciclo con la 3ra ganadora
+    assert cs["peor_dia_usd"] == 0.0 and cs["dias_bloqueados"] == 0 and not cs["quemada"]
+
+
+def test_sin_retiro_la_cuenta_acumula_y_con_retiro_se_quema_por_perder_el_colchon():
+    P = _P_cuenta()
+    for i in (0, 3):
+        _gana(P, i)
+    for i in (6, 9, 12, 15, 18, 21):
+        _pierde(P, i)
+    señales = (0, 3, 6, 9, 12, 15, 18, 21)
+    _, sin = _corre(P, señales, p_tot=5.0)                  # piso estatico 9500: 10400 - 600 = 9800, sobrevive
+    assert not sin["quemada"] and abs(sin["balance_final"] - 9800.0) < 1e-6
+    _, con = _corre(P, señales, p_tot=5.0, retiro_usd=300.0)    # retira 400 y queda en 10000: 6 perdidas lo llevan a 9400
+    assert con["quemada"] and con["retirado"] == 400.0 and len(con["retiros"]) == 1
+
+
+def test_piso_trailing_se_mantiene_despues_del_retiro():
+    P = _P_cuenta()
+    for i in (0, 3):
+        _gana(P, i)
+    for i in (6, 9, 12):
+        _pierde(P, i)
+    # pico 10400, piso 9880 (5 %): tras retirar el balance es 10000 y la 2da perdida (9800) ya lo toca
+    tr, cs = _corre(P, (0, 3, 6, 9, 12), p_tot=5.0, modo_tot="trailing", retiro_usd=300.0)
+    assert cs["quemada"] and len(tr) == 4 and cs["quemada_en"] == 10
+
+
+def test_config_pasa_el_retiro_a_la_cuenta_y_lo_valida():
+    cfg = eng.Config(reglas_activas=True, capital=10000.0, usd_por_unidad=10.0, retiro_activo=True, retiro_pct=3.0)
+    P = _P_cuenta()
+    assert abs(eng.cuenta_de(P, cfg)["retiro_usd"] - 300.0) < 1e-9
+    assert eng.cuenta_de(P, eng.Config(reglas_activas=True, capital=10000.0, usd_por_unidad=10.0))["retiro_usd"] is None
+    try:
+        eng.Config(reglas_activas=True, capital=10000.0, usd_por_unidad=10.0, retiro_activo=True, retiro_pct=0.0).validar()
+        assert False
+    except ValueError:
+        pass
+
+
+def test_pausa_tras_ganancia_descarta_las_señales_dentro_del_tiempo():
+    # velas de 5 min: la 1ra gana y sale en la vela 1; la señal en la vela 3 (10 min despues) cae dentro de 30 min y se descarta,
+    # la de la vela 12 (55 min despues) ya no
+    P = _P_cuenta(n=40)
+    for i in (0, 3, 12):
+        _gana(P, i)
+    tr, cs = _corre(P, (0, 3, 12), pausa_gan_min=30.0)
+    assert list(tr["señal"]) == [0, 12] and cs["saltadas_pausa_gan"] == 1 and cs["saltadas_pausa"] == 0
+    tr0, cs0 = _corre(P, (0, 3, 12))
+    assert len(tr0) == 3 and cs0["saltadas_pausa_gan"] == 0
+
+
+def test_pausa_tras_ganancia_no_frena_despues_de_una_perdida_y_config_la_valida():
+    P = _P_cuenta(n=40)
+    _pierde(P, 0)
+    _gana(P, 3)
+    tr, cs = _corre(P, (0, 3), pausa_gan_min=30.0)
+    assert len(tr) == 2 and cs["saltadas_pausa_gan"] == 0
+    cfg = eng.Config(reglas_activas=True, capital=10000.0, usd_por_unidad=10.0, pausa_gan_activa=True, pausa_gan_min=45.0)
+    assert eng.cuenta_de(_P_cuenta(), cfg)["pausa_gan_min"] == 45.0
+    try:
+        eng.Config(reglas_activas=True, capital=10000.0, usd_por_unidad=10.0, pausa_gan_activa=True, pausa_gan_min=-1.0).validar()
+        assert False
+    except ValueError:
+        pass
+
+
+# ---------------------------------------------------------------- sentido de las pausas tras ganancia / perdida
+def _corre_lados(P, señales, **k):
+    tr, _ = eng.simular(P, señales, 2.0, 0.0, None, "rr", _cuenta(**k))
+    return tr, tr.attrs["cuenta"]
+
+
+def test_pausa_ganancia_mismo_sentido_frena_solo_el_mismo_lado():
+    P = _P_cuenta(n=60)
+    _gana(P, 0)
+    # compra ganadora en la 0; a los 10 min una compra (frenada) y una venta (pasa)
+    tr, cs = _corre_lados(P, [(0, 1), (3, -1)], pausa_gan_min=30.0, pausa_gan_sentido="mismo")
+    assert list(tr["lado"]) == [1, -1] and cs["saltadas_pausa_gan"] == 0
+    tr, cs = _corre_lados(P, [(0, 1), (3, 1)], pausa_gan_min=30.0, pausa_gan_sentido="mismo")
+    assert list(tr["lado"]) == [1] and cs["saltadas_pausa_gan"] == 1
+
+
+def test_pausa_ganancia_sentido_contrario_frena_solo_el_lado_opuesto():
+    P = _P_cuenta(n=60)
+    _gana(P, 0)
+    tr, cs = _corre_lados(P, [(0, 1), (3, 1)], pausa_gan_min=30.0, pausa_gan_sentido="contrario")
+    assert list(tr["lado"]) == [1, 1] and cs["saltadas_pausa_gan"] == 0
+    tr, cs = _corre_lados(P, [(0, 1), (3, -1)], pausa_gan_min=30.0, pausa_gan_sentido="contrario")
+    assert list(tr["lado"]) == [1] and cs["saltadas_pausa_gan"] == 1
+
+
+def test_pausa_perdida_sentido_contrario_y_ambos():
+    P = _P_cuenta(n=60)
+    _pierde(P, 0)
+    # compra perdedora: con "contrario" frena una venta, deja pasar otra compra
+    tr, cs = _corre_lados(P, [(0, 1), (3, -1)], pausa_min=30.0, pausa_sentido="contrario")
+    assert len(tr) == 1 and cs["saltadas_pausa"] == 1
+    tr, cs = _corre_lados(P, [(0, 1), (3, 1)], pausa_min=30.0, pausa_sentido="contrario")
+    assert len(tr) == 2 and cs["saltadas_pausa"] == 0
+    for lado2 in (1, -1):                                    # "ambos" frena las dos, como antes
+        tr, cs = _corre_lados(P, [(0, 1), (3, lado2)], pausa_min=30.0)
+        assert len(tr) == 1 and cs["saltadas_pausa"] == 1
+
+
+def test_cada_operacion_arranca_su_propio_reloj_por_sentido():
+    P = _P_cuenta(n=80)
+    _gana(P, 0)                                              # compra ganadora (reloj de compras)
+    # una venta que tambien gana: SL arriba (101+...), TP abajo; la armamos con un minimo bajo
+    P.l[7] = 50.0
+    tr, cs = _corre_lados(P, [(0, 1), (6, -1), (9, 1)], pausa_gan_min=60.0, pausa_gan_sentido="mismo")
+    # la venta de la 6 pasa (no hay venta ganadora previa); la compra de la 9 sigue frenada por la compra ganadora de la 0
+    assert list(tr["lado"]) == [1, -1] and cs["saltadas_pausa_gan"] == 1
+
+
+def test_config_valida_el_sentido_de_la_pausa():
+    base = dict(reglas_activas=True, capital=10000.0, usd_por_unidad=10.0)
+    assert eng.cuenta_de(_P_cuenta(), eng.Config(**base, pausa_sentido="mismo", pausa_gan_sentido="contrario"))["pausa_sentido"] == "mismo"
+    try:
+        eng.Config(**base, pausa_sentido="otro").validar()
+        assert False
+    except ValueError:
+        pass
+
+
+def test_retroceso_tras_ganancia_exige_precio_y_vence():
+    # compra ganadora: entrada ~100, el helper arma TP; la señal siguiente solo pasa si el precio bajo del nivel de retroceso
+    base = dict(reglas_activas=True, capital=10000.0, usd_por_unidad=10.0)
+    cfg = eng.Config(**base, pausa_gan_retroceso_activo=True, pausa_gan_retroceso_pct=50.0)
+    ct = eng.cuenta_de(_P_cuenta(), cfg)
+    assert ct["gan_retro_pct"] == 50.0 and ct["gan_vence"] == "nunca"
+    assert eng.cuenta_de(_P_cuenta(), eng.Config(**base, pausa_gan_activa=True, pausa_gan_retroceso_pct=50.0))["gan_retro_pct"] is None   # retroceso apagado
+    for kw in (dict(pausa_gan_retroceso_pct=-1.0), dict(pausa_gan_vence="x"), dict(pausa_gan_vence="horas", pausa_gan_vence_h=0.0)):
+        try:
+            eng.Config(**base, pausa_gan_retroceso_activo=True, **kw).validar(); assert False
+        except ValueError:
+            pass
+    P = _P_cuenta(n=60)
+    _gana(P, 0)
+    _gana(P, 12)
+    tr, cs = _corre(P, (0, 12), gan_retro_pct=50.0)                  # cierre 120, recorrido 20: nivel 110; el precio (100) ya retrocedio
+    assert len(tr) == 2 and cs["saltadas_retroceso"] == 0
+    P.c[12] = 118.0                                                  # ahora el precio sigue arriba del nivel
+    tr, cs = _corre(P, (0, 12), gan_retro_pct=50.0)
+    assert len(tr) == 1 and cs["saltadas_retroceso"] == 1
+    tr, cs = _corre(P, (0, 12), gan_retro_pct=50.0, gan_vence="horas", gan_vence_h=0.5)
+    assert len(tr) == 2 and cs["saltadas_retroceso"] == 0            # 60 min despues ya vencio
+    tr, cs = _corre(P, (0, 12), gan_retro_pct=None)
+    assert len(tr) == 2 and cs["saltadas_retroceso"] == 0            # 0 = sin condicion
