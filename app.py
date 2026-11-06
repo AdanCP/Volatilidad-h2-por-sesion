@@ -6,7 +6,6 @@ Render: streamlit run app.py ...
 """
 import streamlit as st
 import streamlit.components.v1 as components
-git add 
 import ui_estilo
 
 st.set_page_config(page_title="ACPTester", page_icon="📈", layout="wide")

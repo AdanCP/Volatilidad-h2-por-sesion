@@ -54,6 +54,7 @@ Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los
 - **SMA.** Compra solo si el cierre está por encima de la SMA y venta solo si está por debajo.
   - *Distancia mínima*: pide que el cierre esté a por lo menos N × ATR de la SMA, para evitar cruces pegados a ella (0 = sin condición).
   - *Pendiente a favor*: la SMA tiene que estar subiendo (en compras) o bajando (en ventas) respecto de hace N velas.
+- **Filtro de tendencia mayor.** Un solo filtro (con su botón «⚙ Parámetros») que adentro tiene dos tendencias independientes, «Tendencia mayor 1» y «Tendencia mayor 2»: podés activar una sola o las dos (si están las dos se exigen las dos). Cada una tiene su **temporalidad** (M15, M30, H1, H4 o D1; tiene que ser mayor a la de las velas) y el **período de su SMA** (200 por defecto). Una compra se toma solo si el cierre de esa temporalidad está **sobre** su SMA y una venta solo si está **debajo**; con el cierre justo en la SMA no se opera. Se usa siempre la **última vela mayor ya cerrada** en ese momento, así que el backtest no mira el futuro y el bot hace lo mismo. Con velas M5 lo más útil suele ser H1 y H4. Ojo con el arranque: la SMA necesita ese número de velas mayores para existir (200 velas H4 son más de un mes), y hasta entonces las señales se descartan; si pasa en más del 30% del período, la app lo avisa. Entra en la ablación con la temporalidad y el período que elegiste.
 - **VWAP (diario).** Precio medio del día ponderado por volumen (precio típico = (máx + mín + cierre) / 3), reiniciado en cada día del servidor. Largos solo si el cierre está sobre el VWAP y cortos solo si está debajo: es un filtro de contexto, no una señal por sí solo. En forex, oro e índices el volumen es el de ticks (cuántas veces cambió el precio), no el volumen real. *Distancia mínima* (por defecto 0,5×ATR): exige que el precio esté al menos esa distancia del VWAP, para no operar en la zona de ruido pegada a él. *Minutos mínimos desde el inicio del día* (por defecto 30): al abrir, el VWAP es casi igual al precio y filtrar ahí es ruido. Ninguno de los dos valores es un estándar formal: son reglas prácticas habituales, y la ablación te dice si aportan. Necesita velas menores a D1; con datos de demo (volumen constante) es solo un promedio simple.
 - **ADX.** Mide la **fuerza** de la tendencia, no su dirección.
   - *Mínimo*: descarta los cruces con ADX bajo (por ejemplo menor a 20, mercado sin tendencia).
@@ -116,6 +117,8 @@ Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los
 - **Pruebas en la sesión.** Cuenta cuántas configuraciones evaluaste. Con muchas pruebas, un buen resultado puede ser casualidad.
 
 ## Cómo leer los resultados
+**Descargar resultados (PDF).** El botón de al lado de «Resultado de…» abre el cuadro de impresión del navegador con la pantalla de resultados lista (sin la barra lateral ni los parámetros, en horizontal). Elegí «Guardar como PDF» como impresora. Se imprime lo que está desplegado en ese momento: abrí antes los desplegables que quieras incluir (por ejemplo «Ver tabla completa de resultados»). Si querés los fondos y colores, dejá tildada la opción «Gráficos de fondo» de la impresión.
+
 - **Expectativa (R).** Promedio de resultado por operación, donde 1 R es lo que arriesgás. +0,3 R significa que, en promedio, ganás 0,3 veces tu riesgo por operación.
 - **% TP vs. equilibrio.** El anillo es el porcentaje de operaciones que llegaron al TP. La rayita es el mínimo necesario para no perder; si el anillo la pasa, la expectativa es positiva.
 - **Mejor que el azar.** Porcentaje de las simulaciones al azar que quedaron por debajo de tu resultado. Cerca de 50% no se distingue de entrar al azar. Un valor alto sugiere algo, pero no lo prueba.
@@ -148,6 +151,8 @@ Al final del resultado, la app arma tres cosas:
 ### Generar bot (barra lateral, debajo de los menús)
 
 El botón **Generar bot (.mq5)** descarga un Expert Advisor de MetaTrader 5 con los valores que tenés cargados: EMAs, dirección, SL y TP, lotes, filtros (SMA, VWAP, ADX, rango, ATR, sesión) y pullback. Solo arma texto, así que funciona también en la versión online y no necesita MT5.
+
+**Nombre del bot.** El campo «Nombre del bot», arriba del botón, define el nombre del archivo .mq5 y el comentario que llevan las órdenes en MT5 (hasta 18 caracteres). Acepta letras, números, guion y guion bajo; los espacios pasan a guion bajo. Vacío: nombre automático (por ejemplo `Bot_XAUUSD_M5.mq5`). No cambia cómo opera ni el magic number, así que un bot ya andando no pierde su historial por llamarse distinto.
 
 **Cómo usarlo:** copiá el archivo a `MQL5/Experts` (en MT5: Archivo → Abrir carpeta de datos), abrilo en MetaEditor y compilá con F7. Antes de operar, corrélo en el Strategy Tester y compará con la app; después probalo en demo.
 

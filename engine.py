@@ -59,6 +59,14 @@ class Config:
     sma_periodo: int = 200
     sma_dist_min_atr: float = 0.0   # 0 = sin condicion
     sma_pendiente_n: int = 0        # 0 = sin condicion
+    # filtros de tendencia mayor (dos independientes): compra solo si el cierre de la ultima vela YA CERRADA de esa temporalidad esta
+    # sobre su SMA, venta solo si esta debajo. Sin SMA todavia (arranque del historial) la señal se descarta.
+    tm1_activo: bool = False
+    tm1_tf: str = "H1"
+    tm1_periodo: int = 200
+    tm2_activo: bool = False
+    tm2_tf: str = "H4"
+    tm2_periodo: int = 200
     # filtro VWAP (diario: se reinicia cada dia del servidor; volumen de ticks)
     vwap_activo: bool = False
     vwap_dist_min_atr: float = 0.5  # el precio debe estar al menos a 0,5 ATR del VWAP (0 = sin condicion); regla practica habitual
@@ -159,6 +167,9 @@ class Config:
             raise ValueError("La EMA del pullback debe ser 'corta' o 'larga'.")
         if self.pullback_velas < 1:
             raise ValueError("La caducidad del pullback debe ser de al menos 1 vela.")
+        for k in ("tm1", "tm2"):
+            if getattr(self, k + "_tf") not in TF_MINUTOS or int(getattr(self, k + "_periodo")) < 2:
+                raise ValueError("La tendencia mayor necesita una temporalidad M15, M30, H1, H4 o D1 y una SMA de al menos 2 periodos.")
         if self.media_tipo not in ("ema", "sma"):
             raise ValueError("El tipo de media debe ser 'ema' o 'sma'.")
         if self.modo_senal not in ("cruce", "precio"):
@@ -192,7 +203,9 @@ class Config:
                              "(servidor_offset_horas). Medilo con el mercado abierto.")
 
 
-FILTROS_APAGADOS = dict(sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False)
+TF_MINUTOS = {"M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+
+FILTROS_APAGADOS = dict(tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False)
 
 
 @dataclass
@@ -216,6 +229,7 @@ class Preparado:
     diff: Optional[np.ndarray] = None       # lado de la media por vela: >0 arriba (alcista), <0 abajo; base de la salida por señal
     sl_ref: Optional[np.ndarray] = None     # media de referencia del SL (solo con sl_modo "ema"): el SL queda en sl_ref -/+ sl_off
     sl_off: object = 0.0                    # distancia entre la media y el SL, en unidades de precio (un numero, o una por vela si va en %)
+    tm_aviso: tuple = ()                    # avisos de los filtros de tendencia mayor (p. ej. historial corto para su SMA)
 
 
 def _off(P, i: int) -> float:
@@ -240,6 +254,24 @@ def _spread(df: pd.DataFrame, cfg: Config) -> np.ndarray:
         pos = sp[sp > 0]
         return np.where(sp > 0, sp, float(np.median(pos)) if len(pos) else 0.0)
     return sp
+
+
+def tendencia_mayor(df: pd.DataFrame, tf: str, periodo: int):
+    """Para cada vela de `df`: (sube, baja, sin_dato). Usa la ultima vela de la temporalidad `tf` que YA CERRO al cierre de esa vela
+    (sin mirar el futuro): sube = su cierre esta sobre su SMA(periodo), baja = debajo. Sin SMA todavia -> ninguna de las dos."""
+    base = pd.Series(df.index).diff().median()
+    minutos = TF_MINUTOS[tf]
+    if pd.isna(base) or pd.Timedelta(minutes=minutos) <= base:
+        raise ValueError(f"La tendencia mayor ({tf}) tiene que ser de una temporalidad mayor a la de las velas.")
+    cl = df["Close"].resample(f"{minutos}min").last().dropna()
+    sma = ind.sma(cl.to_numpy(float), int(periodo))
+    fin = (cl.index + pd.Timedelta(minutes=minutos)).to_numpy()
+    pos = np.searchsorted(fin, (df.index + base).to_numpy(), side="right") - 1
+    ok = pos >= 0
+    pos = np.where(ok, pos, 0)
+    cv, sv = cl.to_numpy(float)[pos], sma[pos]
+    hay = ok & np.isfinite(sv)
+    return hay & (cv > sv), hay & (cv < sv), ~hay
 
 
 def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
@@ -298,6 +330,15 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     sube, baja = (diff > 0) & (prev <= 0), (diff < 0) & (prev >= 0)
 
     sma = ind.sma(c, cfg.sma_periodo) if cfg.sma_activo else None
+    tm, tm_aviso = {}, []
+    for k in ("tm1", "tm2"):
+        if getattr(cfg, k + "_activo"):
+            tf_, per_ = getattr(cfg, k + "_tf"), int(getattr(cfg, k + "_periodo"))
+            sube_m, baja_m, sin_m = tendencia_mayor(df, tf_, per_)
+            tm[k] = (sube_m, baja_m)
+            if sin_m.mean() > 0.30:
+                tm_aviso.append(f"Tendencia mayor {tf_}: la SMA {per_} no existe en el {100 * sin_m.mean():.0f}% de las velas (necesita {per_} velas de {tf_} "
+                                "de historial). Esas señales se descartan: cargá un período más largo o usá una SMA más corta.")
     adx = ind.adx_wilder(h, l, c, cfg.adx_periodo)[0] if cfg.adx_activo else None
     er = ind.eficiencia(c, cfg.rango_ventana) if cfg.rango_activo else None
     atr_pct = atr / c * 100.0
@@ -362,6 +403,10 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
             motivo = "rango"
         elif cfg.atr_activo and not ok_atr(i):
             motivo = "atr"
+        elif "tm1" in tm and not (tm["tm1"][0][i] if lado == 1 else tm["tm1"][1][i]):
+            motivo = "tm1"
+        elif "tm2" in tm and not (tm["tm2"][0][i] if lado == 1 else tm["tm2"][1][i]):
+            motivo = "tm2"
         cruces.append((i, lado, motivo))
 
     sp = _spread(df, cfg)
@@ -369,7 +414,7 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     return Preparado(h, l, c, sp, atr, dist, df.index, cruces, 100 * float((raw == 0).mean()),
                      ema_c, ema_l, sube, baja, ok_ses if (cfg.pb_efectivo() and cfg.sesion_activo) else None,
                      claves_dia(df.index, cfg) if cfg.reglas_activas else None, diff,
-                     sl_ref, sl_off)
+                     sl_ref, sl_off, tuple(tm_aviso))
 
 
 def pb_de(cfg: Config):

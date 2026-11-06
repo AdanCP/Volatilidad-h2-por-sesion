@@ -31,7 +31,16 @@ def _sin_ascii(s: str) -> str:
     return s.encode("ascii", "ignore").decode()
 
 
-def nombre_archivo(simbolo: str, tf: str) -> str:
+def limpiar_nombre(nombre: str) -> str:
+    """Nombre elegido por el usuario, apto para archivo y para texto de MQL5: letras, numeros, guion y guion bajo (max. 40)."""
+    n = re.sub(r"\s+", "_", (nombre or "").strip())
+    return re.sub(r"[^A-Za-z0-9_-]+", "", n)[:40].strip("_-")
+
+
+def nombre_archivo(simbolo: str, tf: str, nombre: str = "") -> str:
+    elegido = limpiar_nombre(nombre)
+    if elegido:
+        return elegido + ".mq5"
     base = re.sub(r"[^A-Za-z0-9_]+", "", f"Bot_{simbolo}_{tf}").rstrip("_") or "Bot"
     return base + ".mq5"
 
@@ -76,7 +85,7 @@ def _senal_cab(cfg) -> str:
 
 def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float] = None,
                 veredicto: Optional[dict] = None, fecha: Optional[datetime] = None,
-                capital: float = 0.0, limite_pct: float = 10.0) -> str:
+                capital: float = 0.0, limite_pct: float = 10.0, nombre: str = "") -> str:
     """cfg: engine.Config tal como lo usa el backtester (SL en dolares llega como modo 'precio');
     sl_usd: monto en dolares del SL si el usuario lo cargo asi (el EA lo convierte a precio con el tick del broker)."""
     cfg.validar()
@@ -122,8 +131,10 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         cab.append(f"// Reglas de cuenta: diario {_f(g_dia, 1)} % ({'trailing' if cfg.perd_dia_modo == 'trailing' else 'estatico'}), "
                    f"total {_f(g_tot, 1)} % ({'estatico' if cfg.perd_tot_modo == 'estatico' else 'trailing'}), colchon {_f(cfg.colchon_pct, 1)} % "
                    "(ya restado) | corte del dia: medianoche de Europa Central")
+    if limpiar_nombre(nombre):
+        cab.append(f"// Nombre del bot: {limpiar_nombre(nombre)}")
     act = [n for n, on in (("SMA", cfg.sma_activo), ("VWAP", cfg.vwap_activo), ("ADX", cfg.adx_activo),
-                           ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo())) if on]
+                           ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("tendencia mayor 1", cfg.tm1_activo), ("tendencia mayor 2", cfg.tm2_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo())) if on]
     cab.append("// Filtros/opciones activos: " + (", ".join(act) if act else "ninguno"))
     if cfg.sesion_activo:
         _hor = {**_SES_LOCAL, **(cfg.horarios or {})}
@@ -145,6 +156,7 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "NOMBRE": f"Bot {_sin_ascii(simbolo)} {tf}".strip(),
         "CABECERA": "\n".join(cab),
         "MAGIC": str(_magic(cfg, simbolo)),
+        "COMENTARIO": limpiar_nombre(nombre)[:18] or "EMA bot",      # comentario de las ordenes en MT5 (maximo 31 caracteres)
         "SIMBOLO": _sin_ascii(simbolo).replace('"', ""),
         "TF": _TF.get(tf, "PERIOD_CURRENT"),
         "EMA_C": str(int(cfg.ema_corta)), "EMA_L": str(int(cfg.ema_larga)),
@@ -159,6 +171,8 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "ATR_PER": str(int(cfg.atr_periodo)), "LOTES": _f(lotes, 4),
         "PB_ON": _b(cfg.pb_efectivo()), "PB_PCT": _f(cfg.pullback_pct, 4), "PB_EMA": _PBEMA[cfg.pullback_ema],
         "PB_VELAS": str(int(cfg.pullback_velas)),
+        "TM1_ON": _b(cfg.tm1_activo), "TM1_TF": "PERIOD_" + cfg.tm1_tf, "TM1_PER": str(int(cfg.tm1_periodo)),
+        "TM2_ON": _b(cfg.tm2_activo), "TM2_TF": "PERIOD_" + cfg.tm2_tf, "TM2_PER": str(int(cfg.tm2_periodo)),
         "SMA_ON": _b(cfg.sma_activo), "SMA_PER": str(int(cfg.sma_periodo)),
         "SMA_DIST": _f(cfg.sma_dist_min_atr, 4), "SMA_PEND": str(int(cfg.sma_pendiente_n)),
         "VWAP_ON": _b(cfg.vwap_activo), "VWAP_DIST": _f(cfg.vwap_dist_min_atr, 4), "VWAP_MIN": _f(cfg.vwap_min_minutos, 2),
@@ -253,6 +267,12 @@ const ENUM_BOT_PBEMA  InpPBEma          = @@PB_EMA@@;     // EMA de referencia
 const int             InpPBBars         = @@PB_VELAS@@;   // Caducidad de la orden (velas)
 
 // ---------------------------- filtros ---------------------------------------
+const bool            InpTm1On          = @@TM1_ON@@;     // Tendencia mayor 1: compra solo con el cierre de esa temporalidad sobre su SMA, venta debajo
+const ENUM_TIMEFRAMES InpTm1Tf          = @@TM1_TF@@;     // ... temporalidad
+const int             InpTm1Per         = @@TM1_PER@@;    // ... periodo de la SMA
+const bool            InpTm2On          = @@TM2_ON@@;     // Tendencia mayor 2 (se exigen las dos si estan activas)
+const ENUM_TIMEFRAMES InpTm2Tf          = @@TM2_TF@@;
+const int             InpTm2Per         = @@TM2_PER@@;
 const bool            InpSmaOn          = @@SMA_ON@@;     // Filtro SMA
 const int             InpSmaPeriod      = @@SMA_PER@@;    // SMA: periodo
 const double          InpSmaDistAtr     = @@SMA_DIST@@;   // SMA: distancia minima al cierre (x ATR, 0 = sin)
@@ -326,6 +346,9 @@ const double          InpCommissionUsd  = @@COMISION@@;           // Comision po
 const double SENT = -1.0e300;          // "sin dato" (equivale a NaN en el backtester)
 
 datetime g_time[];
+double   g_tm1[], g_tm2[];                     // tendencia mayor de cada vela: +1 cierre sobre la SMA, -1 debajo, 0 sin dato
+datetime g_hT[];                               // velas de la temporalidad mayor (inicio), cierre y SMA
+double   g_hC[], g_hS[];
 double   g_h[], g_l[], g_c[], g_tv[];
 double   g_ef[], g_es[], g_atr[], g_sma[], g_adx[], g_er[], g_vwap[], g_vmin[], g_atrm[];
 int      g_m = 0;                      // velas CERRADAS disponibles (la ultima es la senal)
@@ -589,6 +612,48 @@ int MaxWarm()
    return w;
 }
 
+// Velas de la temporalidad mayor `tf`, en orden cronologico (la ultima, en formacion, no se llega a usar: ver BuildTrend).
+bool LoadTrendRates(const ENUM_TIMEFRAMES tf, const int per)
+{
+   MqlRates r[];
+   ArraySetAsSeries(r, false);
+   const int secB = PeriodSeconds();
+   const int secH = PeriodSeconds(tf);
+   const int cnt = (int)((double)InpHistBars * secB / secH) + per + 10;
+   const int n = CopyRates(_Symbol, tf, 0, cnt, r);
+   if(n < per + 5)
+   {
+      Print("Tendencia mayor: pocas velas ", TfName(tf), " (", n, "). Abri ese grafico y deja que MT5 descargue la historia.");
+      return false;
+   }
+   ArrayResize(g_hT, n);
+   ArrayResize(g_hC, n);
+   for(int t = 0; t < n; t++)
+   {
+      g_hT[t] = r[t].time;
+      g_hC[t] = r[t].close;
+   }
+   return true;
+}
+
+// Estado de tendencia mayor de cada vela base, sin mirar el futuro: se usa la ultima vela mayor que YA cerro al cierre de la vela base
+// (igual que el backtester). Sin SMA todavia o cierre igual a la SMA -> 0 (la señal se descarta).
+void BuildTrend(const int per, const int secBase, const int secTf, double &out[])
+{
+   const int hn = ArraySize(g_hT);
+   ArrayResize(out, g_m);
+   CalcSMA(g_hC, hn, per, g_hS);
+   int p = -1;
+   for(int t = 0; t < g_m; t++)
+   {
+      const datetime cierre = g_time[t] + secBase;
+      while(p + 1 < hn && g_hT[p + 1] + secTf <= cierre) p++;
+      out[t] = 0.0;
+      if(p >= 0 && V(g_hS[p]))
+         out[t] = (g_hC[p] > g_hS[p]) ? 1.0 : ((g_hC[p] < g_hS[p]) ? -1.0 : 0.0);
+   }
+}
+
 bool LoadData()
 {
    MqlRates r[];
@@ -637,6 +702,16 @@ bool LoadData()
    if(InpRangeOn) CalcEfficiency(InpRangeWindow, g_er);
    if(InpVwapOn) CalcVWAP(PeriodSeconds());
    if(InpAtrOn && InpAtrRelN > 0) CalcRollingMean(g_atr, g_m, InpAtrRelN, g_atrm);
+   if(InpTm1On)
+   {
+      if(!LoadTrendRates(InpTm1Tf, InpTm1Per)) return false;
+      BuildTrend(InpTm1Per, PeriodSeconds(), PeriodSeconds(InpTm1Tf), g_tm1);
+   }
+   if(InpTm2On)
+   {
+      if(!LoadTrendRates(InpTm2Tf, InpTm2Per)) return false;
+      BuildTrend(InpTm2Per, PeriodSeconds(), PeriodSeconds(InpTm2Tf), g_tm2);
+   }
    return true;
 }
 
@@ -706,7 +781,12 @@ bool OkAtr(const int i)
    return true;
 }
 
-// orden de los filtros = el del backtester: sesion, SMA, VWAP, ADX, rango, ATR
+bool OkTm(const double estado, const int side)
+{
+   return estado * side > 0.0;
+}
+
+// orden de los filtros = el del backtester: sesion, SMA, VWAP, ADX, rango, ATR, tendencia mayor 1 y 2
 bool PassFilters(const int i, const int side, const bool withSession)
 {
    if(InpSesOn && withSession && !InSession(g_time[i])) return false;
@@ -715,6 +795,8 @@ bool PassFilters(const int i, const int side, const bool withSession)
    if(InpAdxOn && !OkAdx(i)) return false;
    if(InpRangeOn && !OkRange(i)) return false;
    if(InpAtrOn && !OkAtr(i)) return false;
+   if(InpTm1On && !OkTm(g_tm1[i], side)) return false;
+   if(InpTm2On && !OkTm(g_tm2[i], side)) return false;
    return true;
 }
 
@@ -741,6 +823,10 @@ string FiltrosTxt(const int i, const int side, const bool withSession)
    if(InpRangeOn)
       r += Sep(r) + "Rango (eficiencia " + (V(g_er[i]) ? DoubleToString(g_er[i], 2) : "n/d") + ", min " + DoubleToString(InpRangeMin, 2) + ") "
            + (OkRange(i) ? "ok" : "RECHAZA");
+   if(InpTm1On)
+      r += Sep(r) + "Tendencia mayor " + TfName(InpTm1Tf) + " " + (OkTm(g_tm1[i], side) ? "ok" : "RECHAZA");
+   if(InpTm2On)
+      r += Sep(r) + "Tendencia mayor " + TfName(InpTm2Tf) + " " + (OkTm(g_tm2[i], side) ? "ok" : "RECHAZA");
    if(InpAtrOn)
       r += Sep(r) + "ATR " + (OkAtr(i) ? "ok" : "RECHAZA") + " (" + DoubleToString(g_atr[i] / g_c[i] * 100.0, 3) + " % del precio)";
    if(r == "") r = "sin filtros activos";
@@ -1017,7 +1103,7 @@ bool MarketEntry(const int side, const double d0, const double lvl = 0.0)
    rq.tp        = (InpExitSignal == 1) ? 0.0 : Px(price + side * d * InpRR);
    rq.deviation = InpDeviation;
    rq.magic     = InpMagic;
-   rq.comment   = "EMA bot";
+   rq.comment   = "@@COMENTARIO@@";
    rq.type_filling = FillingMarket();
    const bool ok = OrderSend(rq, rs);
    if(!ok || (rs.retcode != TRADE_RETCODE_DONE && rs.retcode != TRADE_RETCODE_PLACED))
@@ -1093,7 +1179,7 @@ void PlacePullback(const int i)
    rq.sl     = (lvl > 0.0) ? Px(lvl) : Px(price - g_pbSide * d);
    rq.tp     = (InpExitSignal == 1) ? 0.0 : Px(price + g_pbSide * d * InpRR);
    rq.magic  = InpMagic;
-   rq.comment = "EMA bot pullback";
+   rq.comment = "@@COMENTARIO@@ pullback";
    rq.type_filling = ORDER_FILLING_RETURN;
    rq.type_time = ORDER_TIME_GTC;
    if(!OrderSend(rq, rs) || (rs.retcode != TRADE_RETCODE_DONE && rs.retcode != TRADE_RETCODE_PLACED))

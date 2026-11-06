@@ -1359,3 +1359,47 @@ def test_retroceso_tras_ganancia_exige_precio_y_vence():
     assert len(tr) == 2 and cs["saltadas_retroceso"] == 0            # 60 min despues ya vencio
     tr, cs = _corre(P, (0, 12), gan_retro_pct=None)
     assert len(tr) == 2 and cs["saltadas_retroceso"] == 0            # 0 = sin condicion
+
+
+def _m5_para_tendencia(n=4000, semilla=7):
+    idx = pd.date_range("2024-03-04", periods=n, freq="5min")
+    c = 2000 + np.cumsum(np.random.default_rng(semilla).normal(0, 0.8, n))
+    return pd.DataFrame({"Open": c, "High": c + 0.5, "Low": c - 0.5, "Close": c, "Volume": 1, "Spread": 0}, index=idx)
+
+
+def test_tendencia_mayor_usa_la_ultima_vela_cerrada_y_no_mira_el_futuro():
+    df = _m5_para_tendencia()
+    sube, baja, sin = eng.tendencia_mayor(df, "H1", 20)
+    cl = df["Close"].resample("60min").last()
+    sma = cl.rolling(20).mean()
+    for i in (500, 1234, 3999):
+        cierre = df.index[i] + pd.Timedelta(minutes=5)
+        ok = [t for t in cl.index if t + pd.Timedelta(minutes=60) <= cierre]
+        t = ok[-1]                                               # ultima vela H1 que ya cerro al cierre de la vela i
+        assert sube[i] == bool(cl[t] > sma[t]) and baja[i] == bool(cl[t] < sma[t])
+    assert sin[:100].all() and not sin[-1]                       # al arranque no hay SMA todavia
+    # cambiar el futuro no altera lo ya calculado
+    df2 = df.copy()
+    df2.iloc[2000:, df2.columns.get_loc("Close")] += 500.0
+    s2, b2, n2 = eng.tendencia_mayor(df2, "H1", 20)
+    assert (s2[:1990] == sube[:1990]).all() and (b2[:1990] == baja[:1990]).all()
+
+
+def test_tendencia_mayor_filtra_por_sentido_y_valida():
+    df = _m5_para_tendencia(6000)
+    cfg0 = eng.Config()
+    P0 = eng.preparar(df, cfg0)
+    P1 = eng.preparar(df, eng.Config(tm1_activo=True, tm1_tf="H1", tm1_periodo=20))
+    sube, baja, _ = eng.tendencia_mayor(df, "H1", 20)
+    assert len(P1.cruces) == len(P0.cruces)
+    for i, lado, motivo in P1.cruces:
+        permitido = sube[i] if lado == 1 else baja[i]
+        assert (motivo is None) == bool(permitido) or motivo not in (None, "tm1")
+    assert any(m == "tm1" for _, _, m in P1.cruces)
+    P2 = eng.preparar(df, eng.Config(tm1_activo=True, tm1_tf="H1", tm1_periodo=20, tm2_activo=True, tm2_tf="H4", tm2_periodo=5))
+    assert sum(m is None for *_, m in P2.cruces) <= sum(m is None for *_, m in P1.cruces)     # dos filtros nunca dejan pasar mas
+    for cfg in (eng.Config(tm1_activo=True, tm1_tf="M5"), eng.Config(tm1_tf="W1"), eng.Config(tm2_periodo=1)):
+        with pytest.raises(ValueError):
+            eng.preparar(df, cfg)
+    P3 = eng.preparar(df.iloc[:600], eng.Config(tm2_activo=True, tm2_tf="H4", tm2_periodo=200))     # historial corto: avisa y descarta
+    assert P3.tm_aviso and all(m == "tm2" for *_, m in P3.cruces)

@@ -210,3 +210,12 @@ def test_anillo_acepta_alto_minimo():
     assert "min-height:284px" in v.anillo(20, "t", "s", 16.7, min_alto=284)
     assert "min-height" not in v.anillo(20, "t", "s", 16.7)
 
+
+
+def test_boton_pdf_de_resultados():
+    import pdf_pantalla as pp
+    h = pp.boton_html('Resultados "XAU" <1>', "#ff4fa3", "#8b5cf6")
+    assert "imprimirResultados" in h and pp.CLASE_MARCA in h and "window.print" in h.replace("P.print", "window.print")
+    assert "<1>" not in h.split("<script>")[1] and "\\u003c1>" in h                # el titulo va escapado dentro del script
+    assert "@media print" in pp.CSS_IMPRESION and "stSidebar" in pp.CSS_IMPRESION and "landscape" in pp.CSS_IMPRESION
+    assert pp.CLASE_MARCA in pp.marca_html()

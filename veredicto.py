@@ -171,6 +171,9 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         if cfg.atr_rel_n:
             x += f", relativo a {cfg.atr_rel_n} velas entre {n(cfg.atr_rel_min or 0, 1)} y {n(cfg.atr_rel_max or 0, 1)}"
         filtros.append(x)
+    for _k in ("tm1", "tm2"):
+        if getattr(cfg, _k + "_activo"):
+            filtros.append(f"tendencia mayor {getattr(cfg, _k + '_tf')} (cierre sobre/bajo su SMA {getattr(cfg, _k + '_periodo')})")
     if cfg.sesion_activo:
         from sessions import SESIONES_LOCAL as _SL
         _hh = lambda x: f"{int(x):02d}:{int(round((x % 1) * 60)):02d}"

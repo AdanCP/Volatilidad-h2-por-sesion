@@ -17,6 +17,7 @@ inline void TimeToStruct(datetime t, MqlDateTime&s){time_t tt=t;tm g;gmtime_r(&t
 inline datetime StructToTime(MqlDateTime&s){tm g{};g.tm_year=s.year-1900;g.tm_mon=s.mon-1;g.tm_mday=s.day;g.tm_hour=s.hour;g.tm_min=s.min;g.tm_sec=s.sec;return timegm(&g);}
 template<class T> void ArrayResize(std::vector<T>&a,int n){a.resize(n);}
 template<class T> int ArrayCopy(std::vector<T>&d,const std::vector<T>&s){d=s;return (int)s.size();}
+template<class T> int ArraySize(const std::vector<T>&a){return (int)a.size();}
 template<class T> void ArraySetAsSeries(std::vector<T>&,bool){}
 enum ENUM_TIMEFRAMES{PERIOD_CURRENT=0,PERIOD_M1=1,PERIOD_M5=5,PERIOD_M15=15,PERIOD_M30=30,PERIOD_H1=60,PERIOD_H4=240,PERIOD_D1=1440};
 struct MqlRates{datetime time;double open,high,low,close;long tick_volume;int spread;long real_volume;};
@@ -34,7 +35,7 @@ inline double SymbolInfoDouble(const std::string&,int){return 1;} inline long Sy
 inline double NormalizeDouble(double v,int){return v;}
 inline double AccountInfoDouble(int){return 100000;}
 inline bool GlobalVariableCheck(const std::string&){return false;} inline double GlobalVariableGet(const std::string&){return 0;} inline void GlobalVariableSet(const std::string&,double){}
-inline datetime iTime(const std::string&,int,int){return 0;} inline datetime TimeCurrent(){return 0;} static int g_psec=3600; inline int PeriodSeconds(){return g_psec;}
+inline datetime iTime(const std::string&,int,int){return 0;} inline datetime TimeCurrent(){return 0;} static int g_psec=3600; inline int PeriodSeconds(){return g_psec;} inline int PeriodSeconds(int tf){return tf*60;}
 inline bool CopyRates(...){return false;}
 inline void Print(...){}
 template<class A,class... R> void Print(A,R...){}

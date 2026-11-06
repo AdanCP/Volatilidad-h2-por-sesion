@@ -30,6 +30,8 @@ import retiros as ret
 import ui_estilo as vis
 import veredicto as vd
 import ui_helpers as ui
+import pdf_pantalla
+import streamlit.components.v1 as components
 import sessions as sesmod
 import ui_guardar as ug
 
@@ -237,7 +239,7 @@ def _acc_cab(clave, lista):
 
 def _acc_css(lista, activos):
     """Oculta los parámetros de los filtros que no son el abierto y limpia la marca de los que se desactivaron."""
-    for c in ("sma", "vwap", "adx", "rango", "atr", "ses"):
+    for c in ("sma", "vwap", "adx", "rango", "atr", "ses", "tm"):
         if c not in activos:
             st.session_state[f"_acc_prev_{c}"] = False
     ab = st.session_state.get(_FILTRO_ABIERTO)
@@ -466,6 +468,29 @@ with st.sidebar:
                 sma_pend = _W(st).number_input("Pendiente a favor: N velas (0 = sin)", 0, 500, 0)
         else:
             sma_per, sma_dist, sma_pend = 200, 0.0, 0
+        _sep_filtro()
+        tm_on = _W(st).checkbox("Filtro de tendencia mayor", key="f_tm",
+                                help="Opera solo a favor de la tendencia de una o dos temporalidades mayores: compras con el cierre de esa temporalidad sobre su SMA, "
+                                     "ventas con el cierre debajo. Se usa siempre la última vela mayor ya cerrada (no mira el futuro). Adentro elegís cuáles usar: "
+                                     "una sola o las dos (si están las dos, se exigen las dos).")
+        _TFS_TM = list(eng.TF_MINUTOS)
+        _tmv = {"tm1": (False, "H1", 200), "tm2": (False, "H4", 200)}
+        if tm_on:
+            _acc_activos.add("tm")
+            _acc_cab("tm", _acc_lista)
+            with st.container(key="acc_tm"):
+                for _k, _n, _tf0 in (("tm1", 1, "H1"), ("tm2", 2, "H4")):
+                    _on = _W(st).checkbox(f"Tendencia mayor {_n}", key=f"f_{_k}")
+                    _tf, _per = _tf0, 200
+                    if _on:
+                        _tf = _W(st).selectbox(f"Temporalidad de la tendencia mayor {_n}", _TFS_TM, index=_TFS_TM.index(_tf0),
+                                               help="Tiene que ser mayor a la de las velas con las que operás. Con M5, lo más útil suele ser H1 y H4.")
+                        _per = _W(st).number_input(f"Período de la SMA de la tendencia mayor {_n}", 2, 2000, 200,
+                                                   help="200 es el estándar. Cuidado con el arranque del historial: la SMA necesita ese número de velas mayores "
+                                                        "para existir (200 velas H4 son más de un mes) y hasta entonces no se opera.")
+                    _tmv[_k] = (bool(_on), _tf, int(_per))
+                if not any(v[0] for v in _tmv.values()):
+                    st.caption("Activá al menos una de las dos tendencias para que el filtro actúe.")
         _sep_filtro()
         vwap_on = _W(st).checkbox("Filtro VWAP (diario)", key="f_vwap")
         if vwap_on:
@@ -741,6 +766,8 @@ def construir_config(simbolo: str = None) -> eng.Config:
         pullback_activo=bool(pb_on), pullback_pct=float(pb_pct), pullback_ema=pb_ema, pullback_velas=int(pb_velas),
         direccion=direccion, spread=spread, spread_fijo=float(spread_fijo), costo_extra=float(costo_extra),
         vwap_activo=vwap_on, vwap_dist_min_atr=float(vwap_dist), vwap_min_minutos=float(vwap_min),
+        tm1_activo=_tmv["tm1"][0], tm1_tf=_tmv["tm1"][1], tm1_periodo=_tmv["tm1"][2],
+        tm2_activo=_tmv["tm2"][0], tm2_tf=_tmv["tm2"][1], tm2_periodo=_tmv["tm2"][2],
         sma_activo=sma_on, sma_periodo=int(sma_per), sma_dist_min_atr=float(sma_dist), sma_pendiente_n=int(sma_pend),
         adx_activo=adx_on, adx_periodo=int(adx_per), adx_min=float(adx_min),
         adx_max=float(adx_max) or None, adx_creciente_n=int(adx_cre),
@@ -895,6 +922,10 @@ with st.sidebar:
     try:
         _cfg_bot = construir_config()
         _tf_bot = _REGLA_TF.get(regla, "") if regla != "No" else (globals().get("tf") or "")
+        _nom_bot = _W(st).text_input("Nombre del bot", "", key="nombre_del_bot", max_chars=40,
+                                     placeholder=gb.nombre_archivo(activo, _tf_bot)[:-4],
+                                     help="Es el nombre del archivo .mq5 y el comentario de las órdenes en MT5 (hasta 18 caracteres). "
+                                          "Letras, números, guion y guion bajo. Vacío: se usa el nombre automático. No cambia cómo opera.")
         _vd_bot = None
         _g = estado.get("veredicto_bot")      # (config, veredicto, símbolo, lotes, temporalidad)
         if _g and _g[0] == _cfg_bot and _g[2] == activo and _g[3] == float(lotes) and _g[4] == _tf_bot:
@@ -908,10 +939,10 @@ with st.sidebar:
         else:
             _mq5 = gb.generar_mq5(_cfg_bot, activo, _tf_bot, float(lotes),
                                   float(sl_usd) if sl_modo == SL_USD else None, _vd_bot,
-                                  capital=float(capital), limite_pct=float(limite_pct))
+                                  capital=float(capital), limite_pct=float(limite_pct), nombre=_nom_bot)
             with st.container(key="bot_gen"):
                 st.download_button("⚙️ Generar bot (.mq5)", _mq5.encode("utf-8"),
-                                   file_name=gb.nombre_archivo(activo, _tf_bot), mime="text/plain",
+                                   file_name=gb.nombre_archivo(activo, _tf_bot, _nom_bot), mime="text/plain",
                                    use_container_width=True)
             st.caption("Veredicto del backtest: " + _vd_bot["titulo"] + ". El bot opera solo y con parámetros fijos: "
                        "se niega a arrancar si el símbolo, la temporalidad, el lote o el horario del servidor no coinciden. "
@@ -1070,8 +1101,13 @@ res = tr[tr["res"].isin(["TP", "SL"])] if len(tr) else tr
 dinero = None
 
 st.write("")
-html(vis.barra_superior(f"Resultado de {act_res}", f"Prueba n.º {r['prueba']} de esta sesión",
-                        [("In-sample", f"{int(ti['resueltas'])} op."), ("Out-of-sample", f"{int(to['resueltas'])} op.")]))
+st.markdown(pdf_pantalla.marca_html(), unsafe_allow_html=True)       # lo que está arriba de esta marca no sale en el PDF
+_c_tit, _c_pdf = st.columns([0.8, 0.2], vertical_alignment="center")
+with _c_tit:
+    html(vis.barra_superior(f"Resultado de {act_res}", f"Prueba n.º {r['prueba']} de esta sesión",
+                            [("In-sample", f"{int(ti['resueltas'])} op."), ("Out-of-sample", f"{int(to['resueltas'])} op.")]))
+with _c_pdf:
+    components.html(pdf_pantalla.boton_html(f"Resultados {act_res} - prueba {r['prueba']}", vis.ROSA, vis.VIOLETA), height=52)
 if act_res != activo:
     st.warning(f"Este resultado es de {act_res}; el símbolo seleccionado ahora es {activo}. "
                "Volvé a correr el backtest para actualizarlo.")
@@ -1221,7 +1257,7 @@ if len(res):
         else:
             _pasos += [("Operaciones tomadas", tt["resueltas"] + tt["abiertas"])]
         cuerpo = vis.embudo(_pasos + [("Llegaron a TP", tt["TP"])])
-        _nombres = {"sma": "SMA", "adx": "ADX", "rango": "Rango", "atr": "ATR", "sesion": "Sesión"}
+        _nombres = {"sma": "SMA", "adx": "ADX", "rango": "Rango", "atr": "ATR", "sesion": "Sesión", "tm1": "Tendencia mayor 1", "tm2": "Tendencia mayor 2"}
         _txt = []
         if r["descartes"]:
             _txt.append("Descartadas por filtro: " + " · ".join(f"{_nombres.get(k, k)} {int(v_)}" for k, v_ in r["descartes"].items()) + ".")

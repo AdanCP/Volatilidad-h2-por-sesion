@@ -91,7 +91,7 @@ def test_parametros_invalidos():
 def _a_cpp(t):
     t = re.sub(r"const double &(\w+)\[\]", r"const Arr &\1", t)
     t = re.sub(r"double &(\w+)\[\]", r"Arr &\1", t)
-    t = t.replace("datetime g_time[];", "ArrT g_time;")
+    t = t.replace("datetime g_time[];", "ArrT g_time;").replace("datetime g_hT[];", "ArrT g_hT;")
     t = re.sub(r"^double\s+(g_\w+\[\].*)$", lambda m: "Arr " + re.sub(r"\[\]", "", m.group(1)).replace("double ", ""),
                t, flags=re.M)
     t = re.sub(r"\bdouble ((?:\w+\[\](?:, )?)+);", lambda m: "Arr " + re.sub(r"\[\]", "", m.group(1)) + ";", t)
@@ -462,3 +462,43 @@ def test_retroceso_tras_ganancia_en_el_bot():
     assert prueba({}, 105.0) == "0 0 0"                    # ya retrocedio
     assert prueba({"pausa_gan_vence": "horas", "pausa_gan_vence_h": 24.0}, 118.0) == "1 0 0"   # a las 30 h ya vencio
     assert prueba({"pausa_gan_retroceso_activo": False}, 118.0) == "0 0 0"
+
+
+@pytest.mark.skipif(not HAY_GPP, reason="sin g++")
+@pytest.mark.parametrize("tf,per,sec_tf", [("H1", 20, 3600), ("H4", 5, 14400), ("D1", 3, 86400)])
+def test_tendencia_mayor_del_bot_coincide_con_python(tf, per, sec_tf):
+    idx = pd.date_range("2024-03-04", periods=6000, freq="5min")
+    idx = idx[idx.dayofweek < 5]
+    cl = 2000 + np.cumsum(np.random.default_rng(3).normal(0, 0.8, len(idx)))
+    df = pd.DataFrame({"Open": cl, "High": cl + 0.5, "Low": cl - 0.5, "Close": cl, "Volume": 1, "Spread": 0}, index=idx)
+    sube, baja, _ = eng.tendencia_mayor(df, tf, per)
+    esperado = sube.astype(float) - baja.astype(float)
+    hs = df["Close"].resample(f"{sec_tf // 60}min").last().dropna()          # velas mayores como las entrega MT5
+    t = _gen(_cfg(tm1_activo=True, tm1_tf=tf, tm1_periodo=per), "XAUUSD", "M5", 0.1)
+    main = '''int main(){int n,hn;std::cin>>n>>hn;g_m=n;g_time.resize(n);g_hT.resize(hn);g_hC.resize(hn);
+ for(int i=0;i<n;i++){long long tt;std::cin>>tt;g_time[i]=tt;}
+ for(int i=0;i<hn;i++){long long tt;std::cin>>tt>>g_hC[i];g_hT[i]=tt;}
+ BuildTrend(%d,300,%d,g_tm1);for(int i=0;i<n;i++)printf("%%g\\n",g_tm1[i]);}''' % (per, sec_tf)
+    with tempfile.TemporaryDirectory() as d:
+        exe = _compilar(t, main, d)
+        inp = f"{len(idx)} {len(hs)}\n" + "\n".join(str(int(x.timestamp())) for x in idx) + "\n" \
+              + "\n".join(f"{int(x.timestamp())} {float(v)!r}" for x, v in hs.items())
+        out = subprocess.run([exe], input=inp, capture_output=True, text=True).stdout.split()
+    assert np.array_equal(np.array([float(x) for x in out]), esperado)
+    assert (esperado != 0).any() and (esperado == 0).any()
+
+
+def test_nombre_elegido_del_bot():
+    assert gb.nombre_archivo("XAUUSD", "M5", "Mi bot ORO 1!") == "Mi_bot_ORO_1.mq5"
+    assert gb.nombre_archivo("XAUUSD", "M5", "  ") == "Bot_XAUUSD_M5.mq5" and gb.nombre_archivo("XAUUSD", "M5") == "Bot_XAUUSD_M5.mq5"
+    assert gb.nombre_archivo("XAUUSD", "M5", '";//x\\') == "x.mq5"
+    assert len(gb.limpiar_nombre("a" * 100)) == 40
+    t = _gen(_cfg(), "XAUUSD", "M5", 0.1, nombre="Oro Tendencia 1")
+    assert 'rq.comment   = "Oro_Tendencia_1"' in t and "// Nombre del bot: Oro_Tendencia_1" in t and "@@" not in t
+    assert 'rq.comment   = "EMA bot"' in _gen(_cfg(), "XAUUSD", "M5", 0.1)
+    assert _magic_igual(_gen(_cfg(), "XAUUSD", "M5", 0.1), t)             # el magic no depende del nombre
+
+
+def _magic_igual(a, b):
+    f = lambda t: re.search(r"InpMagic\s+= (\d+)", t).group(1)
+    return f(a) == f(b)

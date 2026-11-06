@@ -89,7 +89,7 @@ def evaluar(df, cfg, oos_pct=0.3, azar_veces=200, semilla=42, contador=None) -> 
         por_anio = pd.DataFrame([{"año": y, **{k: v for k, v in resumen(g, cfg.rr).items()
                                                 if k in ("resueltas", "TP", "SL", "exp_R")}}
                                  for y, g in tr.groupby("anio")]).set_index("año")
-    avisos = []
+    avisos = list(P.tm_aviso)
     for nombre, f in tabla.iterrows():
         if f["resueltas"] < 100:
             avisos.append(f"{nombre}: solo {int(f['resueltas'])} operaciones resueltas; muestra debil.")
@@ -118,11 +118,20 @@ def ablacion(df, cfg_base, filtros=None, oos_pct=0.3, azar_veces=100, semilla=42
     filtros = FILTROS_ABLACION if filtros is None else filtros
     if filtros is FILTROS_ABLACION and cfg_base.pb_efectivo():     # el pullback elegido entra como un paso mas
         filtros = {**FILTROS_ABLACION, "Pullback": dict(pullback_activo=True)}
+    if filtros is FILTROS_ABLACION:                                 # los de tendencia mayor entran con la temporalidad y SMA que elegiste
+        extra = {f"Tendencia mayor {k[2]} ({getattr(cfg_base, k + '_tf')})": {k + "_activo": True} for k in ("tm1", "tm2") if getattr(cfg_base, k + "_activo")}
+        filtros = {**filtros, **extra}
     base = replace(cfg_base, **eng.FILTROS_APAGADOS)
     configs = [("Cruce solo", base)]
     omitidos = []
     for nombre, ov in filtros.items():
         c = replace(base, **ov)
+        if any(k.startswith("tm") and k.endswith("_activo") and getattr(c, k) for k in ov):
+            try:
+                eng.preparar(df.iloc[:2000], c)
+            except ValueError:
+                omitidos.append(nombre)
+                continue
         if (c.sesion_activo and c.servidor_offset_horas is None) or (c.vwap_activo and not eng.es_intradia(df)):
             omitidos.append(nombre)
             continue
