@@ -174,6 +174,10 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
     for _k in ("tm1", "tm2"):
         if getattr(cfg, _k + "_activo"):
             filtros.append(f"tendencia mayor {getattr(cfg, _k + '_tf')} (cierre sobre/bajo su SMA {getattr(cfg, _k + '_periodo')})")
+    if cfg.vp_activo:
+        _r = {"poc": "compras sobre el POC y ventas bajo el POC", "fuera": "compras sobre el VAH y ventas bajo el VAL",
+              "dentro": "solo entre el VAL y el VAH"}[cfg.vp_modo]
+        filtros.append(f"Volume Profile de {cfg.vp_dias} día(s) (escalón de {n(cfg.vp_escalon, 2)}): {_r}")
     if cfg.sesion_activo:
         from sessions import SESIONES_LOCAL as _SL
         _hh = lambda x: f"{int(x):02d}:{int(round((x % 1) * 60)):02d}"

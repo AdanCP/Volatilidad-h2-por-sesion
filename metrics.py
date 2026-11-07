@@ -106,6 +106,7 @@ def evaluar(df, cfg, oos_pct=0.3, azar_veces=200, semilla=42, contador=None) -> 
 FILTROS_ABLACION = {
     "SMA": dict(sma_activo=True),
     "VWAP": dict(vwap_activo=True),
+    "Volume Profile": dict(vp_activo=True),
     "ADX": dict(adx_activo=True),
     "Rango (ratio de eficiencia)": dict(rango_activo=True, rango_ventana=20, rango_min=0.30),
     "ATR relativo": dict(atr_activo=True, atr_rel_n=100, atr_rel_min=0.8, atr_rel_max=2.0),
@@ -132,7 +133,7 @@ def ablacion(df, cfg_base, filtros=None, oos_pct=0.3, azar_veces=100, semilla=42
             except ValueError:
                 omitidos.append(nombre)
                 continue
-        if (c.sesion_activo and c.servidor_offset_horas is None) or (c.vwap_activo and not eng.es_intradia(df)):
+        if (c.sesion_activo and c.servidor_offset_horas is None) or (c.vp_activo and c.servidor_offset_horas is None) or (c.vwap_activo and not eng.es_intradia(df)):
             omitidos.append(nombre)
             continue
         configs.append((f"+ {nombre}", c))
@@ -284,7 +285,8 @@ def frecuencia(tr: pd.DataFrame, indice) -> dict:
     n = int(len(tr))
     if n == 0 or len(indice) < 2:
         return {"n": n, "por_dia": 0.0, "por_semana": 0.0, "por_mes": 0.0, "max_dia": 0, "dias_con_op": 0,
-                "max_sin_op": 0, "sin_op_desde": None, "sin_op_hasta": None, "dias_mercado": 0}
+                "max_sin_op": 0, "sin_op_desde": None, "sin_op_hasta": None, "dias_mercado": 0,
+                "max_mes": 0, "mes_max": None}
     dias_mercado = max(len(pd.DatetimeIndex(indice).normalize().unique()), 1)
     dias_cal = max((indice[-1] - indice[0]).days, 1)
     entradas = pd.DatetimeIndex([indice[int(i)] for i in tr["i"]]).normalize()
@@ -296,9 +298,12 @@ def frecuencia(tr: pd.DataFrame, indice) -> dict:
         libres = (b - a).days - 1 if a != marcas[0] and b != marcas[-1] else (b - a).days
         if libres > mejor:
             mejor, ini, fin = libres, a, b
+    por_mes = pd.Series(1, index=entradas.to_period("M")).groupby(level=0).sum()
+    mes_max = por_mes.idxmax()
     return {"n": n, "por_dia": n / dias_mercado, "por_semana": n / (dias_cal / 7),
             "por_mes": n / (dias_cal / 30.44), "max_dia": int(por_dia.max()), "dias_con_op": int(len(por_dia)),
-            "dias_mercado": dias_mercado, "max_sin_op": int(mejor), "sin_op_desde": ini, "sin_op_hasta": fin}
+            "dias_mercado": dias_mercado, "max_sin_op": int(mejor), "sin_op_desde": ini, "sin_op_hasta": fin,
+            "max_mes": int(por_mes.max()), "mes_max": (int(mes_max.year), int(mes_max.month))}
 
 
 def fmt_duracion(minutos: float) -> str:

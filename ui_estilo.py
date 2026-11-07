@@ -4,6 +4,7 @@ Todo devuelve texto HTML que se muestra con `st.html(...)`. No importa Streamlit
 puede probar fuera de la app. Paleta: rosa -> violeta -> azul. Positivo = azul/violeta,
 negativo = rosa, siempre acompañado de signo o flecha (no depende solo del color).
 """
+import re
 from html import escape as _e
 
 # Cada estilo tiene su version clara y su version noche. Claves: ROSA = color de lo negativo; INDIGO = color de lo positivo;
@@ -190,7 +191,7 @@ _CSS_SIDEBAR = """
   filter:brightness(1.2) saturate(1.12);transform:translateY(-2px);
   box-shadow:0 0 0 3px @SIDETXT@,0 0 22px 6px @GLOW@;}
 /* «Guardar configuración» (iframe con el cuadro «Guardar como»): se compensa el aire para la sombra */
-[data-testid="stSidebar"] .st-key-cfg_guardar iframe{display:block;width:calc(100% + 8px) !important;margin:-6px -4px -6px;}
+[data-testid="stSidebar"] .st-key-cfg_guardar iframe{display:block;width:calc(100% + 36px) !important;margin:-20px -18px -22px;color-scheme:normal !important;background:transparent !important;}
 /* «Cargar configuración»: el contenedor del selector es el botón (alto fijo, igual al de guardar); el selector real
    queda encima, invisible, para recibir el clic y los archivos arrastrados */
 [data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"]{
@@ -213,6 +214,30 @@ _CSS_SIDEBAR = """
 [data-testid="stSidebar"] .st-key-bot_gen :is([data-testid="stDownloadButton"],[data-testid="stButton"]) button:not(:disabled):hover{
   box-shadow:0 0 0 2px @SIDETXT@,0 4px 14px @GLOW@;}
 [data-testid="stSidebar"] .st-key-bot_gen button :is(p,span,div){font-size:1.2rem;font-weight:800;letter-spacing:.01em;}
+/* «Guía de cada campo»: un acceso discreto (fila de texto con flecha), no un botón */
+[data-testid="stSidebar"] .st-key-guia_dl [data-testid="stDownloadButton"] button{
+  background:transparent !important;border:0 !important;box-shadow:none !important;min-height:0;height:auto;padding:.3rem .15rem;
+  justify-content:flex-start;gap:.5rem;opacity:.7;}
+[data-testid="stSidebar"] .st-key-guia_dl [data-testid="stDownloadButton"] button:not(:disabled):hover{
+  filter:none;transform:none;box-shadow:none !important;opacity:1;background:@VEIL@ !important;}
+[data-testid="stSidebar"] .st-key-guia_dl [data-testid="stDownloadButton"] button :is(p,span,div){
+  font-size:.86rem !important;font-weight:500 !important;color:@SIDETXT@ !important;}
+[data-testid="stSidebar"] .st-key-guia_dl [data-testid="stDownloadButton"] button::after{
+  content:"↗";margin-left:auto;font-size:.86rem;opacity:.65;}
+/* boton para volver a abrir la barra lateral cuando esta contraida: visible sobre el fondo claro, con el estilo de los circulos de arriba */
+:is([data-testid="stExpandSidebarButton"],[data-testid="stSidebarCollapsedControl"] button,[data-testid="collapsedControl"] button){
+  background:@CARD@ !important;border:1px solid @INBD@ !important;border-radius:50% !important;box-shadow:0 2px 8px @SHADOW@;}
+:is([data-testid="stExpandSidebarButton"],[data-testid="stSidebarCollapsedControl"] button,[data-testid="collapsedControl"] button) :is(span,svg,p){
+  color:@ACC@ !important;fill:@ACC@;opacity:1 !important;}
+:is([data-testid="stExpandSidebarButton"],[data-testid="stSidebarCollapsedControl"] button,[data-testid="collapsedControl"] button):hover{border-color:@ACC@ !important;}
+/* logo de ACPTester: ocupa el espacio libre de arriba de la barra lateral, fuera del flujo (no mueve nada) */
+[data-testid="stSidebarContent"]{position:relative;}
+[data-testid="stSidebar"] .st-key-logo_acp{position:absolute;top:1.4rem;left:1.7rem;width:auto;z-index:1;pointer-events:none;}
+[data-testid="stSidebar"] .st-key-logo_acp *{color:#fff !important;}
+.logo-acp{display:flex;align-items:center;gap:13px;}
+.logo-acp .nom{font-size:27px;line-height:1;white-space:nowrap;}
+.logo-acp .nom b{font-weight:800;letter-spacing:-.02em;}.logo-acp .nom span{font-weight:300;letter-spacing:-.01em;}
+.logo-acp .lema{font-size:10.5px;margin-top:5px;letter-spacing:.04em;opacity:.85;white-space:nowrap;}
 [data-testid="stSidebarNav"] a{border-radius:10px;}
 [data-testid="stSidebarNav"] a span{color:@SIDETXT@ !important;}
 [data-testid="stSidebarNav"] a[aria-current="page"]{background:@VEILB@;}
@@ -259,13 +284,38 @@ button:active{transform:translateY(0);filter:brightness(.97);}
 .tb h1{margin:0;font-size:1.7rem;font-weight:800;color:@TXT@;}
 .tb .sub{color:@MUTED@;font-size:.9rem;margin-top:2px;}
 .st-key-fila_bt_pdf{margin-bottom:14px;}
+/* banda de titulo de la pantalla de inicio */
+.hero{position:relative;overflow:hidden;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;margin:-3.3rem 0 18px;
+  padding:26px 30px;border-radius:22px;background:@SIDE@;box-shadow:@HEROSH@;}
+.hero:after{content:"";position:absolute;right:-120px;top:-120px;width:430px;height:430px;border-radius:50%;background:rgba(255,255,255,.10);pointer-events:none;}
+.hero>*{position:relative;z-index:1;}
+[data-testid="stMain"] .hero.hero h1{margin:0;font-size:2.6rem;font-weight:800;letter-spacing:-.03em;line-height:1.08;color:#fff !important;}
+[data-testid="stMain"] .hero.hero .sub{color:rgba(255,255,255,.84) !important;font-size:.95rem;margin-top:6px;max-width:760px;}
+[data-testid="stMain"] .hero.hero .chip{background:rgba(255,255,255,.16);box-shadow:none;border:1px solid rgba(255,255,255,.28);color:#fff !important;}
+[data-testid="stMain"] .hero.hero .chip b{color:#fff !important;}
 .chips{display:flex;gap:8px;flex-wrap:wrap;}
 .chip{background:@CARD@;border-radius:999px;padding:6px 14px;font-size:.78rem;font-weight:600;color:@ACC@;
   box-shadow:0 3px 10px @SHADOW@;white-space:nowrap;}
 .chip b{color:@TXT@;}
+.eqp .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.eqp .top h4{margin:0;}
+.eqp .pills{display:flex;gap:8px;flex-wrap:wrap;}
+.eqp .pill{border-radius:999px;padding:5px 13px;font-size:.76rem;font-weight:600;color:@BTNTXT@;white-space:nowrap;}
+.eqp table{width:100%;border-collapse:collapse;margin-top:14px;font-size:.84rem;}
+.eqp th{text-align:right;font-weight:600;font-size:.72rem;color:@MUTED@;padding:6px 10px;border-bottom:1px solid @LINE@;}
+.eqp td{text-align:right;padding:8px 10px;border-top:1px solid @LINE@;font-variant-numeric:tabular-nums;font-weight:600;}
+.eqp tbody tr:first-child td{border-top:0;}
+.eqp th:first-child,.eqp td:first-child{text-align:left;}
+.eqp td:first-child{color:@ACC@;font-weight:700;}
+.eqp td.sl{color:@NEG@;} .eqp td.tp{color:@ACC@;}
 .card{background:@CARD@;border-radius:18px;box-shadow:0 6px 22px @SHADOW@;padding:16px 18px;height:100%;box-sizing:border-box;}
 .card h4{margin:0 0 10px;font-size:.92rem;font-weight:700;color:@TXT@;display:flex;justify-content:space-between;align-items:center;}
 .card h4 small{font-weight:500;color:@MUTED@;font-size:.74rem;}
+/* dos tarjetas lado a lado (curva de equity y medidor): misma altura aunque el texto de una sea más largo */
+.st-key-par_equity [data-testid="stHorizontalBlock"]{align-items:stretch;}
+.st-key-par_equity [data-testid="stColumn"]{display:flex;flex-direction:column;}
+.st-key-par_equity [data-testid="stColumn"]>div,.st-key-par_equity [data-testid="stColumn"] [data-testid="stVerticalBlock"],
+.st-key-par_equity [data-testid="stColumn"] [data-testid="stElementContainer"],.st-key-par_equity [data-testid="stColumn"] [data-testid="stHtml"]{flex:1 1 auto;height:100%;}
 .kpi{position:relative;overflow:hidden;}
 .kpi .lab{color:@MUTED@;font-size:.74rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;}
 .kpi .val{font-size:1.85rem;font-weight:800;line-height:1.15;margin:4px 0 2px;}
@@ -330,6 +380,12 @@ def css() -> str:
               "@SHADOW2@": p["SHADOW2"], "@INBG@": p["INBG"], "@INBD@": p["INBD"], "@ACC@": p["INDIGO"],
               "@NEG@": p["ROSA"], "@VIO@": p["VIOLETA"], "@SIDE@": p["SIDE"], "@AZ@": p["AZUL"], "@SIDETXT@": p["SIDETXT"],
               "@VEIL@": p["VEIL"], "@VEILB@": p["VEILB"], "@BTNTXT@": p["BTNTXT"], "@BTNG@": p["BTNG"], "@GLOW@": p["GLOW"]}
+    # brillo de la banda del título: igual que siempre en tema claro; en noche, mucho más difuso y con la mitad de intensidad
+    if TEMA == "oscuro":
+        suave = re.sub(r"(rgba\([^)]*,)\s*([0-9.]+)\)", lambda m: f"{m.group(1)}{float(m.group(2)) / 2:.2f})", p["GLOW"])
+        fichas["@HEROSH@"] = f"0 22px 70px -6px {suave}"
+    else:
+        fichas["@HEROSH@"] = f"0 14px 34px {p['GLOW']}"
     for k, v in fichas.items():
         out = out.replace(k, v)
     return "\n".join(l for l in out.split("\n") if l.strip())
@@ -350,6 +406,24 @@ def barra_superior(titulo: str, subtitulo: str, chips: list) -> str:
     cs = "".join(f'<span class="chip">{_e(k)}: <b>{_e(str(v))}</b></span>' for k, v in chips)
     return (f'<div class="tb"><div><h1>{_e(titulo)}</h1><div class="sub">{_e(subtitulo)}</div></div>'
             f'<div class="chips">{cs}</div></div>')
+
+
+def banda_titulo(titulo: str, subtitulo: str, chips: list) -> str:
+    """Titulo de la pantalla de inicio: banda de color (la de la barra lateral) con el titulo grande, el subtitulo y los chips."""
+    cs = "".join(f'<span class="chip">{_e(k)}: <b>{_e(str(v))}</b></span>' for k, v in chips)
+    return (f'<div class="hero"><div><h1>{_e(titulo)}</h1><div class="sub">{_e(subtitulo)}</div></div>'
+            f'<div class="chips">{cs}</div></div>')
+
+
+def logo_acp() -> str:
+    """Logo de ACPTester (tres velas que suben dentro de una ficha) con el nombre y una linea de apoyo. Es un SVG en linea:
+    se ve nitido a cualquier tamaño y no depende de archivos aparte. Pensado para el fondo violeta de la barra lateral."""
+    return ('<div class="logo-acp"><svg width="58" height="58" viewBox="0 0 58 58" aria-hidden="true">'
+            '<rect x="1" y="1" width="56" height="56" rx="16" fill="rgba(255,255,255,.14)" stroke="rgba(255,255,255,.55)"/>'
+            '<g stroke-linecap="round"><path d="M17 17V42" stroke="#fff" stroke-width="2"/><rect x="13" y="25" width="8" height="12" rx="2" fill="#fff"/>'
+            '<path d="M29 12V40" stroke="#ff8cc4" stroke-width="2"/><rect x="25" y="19" width="8" height="15" rx="2" fill="#ff8cc4"/>'
+            '<path d="M41 10V34" stroke="#fff" stroke-width="2"/><rect x="37" y="14" width="8" height="14" rx="2" fill="#fff"/></g></svg>'
+            '<div><div class="nom"><b>ACP</b><span>Tester</span></div><div class="lema">backtest y bots para MT5</div></div></div>')
 
 
 def cargando(texto: str) -> str:
@@ -542,6 +616,22 @@ def chips(items: list) -> str:
         return '<div class="note">Ninguna.</div>'
     return '<div class="chips">' + "".join(
         f'<span class="chip">{_e(str(k))}: <b>{_e(str(v))}</b></span>' for k, v in items) + "</div>"
+
+
+def equivalencia_precio(titulo: str, sl_txt: str, tp_txt: str, lote_txt: str, filas: list, nota: str = "") -> str:
+    """Tarjeta 'SL/TP en precio': pastillas de resumen (SL, TP opcional, lotes) y una tabla con una fila por simbolo.
+    filas: [(simbolo, sl, tp_o_None)]. Si ninguna fila tiene TP (salida por señal) se omite esa columna."""
+    con_tp = any(f[2] is not None for f in filas)
+    pil = f'<span class="pill" style="background:{ROSA}">SL {_e(sl_txt)}</span>'
+    if con_tp:
+        pil += f'<span class="pill" style="background:{INDIGO}">TP {_e(tp_txt)}</span>'
+    pil += f'<span class="pill" style="background:{VIOLETA}">{_e(lote_txt)}</span>'
+    cab = "<th>Símbolo</th><th>SL (precio)</th>" + ("<th>TP (precio)</th>" if con_tp else "")
+    cuerpo = "".join(f'<tr><td>{_e(s)}</td><td class="sl">{_e(a)}</td>' + (f'<td class="tp">{_e(b if b is not None else "-")}</td>' if con_tp else "") + "</tr>"
+                     for s, a, b in filas)
+    nt = f'<div class="note">{_e(nota)}</div>' if nota else ""
+    return (f'<div class="card eqp"><div class="top"><h4>{_e(titulo)}</h4><div class="pills">{pil}</div></div>'
+            f'<table><thead><tr>{cab}</tr></thead><tbody>{cuerpo}</tbody></table>{nt}</div>')
 
 
 def tabla_html(columnas: list, filas: list, resaltar=None, max_alto: int = 0, clase=None, izq=()) -> str:

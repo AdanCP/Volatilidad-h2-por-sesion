@@ -367,7 +367,7 @@ def test_evaluar_y_ablacion_humo():
     assert list(t.index) == ["Todo", "In-sample", "Out-of-sample"] and r["prueba"] == 1
     assert t.loc["Todo", "TP"] + t.loc["Todo", "SL"] == t.loc["Todo", "resueltas"]
     ab, omit = met.ablacion(df, eng.Config(), azar_veces=5, contador=c)
-    assert "Cruce solo" in ab.index and "+ SMA" in ab.index and omit == ["Sesion"] and c.n == 1 + len(ab)
+    assert "Cruce solo" in ab.index and "+ SMA" in ab.index and omit == ["Volume Profile", "Sesion"] and c.n == 1 + len(ab)
     ab2, omit2 = met.ablacion(df, eng.Config(servidor_offset_horas=2), azar_veces=5)
     assert omit2 == [] and "Todos juntos" in ab2.index
 
@@ -553,6 +553,9 @@ def test_frecuencia():
     assert met.frecuencia(tr.iloc[0:0], idx)["por_mes"] == 0.0
     # entradas en los días 0,0,5,10,20,30,40 de 70: el mayor hueco es 40 -> fin (29 días libres hasta el día 69)
     assert f["max_sin_op"] == 29
+    # días 0..30 son enero (6 entradas) y el día 40 es febrero (1)
+    assert f["max_mes"] == 6 and f["mes_max"] == (2024, 1)
+    assert met.frecuencia(tr.iloc[0:0], idx)["max_mes"] == 0
 
 
 def test_veredicto_seis_estados_alcanzables():
@@ -1403,3 +1406,135 @@ def test_tendencia_mayor_filtra_por_sentido_y_valida():
             eng.preparar(df, cfg)
     P3 = eng.preparar(df.iloc[:600], eng.Config(tm2_activo=True, tm2_tf="H4", tm2_periodo=200))     # historial corto: avisa y descarta
     assert P3.tm_aviso and all(m == "tm2" for *_, m in P3.cruces)
+
+
+# ---------------------------------------------------------------- Volume Profile
+def _m5_vp(dias=16, semilla=11):
+    """M5 de lunes a viernes (24 h) mas un par de horas de domingo a la noche, con volumen y rangos variables."""
+    rng = np.random.default_rng(semilla)
+    partes = [pd.date_range("2024-03-03 22:00", periods=24, freq="5min")]                      # domingo: 2 h (dia casi vacio)
+    for d in pd.bdate_range("2024-03-04", periods=dias):
+        partes.append(pd.date_range(d, periods=288, freq="5min"))
+    idx = partes[0].append(partes[1:]) if len(partes) > 1 else partes[0]
+    n = len(idx)
+    c = 2000 + np.cumsum(rng.normal(0, 1.2, n))
+    h = c + rng.uniform(0.1, 2.5, n)
+    l = c - rng.uniform(0.1, 2.5, n)
+    return pd.DataFrame({"Open": c, "High": h, "Low": l, "Close": c, "Volume": rng.integers(1, 400, n).astype(float), "Spread": 0.0}, index=idx)
+
+
+def _vp_referencia(df, esc, N):
+    """Version lenta e independiente: reparte cada vela escalon por escalon y arma el area de valor mirando todo el perfil."""
+    dia = eng.claves_dia(df.index, eng.Config())
+    out = np.full((3, len(df)), np.nan)
+    perfiles = {}
+    orden = []
+    for d in dict.fromkeys(dia):
+        m = dia == d
+        if m.sum() * 5 < eng.VP_MIN_MINUTOS:
+            continue
+        p = {}
+        for hh, ll, vv in zip(df["High"].values[m], df["Low"].values[m], df["Volume"].values[m]):
+            for k in range(int(np.floor(ll / esc)), int(np.floor(hh / esc)) + 1):
+                a, b = max(ll, k * esc), min(hh, (k + 1) * esc)
+                p[k] = p.get(k, 0.0) + (vv * (b - a) / (hh - ll) if hh > ll else 0.0)
+        perfiles[d] = p
+        orden.append(d)
+    for d in dict.fromkeys(dia):
+        previos = [x for x in orden if x < d][-N:]
+        if len(previos) < N:
+            continue
+        tot = {}
+        for x in previos:
+            for k, vv in perfiles[x].items():
+                tot[k] = tot.get(k, 0.0) + vv
+        ks = list(range(min(tot), max(tot) + 1))
+        vol = [tot.get(k, 0.0) for k in ks]
+        poc = int(np.argmax(vol))
+        lo = hi = poc
+        acum = vol[poc]
+        while acum < eng.VP_AREA * sum(vol) and (lo > 0 or hi < len(vol) - 1):
+            ar = vol[hi + 1] if hi + 1 < len(vol) else -1
+            ab = vol[lo - 1] if lo - 1 >= 0 else -1
+            if ar >= ab:
+                hi += 1; acum += vol[hi]
+            else:
+                lo -= 1; acum += vol[lo]
+        m = dia == d
+        out[0, m], out[1, m], out[2, m] = (ks[poc] + 0.5) * esc, (ks[hi] + 1) * esc, ks[lo] * esc
+    return out
+
+
+def test_vp_reparte_el_volumen_de_una_vela_y_arma_el_area_de_valor():
+    k0, v = eng._perfil_dia(np.array([4002.6]), np.array([4000.3]), np.array([120.0]), 1.0)
+    assert k0 == 4000 and np.allclose(v, [120 * 0.7 / 2.3, 120 / 2.3, 120 * 0.6 / 2.3]) and abs(v.sum() - 120) < 1e-9
+    k0, v = eng._perfil_dia(np.array([4001.5]), np.array([4001.5]), np.array([50.0]), 1.0)      # vela sin rango: entera a su escalon
+    assert k0 == 4001 and v[0] == pytest.approx(50.0)
+    # perfil del ejemplo: POC = 3er escalon; area de valor = escalones 2 a 5
+    assert eng._area_valor(np.array([80, 150, 260, 210, 170, 90, 40.0])) == (2, 1, 4)
+
+
+@pytest.mark.parametrize("esc,N", [(1.0, 1), (2.0, 3), (0.5, 2)])
+def test_vp_niveles_coinciden_con_la_referencia_lenta(esc, N):
+    df = _m5_vp()
+    (poc, vah, val), sin = eng.niveles_vp(df, eng.Config(vp_activo=True, vp_dias=N, vp_escalon=esc))
+    ref = _vp_referencia(df, esc, N)
+    assert not sin
+    assert np.array_equal(np.isnan(poc), np.isnan(ref[0]))
+    ok = ~np.isnan(poc)
+    assert ok.sum() > 1000
+    assert np.allclose(poc[ok], ref[0][ok]) and np.allclose(vah[ok], ref[1][ok]) and np.allclose(val[ok], ref[2][ok])
+    assert (val[ok] < poc[ok]).all() and (poc[ok] < vah[ok]).all()
+
+
+def test_vp_no_mira_el_futuro_y_el_domingo_no_cuenta_como_dia():
+    df = _m5_vp()
+    cfg = eng.Config(vp_activo=True, vp_dias=1)
+    (poc, vah, val), _ = eng.niveles_vp(df, cfg)
+    dia = eng.claves_dia(df.index, cfg)
+    # el primer dia (domingo, 2 h) y el lunes no tienen perfil previo valido; el martes usa solo el lunes
+    assert np.isnan(poc[dia == dia[0]]).all()
+    lunes = dia == np.unique(dia)[1]
+    assert np.isnan(poc[lunes]).all()
+    # cambiar un dia y los siguientes no altera los niveles de ese dia ni de los anteriores
+    d_corte = np.unique(dia)[8]
+    df2 = df.copy()
+    f = dia >= d_corte
+    for k in ("High", "Low", "Close", "Open"):
+        df2.loc[f, k] += 300.0
+    df2.loc[f, "Volume"] *= 7
+    (poc2, vah2, val2), _ = eng.niveles_vp(df2, cfg)
+    antes = dia <= d_corte
+    assert np.array_equal(poc[antes], poc2[antes], equal_nan=True) and np.array_equal(val[antes], val2[antes], equal_nan=True)
+    assert not np.allclose(poc[~antes], poc2[~antes], equal_nan=True)
+
+
+def test_vp_modos_filtran_por_posicion_y_validan():
+    df = _m5_vp(40, semilla=5)
+    P0 = eng.preparar(df, eng.Config())
+    res = {}
+    for modo in eng.VP_MODOS:
+        cfg = eng.Config(vp_activo=True, vp_modo=modo, vp_dias=1, servidor_offset_horas=2.0)
+        P = eng.preparar(df, cfg)
+        assert len(P.cruces) == len(P0.cruces) and P.vp is not None
+        poc, vah, val = P.vp
+        for i, lado, m in P.cruces:
+            if np.isnan(poc[i]):
+                ok = False
+            elif modo == "poc":
+                ok = (P.c[i] - poc[i]) * lado > 0
+            elif modo == "fuera":
+                ok = P.c[i] > vah[i] if lado == 1 else P.c[i] < val[i]
+            else:
+                ok = val[i] <= P.c[i] <= vah[i]
+            assert (m is None) == bool(ok) or m not in (None, "vp")
+        assert any(m == "vp" for *_, m in P.cruces)
+        res[modo] = sum(m is None for *_, m in P.cruces)
+    assert res["fuera"] <= res["poc"]                       # fuera del area implica estar del lado correcto del POC
+    for cfg in (eng.Config(vp_modo="x"), eng.Config(vp_dias=0), eng.Config(vp_escalon=0), eng.Config(vp_activo=True)):   # la ultima: sin desfase del servidor
+        with pytest.raises(ValueError):
+            eng.preparar(df, cfg)
+    P3 = eng.preparar(df.iloc[:400], eng.Config(vp_activo=True, vp_dias=3, servidor_offset_horas=2.0))                    # historial corto: avisa y descarta
+    assert P3.tm_aviso and all(m == "vp" for *_, m in P3.cruces)
+    P4 = eng.preparar(df.drop(columns="Volume"), eng.Config(vp_activo=True, servidor_offset_horas=2.0))
+    assert any("volumen" in a for a in P4.tm_aviso)

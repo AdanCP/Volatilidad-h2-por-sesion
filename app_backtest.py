@@ -31,6 +31,7 @@ import ui_estilo as vis
 import veredicto as vd
 import ui_helpers as ui
 import pdf_pantalla
+import guia_html
 import streamlit.components.v1 as components
 import sessions as sesmod
 import ui_guardar as ug
@@ -513,7 +514,35 @@ with st.sidebar:
                            "Largos solo con el cierre sobre el VWAP; cortos solo debajo. Necesita velas menores a D1.")
         else:
             vwap_dist, vwap_min = 0.5, 30
-        _acc_css(_acc_lista, _acc_activos, "ctx", ("sma", "tm", "vwap"))
+        _sep_filtro()
+        _VP_REGLAS = {"A. Sesgo por POC": "poc",
+                      "B. Fuera del área de valor": "fuera",
+                      "C. Dentro del área de valor": "dentro"}
+        _VP_EXPLICA = {"poc": "Compras con el cierre sobre el POC y ventas con el cierre bajo el POC.",
+                       "fuera": "Compras solo con el cierre sobre el VAH y ventas solo con el cierre bajo el VAL. Dentro del área de valor no se opera.",
+                       "dentro": "Opera solo con el cierre entre el VAL y el VAH (compras y ventas). Fuera del área de valor no se opera."}
+        vp_on = _W(st).checkbox("Filtro Volume Profile", key="f_vp",
+                                help="Arma el perfil de volumen (volumen de ticks por nivel de precio) de los últimos días completos ya cerrados y lo congela durante todo el día. "
+                                     "De ahí salen tres niveles: el POC (precio con más volumen), y el VAL y el VAH (piso y techo del área donde se negoció el 70 % del volumen). "
+                                     "Adentro elegís la regla que usa esos niveles para dejar pasar o descartar cada señal.")
+        vp_regla, vp_dias, vp_esc = "poc", 1, 1.0
+        if vp_on:
+            _acc_activos.add("vp")
+            _acc_cab("vp", _acc_lista, "ctx")
+            with st.container(key="acc_vp"):
+                _vp_et = _W(st).selectbox("Regla del Volume Profile", list(_VP_REGLAS),
+                                          help="A: sesgo, a favor del lado del POC. B: continuación, solo con el precio ya fuera del área de valor (deja pasar pocas señales). "
+                                              "C: rango, solo con el precio dentro del área de valor.")
+                vp_regla = _VP_REGLAS[_vp_et]
+                st.caption(_VP_EXPLICA[vp_regla])
+                vp_dias = _W(st).number_input("Días de perfil", 1, 60, 1, key="f_vp_dias",
+                                              help="1 = el día anterior completo (día CE(S)T, con las tres sesiones). Con más, se junta el volumen de los últimos N días con datos como si fueran uno solo; el fin de semana no cuenta.")
+                vp_esc = _W(st).number_input("Escalón de precio (en unidades de precio)", 0.01, 1000.0, 1.0, 0.25, key="f_vp_esc",
+                                             help="Alto de cada nivel del perfil, en unidades de precio. En el oro, 1 (un dólar) da entre 30 y 80 niveles por día. Más chico = perfil más ruidoso; más grande = menos detalle.")
+                st.caption("Volumen de ticks de todo el día anterior, sin importar el filtro de sesión. Los niveles son fijos durante el día. "
+                           "Los días con menos de 6 horas de velas (domingos, feriados) no cuentan, y sin esos días de historial previo las señales se descartan. "
+                           "El corte del día usa el desfase del servidor (el del filtro de sesión o el de «8. Reglas de la cuenta»).")
+        _acc_css(_acc_lista, _acc_activos, "ctx", ("sma", "tm", "vwap", "vp"))
 
     with st.expander("5. Filtros de dinámica, régimen y volatilidad", expanded=False):
         _acc_lista, _acc_activos = [], set()
@@ -774,6 +803,7 @@ def construir_config(simbolo: str = None) -> eng.Config:
         pullback_activo=bool(pb_on), pullback_pct=float(pb_pct), pullback_ema=pb_ema, pullback_velas=int(pb_velas),
         direccion=direccion, spread=spread, spread_fijo=float(spread_fijo), costo_extra=float(costo_extra),
         vwap_activo=vwap_on, vwap_dist_min_atr=float(vwap_dist), vwap_min_minutos=float(vwap_min),
+        vp_activo=vp_on, vp_modo=vp_regla, vp_dias=int(vp_dias), vp_escalon=float(vp_esc),
         tm1_activo=_tmv["tm1"][0], tm1_tf=_tmv["tm1"][1], tm1_periodo=_tmv["tm1"][2],
         tm2_activo=_tmv["tm2"][0], tm2_tf=_tmv["tm2"][1], tm2_periodo=_tmv["tm2"][2],
         sma_activo=sma_on, sma_periodo=int(sma_per), sma_dist_min_atr=float(sma_dist), sma_pendiente_n=int(sma_pend),
@@ -784,7 +814,7 @@ def construir_config(simbolo: str = None) -> eng.Config:
         atr_rel_n=int(rel_n), atr_rel_min=float(rel_min) or None, atr_rel_max=float(rel_max) or None,
         sesion_activo=ses_on, sesiones=tuple(sesiones), horarios=(horarios_ses if ses_on else None),
         sin_pausa=(tuple(_sin_pausa) if ses_on else ()),
-        servidor_offset_horas=offset if ses_on else (offset_dia if reglas_on else None), servidor_dst_eeuu=dst,
+        servidor_offset_horas=offset if ses_on else (offset_dia if (reglas_on or vp_on) else None), servidor_dst_eeuu=dst,
         reglas_activas=bool(reglas_on), capital=float(capital),
         usd_por_unidad=float(met.valor_por_unidad(p["tick_size"], p["tick_value"], lotes)),
         comision_op_usd=float(comision) * float(lotes),
@@ -807,8 +837,8 @@ def tarjeta_html(titulo: str, cuerpo: str, nota: str = "", derecha: str = "", mi
 
 
 if not datos:
-    html(vis.barra_superior(TITULO_PAGINA,
-                            "Medí si una idea tiene ventaja demostrable, no cuál combinación gana.", []))
+    html(vis.banda_titulo(TITULO_PAGINA,
+                          "Medí si una idea tiene ventaja demostrable, no cuál combinación gana.", []))
     html(vis.tarjeta("Para empezar", "<div class='note' style='font-size:.9rem'>Cargá datos en la barra lateral. "
                      "Para probar la interfaz sin datos reales, elegí <b>Datos sintéticos (demo)</b>.</div>"))
     st.stop()
@@ -824,7 +854,7 @@ else:
 df, spec = datos[activo], specs.get(activo)
 
 cal = data.calidad(df)
-html(vis.barra_superior(
+html(vis.banda_titulo(
     TITULO_PAGINA,
     "Medí si una idea tiene ventaja demostrable, no cuál combinación gana: con muchas pruebas, "
     "un buen resultado puede ser azar.",
@@ -848,13 +878,13 @@ if sl_modo == SL_USD:
         conv = []
         for s_ in list(datos)[:8]:
             c_ = construir_config(s_)
-            conv.append((s_, f"SL {vis.n(c_.sl_valor, 5 if c_.sl_valor < 1 else 2)}" + ("" if salida_modo == "senal" else
-                        f" · TP {vis.n(c_.sl_valor * c_.rr, 5 if c_.sl_valor < 1 else 2)}")))
+            _dec = 5 if c_.sl_valor < 1 else 2
+            conv.append((s_, vis.n(c_.sl_valor, _dec), None if salida_modo == "senal" else vis.n(c_.sl_valor * c_.rr, _dec)))
         st.write("")
-        html(vis.tarjeta(f"SL de US${vis.n(sl_usd)}" + ("" if salida_modo == "senal" else f" y TP de US${vis.n(sl_usd * rr)}")
-                         + f" con {vis.n(lotes)} lotes: en puntos de precio",
-                         vis.chips(conv), "Se recalcula por símbolo con su tick_size y tick_value. Con otro lote cambia la distancia, "
-                         "y por lo tanto las operaciones."))
+        html(vis.equivalencia_precio("Equivalencia en precio", f"US${vis.n(sl_usd)}", f"US${vis.n(sl_usd * rr)}",
+                                     f"{vis.n(lotes)} lotes", conv,
+                                     "Se recalcula por símbolo con su tick_size y tick_value. Con otro lote cambia la distancia, "
+                                     "y por lo tanto las operaciones."))
     except ValueError as e:
         st.error(str(e))
 
@@ -871,13 +901,6 @@ if sl_modo == SL_EMA:
                          "«7. Lotaje y dinero»."))
     except ValueError as e:
         st.error(str(e))
-
-with st.expander("📖 Guía de cada campo"):
-    try:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "guia_campos.md"), encoding="utf-8") as f_:
-            st.markdown(f_.read())
-    except OSError:
-        st.caption("No se encontró guia_campos.md junto a la app.")
 
 st.write("")
 with st.container(key="fila_bt"):
@@ -957,6 +980,16 @@ with st.sidebar:
                        "Compilalo en MetaEditor (F7) y probalo en demo.")
     except (ValueError, RuntimeError, OSError) as e:
         st.caption("No se puede generar el bot: " + str(e))
+    _sep_filtro()
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "guia_campos.md"), encoding="utf-8") as f_:
+            _guia = guia_html.convertir(f_.read(), "Guía de cada campo", TITULO_PAGINA)
+        with st.container(key="guia_dl"):
+            st.download_button("📖 Guía de cada campo", _guia.encode("utf-8"), file_name="Guia_de_cada_campo.html",
+                               mime="text/html", use_container_width=True, key="dl_guia",
+                               help="Descarga la guía como una página aparte: abrila con el navegador, con un índice de secciones.")
+    except OSError:
+        st.caption("No se encontró guia_campos.md junto a la app.")
 
 if comp:
     try:
@@ -1174,11 +1207,13 @@ if cfg_usada.reglas_activas and r.get("cuenta"):
              + _cu.get("saltadas_pausa_gan", 0) + _cu.get("saltadas_retroceso", 0))
     if _cu["quemada"]:
         _gmax = float(_cu.get("balance_max", _cap_u)) - _cap_u
-        _ret_q = (f"Antes de quemarse retiraste {vis.n(_cu['retirado'], 0)} US$ en {len(_cu['retiros'])} "
+        _ret_q = (f"Antes de quemarse retiraste {vis.n(_cu['retirado'], 0)} US\\$ en {len(_cu['retiros'])} "
                   f"retiro{'s' if len(_cu['retiros']) != 1 else ''}. " if _cu.get("retiros") else "")
         st.error(f"Con estas reglas la cuenta se habría quemado el {str(r['P'].indice[int(_cu['quemada_en'])])[:10]}: "
                  "el resultado termina ahí y el resto del período no se opera. " + _ret_q
-                 + (f"Antes de quemarse llegó a ganar como máximo {vis.n(_gmax, 0)} US$ ({vis.n(100 * _gmax / _cap_u, 1)} % del capital)."
+                 + ((f"El balance más alto que alcanzó fue de {vis.n(_gmax, 0)} US\\$ por encima del capital ({vis.n(100 * _gmax / _cap_u, 1)} % del capital), "
+                     "en un solo ciclo antes de retirar." if _cu.get("retiros") else
+                     f"Antes de quemarse llegó a ganar como máximo {vis.n(_gmax, 0)} US\\$ ({vis.n(100 * _gmax / _cap_u, 1)} % del capital).")
                     if _gmax > 0 else "Antes de quemarse nunca estuvo por encima del capital inicial."))
     st.write("")
     html(vis.titulo_seccion("Reglas de la cuenta", "Qué hicieron los límites y controles en el período (tramo «Todo»)"))
@@ -1213,7 +1248,7 @@ if cfg_usada.reglas_activas and r.get("cuenta"):
 
 st.write("")
 if len(res):
-    g1, g2 = st.columns([2, 1])
+    g1, g2 = st.container(key="par_equity").columns([2, 1])
     acumulado = res["R"].cumsum().tolist()
     pos_oos = int((res["i"] < r["corte"]).sum())
     _fe = pd.to_datetime(res["fecha_entrada"])
@@ -1275,7 +1310,7 @@ if len(res):
         else:
             _pasos += [("Operaciones tomadas", tt["resueltas"] + tt["abiertas"])]
         cuerpo = vis.embudo(_pasos + [("Llegaron a TP", tt["TP"])])
-        _nombres = {"sma": "SMA", "adx": "ADX", "rango": "Rango", "atr": "ATR", "sesion": "Sesión", "tm1": "Tendencia mayor 1", "tm2": "Tendencia mayor 2"}
+        _nombres = {"sma": "SMA", "adx": "ADX", "rango": "Rango", "atr": "ATR", "sesion": "Sesión", "tm1": "Tendencia mayor 1", "tm2": "Tendencia mayor 2", "vp": "Volume Profile"}
         _txt = []
         if r["descartes"]:
             _txt.append("Descartadas por filtro: " + " · ".join(f"{_nombres.get(k, k)} {int(v_)}" for k, v_ in r["descartes"].items()) + ".")
@@ -1327,7 +1362,7 @@ if len(res):
     st.write("")
     html(vis.titulo_seccion("Frecuencia de operaciones", "Promedio de operaciones tomadas en el período analizado"))
     _fr = met.frecuencia(tr, r["P"].indice)
-    f1, f2, f3, f4, f5 = st.columns(5)
+    f1, f2, f3, f4, f4b, f5 = st.columns(6)
     with f1:
         html(vis.kpi("Por día", vis.n(_fr["por_dia"], 2), f"promedio por día con mercado ({_fr.get('dias_mercado', 0)} días)", vis.INDIGO, 165))
     with f2:
@@ -1336,6 +1371,12 @@ if len(res):
         html(vis.kpi("Por mes", vis.n(_fr["por_mes"], 1), "promedio por mes calendario", vis.ROSA, 165))
     with f4:
         html(vis.kpi("Máx. en un día", str(_fr["max_dia"]), f"operaba en {_fr['dias_con_op']} días del período", vis.AZUL, 165))
+    with f4b:
+        _MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre",
+                  "noviembre", "diciembre"]
+        _mm = _fr.get("mes_max")
+        html(vis.kpi("Máx. en un mes", str(_fr.get("max_mes", 0)),
+                     f"en {_MESES[_mm[1] - 1]} de {_mm[0]}" if _mm else "sin operaciones", vis.ORQ, 165))
     with f5:
         _sub = (f"del {_fr['sin_op_desde']:%d/%m/%Y} al {_fr['sin_op_hasta']:%d/%m/%Y}"
                 if _fr["sin_op_desde"] is not None else "sin lapsos")

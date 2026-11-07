@@ -8,6 +8,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
+import engine as eng
 from sessions import SESIONES_LOCAL as _SES_LOCAL, PAUSAS_LOCAL as _PAUSAS
 
 
@@ -134,8 +135,12 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
     if limpiar_nombre(nombre):
         cab.append(f"// Nombre del bot: {limpiar_nombre(nombre)}")
     act = [n for n, on in (("SMA", cfg.sma_activo), ("VWAP", cfg.vwap_activo), ("ADX", cfg.adx_activo),
-                           ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("tendencia mayor 1", cfg.tm1_activo), ("tendencia mayor 2", cfg.tm2_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo())) if on]
+                           ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("tendencia mayor 1", cfg.tm1_activo), ("tendencia mayor 2", cfg.tm2_activo), ("Volume Profile", cfg.vp_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo())) if on]
     cab.append("// Filtros/opciones activos: " + (", ".join(act) if act else "ninguno"))
+    if cfg.vp_activo:
+        cab.append(f"// Volume Profile: {cfg.vp_dias} dia(s) de perfil, escalon {_f(cfg.vp_escalon, 4)}, regla "
+                   + {"poc": "A (compra sobre el POC, venta bajo el POC)", "fuera": "B (compra sobre el VAH, venta bajo el VAL)",
+                      "dentro": "C (solo entre VAL y VAH)"}[cfg.vp_modo])
     if cfg.sesion_activo:
         _hor = {**_SES_LOCAL, **(cfg.horarios or {})}
         _hh = lambda x: f"{int(x):02d}:{int(round((x % 1) * 60)):02d}"
@@ -173,6 +178,8 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "PB_VELAS": str(int(cfg.pullback_velas)),
         "TM1_ON": _b(cfg.tm1_activo), "TM1_TF": "PERIOD_" + cfg.tm1_tf, "TM1_PER": str(int(cfg.tm1_periodo)),
         "TM2_ON": _b(cfg.tm2_activo), "TM2_TF": "PERIOD_" + cfg.tm2_tf, "TM2_PER": str(int(cfg.tm2_periodo)),
+        "VP_ON": _b(cfg.vp_activo), "VP_MODO": str(eng.VP_MODOS.index(cfg.vp_modo)), "VP_DIAS": str(int(cfg.vp_dias)),
+        "VP_ESC": _f(cfg.vp_escalon, 6), "VP_AREA": _f(eng.VP_AREA, 4), "VP_MIN_MIN": _f(eng.VP_MIN_MINUTOS, 1),
         "SMA_ON": _b(cfg.sma_activo), "SMA_PER": str(int(cfg.sma_periodo)),
         "SMA_DIST": _f(cfg.sma_dist_min_atr, 4), "SMA_PEND": str(int(cfg.sma_pendiente_n)),
         "VWAP_ON": _b(cfg.vwap_activo), "VWAP_DIST": _f(cfg.vwap_dist_min_atr, 4), "VWAP_MIN": _f(cfg.vwap_min_minutos, 2),
@@ -273,6 +280,12 @@ const int             InpTm1Per         = @@TM1_PER@@;    // ... periodo de la S
 const bool            InpTm2On          = @@TM2_ON@@;     // Tendencia mayor 2 (se exigen las dos si estan activas)
 const ENUM_TIMEFRAMES InpTm2Tf          = @@TM2_TF@@;
 const int             InpTm2Per         = @@TM2_PER@@;
+const bool            InpVpOn           = @@VP_ON@@;      // Volume Profile: perfil de volumen (ticks) de los ultimos N dias completos, fijo todo el dia
+const int             InpVpMode         = @@VP_MODO@@;    // ... regla: 0 compra sobre el POC / venta bajo el POC, 1 compra sobre el VAH / venta bajo el VAL, 2 solo entre VAL y VAH
+const int             InpVpDays         = @@VP_DIAS@@;    // ... dias de perfil (dias con datos; el dia se corta a medianoche de Europa Central)
+const double          InpVpStep         = @@VP_ESC@@;     // ... escalon de precio del perfil
+const double          InpVpArea         = @@VP_AREA@@;    // ... fraccion del volumen que reune el area de valor
+const double          InpVpMinMin       = @@VP_MIN_MIN@@; // ... un dia solo cuenta si tiene al menos estos minutos de velas
 const bool            InpSmaOn          = @@SMA_ON@@;     // Filtro SMA
 const int             InpSmaPeriod      = @@SMA_PER@@;    // SMA: periodo
 const double          InpSmaDistAtr     = @@SMA_DIST@@;   // SMA: distancia minima al cierre (x ATR, 0 = sin)
@@ -346,6 +359,8 @@ const double          InpCommissionUsd  = @@COMISION@@;           // Comision po
 const double SENT = -1.0e300;          // "sin dato" (equivale a NaN en el backtester)
 
 datetime g_time[];
+double   g_vpPoc[], g_vpVah[], g_vpVal[];      // niveles del Volume Profile de cada vela (SENT si todavia no hay perfil)
+double   g_vpK0[], g_vpOff[], g_vpLen[], g_vpFlat[];   // perfil de cada dia valido: primer escalon, posicion y largo dentro de g_vpFlat, volumen por escalon
 double   g_tm1[], g_tm2[];                     // tendencia mayor de cada vela: +1 cierre sobre la SMA, -1 debajo, 0 sin dato
 datetime g_hT[];                               // velas de la temporalidad mayor (inicio), cierre y SMA
 double   g_hC[], g_hS[];
@@ -601,6 +616,131 @@ bool InSession(const datetime t_servidor)
    return false;
 }
 
+// ============================ Volume Profile ===================================
+int DayKeyCET(const datetime utc);
+
+// Agrega el perfil de volumen del dia (velas a..b-1). El escalon k cubre [k*paso, (k+1)*paso); cada vela reparte su volumen de ticks entre los
+// escalones que toca, en proporcion a cuanto de su rango (minimo a maximo) cae en cada uno. Una vela sin rango va entera a su escalon.
+void VpAddDay(const int a, const int b, const int d)
+{
+   double lo = g_l[a], hi = g_h[a];
+   for(int t = a + 1; t < b; t++)
+   {
+      lo = MathMin(lo, g_l[t]);
+      hi = MathMax(hi, g_h[t]);
+   }
+   const int k0 = (int)MathFloor(lo / InpVpStep);
+   const int k1 = (int)MathFloor(hi / InpVpStep);
+   const int nb = k1 - k0 + 1;
+   const int off = ArraySize(g_vpFlat);
+   ArrayResize(g_vpFlat, off + nb);
+   double acum[];
+   ArrayResize(acum, nb + 1);
+   for(int e = 0; e <= nb; e++) acum[e] = 0.0;
+   for(int t = a; t < b; t++)
+   {
+      const double ancho = MathMax(g_h[t] - g_l[t], 1.0e-9);
+      for(int e = 0; e <= nb; e++)
+      {
+         double f = ((k0 + e) * InpVpStep - g_l[t]) / ancho;
+         if(f < 0.0) f = 0.0;
+         if(f > 1.0) f = 1.0;
+         acum[e] += f * g_tv[t];
+      }
+   }
+   for(int k = 0; k < nb; k++) g_vpFlat[off + k] = MathMax(acum[k + 1] - acum[k], 0.0);
+   ArrayResize(g_vpK0, d + 1);
+   ArrayResize(g_vpOff, d + 1);
+   ArrayResize(g_vpLen, d + 1);
+   g_vpK0[d] = k0;
+   g_vpOff[d] = off;
+   g_vpLen[d] = nb;
+}
+
+// Niveles de las velas a..b-1: perfil de los InpVpDays dias validos anteriores (los indices nd-InpVpDays .. nd-1).
+// POC = escalon de mayor volumen (el mas bajo si hay empate). El area de valor parte del POC y suma de a UN escalon, siempre el vecino
+// de mayor volumen (a igualdad, el de arriba), hasta reunir InpVpArea del total.
+void VpLevels(const int a, const int b, const int nd)
+{
+   int kmin = 2000000000, kmax = -2000000000;
+   for(int d = nd - InpVpDays; d < nd; d++)
+   {
+      kmin = MathMin(kmin, (int)g_vpK0[d]);
+      kmax = MathMax(kmax, (int)g_vpK0[d] + (int)g_vpLen[d]);
+   }
+   const int nb = kmax - kmin;
+   double pool[];
+   ArrayResize(pool, nb);
+   for(int j = 0; j < nb; j++) pool[j] = 0.0;
+   for(int d = nd - InpVpDays; d < nd; d++)
+      for(int j = 0; j < (int)g_vpLen[d]; j++)
+         pool[(int)g_vpK0[d] - kmin + j] += g_vpFlat[(int)g_vpOff[d] + j];
+   double total = 0.0;
+   int poc = 0;
+   for(int j = 0; j < nb; j++)
+   {
+      total += pool[j];
+      if(pool[j] > pool[poc]) poc = j;
+   }
+   if(total <= 0.0) return;
+   const double objetivo = InpVpArea * total;
+   int lo = poc, hi = poc;
+   double acum = pool[poc];
+   while(acum < objetivo)
+   {
+      const double arriba = (hi + 1 < nb) ? pool[hi + 1] : -1.0;
+      const double abajo  = (lo - 1 >= 0) ? pool[lo - 1] : -1.0;
+      if(arriba < 0.0 && abajo < 0.0) break;
+      if(arriba >= abajo) { hi++; acum += arriba; }
+      else                { lo--; acum += abajo; }
+   }
+   for(int t = a; t < b; t++)
+   {
+      g_vpPoc[t] = (kmin + poc + 0.5) * InpVpStep;
+      g_vpVal[t] = (kmin + lo) * InpVpStep;
+      g_vpVah[t] = (kmin + hi + 1) * InpVpStep;
+   }
+}
+
+// Recorre la historia dia por dia (dia CE(S)T). Los niveles de cada dia salen solo de dias ya cerrados: no mira el futuro.
+void BuildVolumeProfile()
+{
+   ArrayResize(g_vpPoc, g_m);
+   ArrayResize(g_vpVah, g_m);
+   ArrayResize(g_vpVal, g_m);
+   for(int t = 0; t < g_m; t++)
+   {
+      g_vpPoc[t] = SENT;
+      g_vpVah[t] = SENT;
+      g_vpVal[t] = SENT;
+   }
+   ArrayResize(g_vpFlat, 0);
+   const double minutosVela = PeriodSeconds() / 60.0;
+   int nd = 0;
+   int a = 0;
+   while(a < g_m)
+   {
+      const int key = DayKeyCET(ServidorAUtc(g_time[a]));
+      int b = a + 1;
+      while(b < g_m && DayKeyCET(ServidorAUtc(g_time[b])) == key) b++;
+      if(nd >= InpVpDays) VpLevels(a, b, nd);
+      if((b - a) * minutosVela >= InpVpMinMin)
+      {
+         VpAddDay(a, b, nd);
+         nd++;
+      }
+      a = b;
+   }
+}
+
+// Velas a pedir al broker: las del parametro fijo y, con Volume Profile, las de N dias completos mas un margen (fines de semana y feriados)
+int HistBars()
+{
+   int n = InpHistBars;
+   if(InpVpOn) n = MathMax(n, (int)((InpVpDays + 5) * 86400.0 / PeriodSeconds()) + 200);
+   return n;
+}
+
 // ============================ datos y senal ===================================
 int MaxWarm()
 {
@@ -619,7 +759,7 @@ bool LoadTrendRates(const ENUM_TIMEFRAMES tf, const int per)
    ArraySetAsSeries(r, false);
    const int secB = PeriodSeconds();
    const int secH = PeriodSeconds(tf);
-   const int cnt = (int)((double)InpHistBars * secB / secH) + per + 10;
+   const int cnt = (int)((double)HistBars() * secB / secH) + per + 10;
    const int n = CopyRates(_Symbol, tf, 0, cnt, r);
    if(n < per + 5)
    {
@@ -658,7 +798,7 @@ bool LoadData()
 {
    MqlRates r[];
    ArraySetAsSeries(r, false);
-   const int n = CopyRates(_Symbol, _Period, 0, InpHistBars, r);
+   const int n = CopyRates(_Symbol, _Period, 0, HistBars(), r);
    if(n < MaxWarm() + 50)
    {
       Print("Pocas velas disponibles (", n, "). Abri el grafico y deja que MT5 descargue la historia.");
@@ -712,6 +852,7 @@ bool LoadData()
       if(!LoadTrendRates(InpTm2Tf, InpTm2Per)) return false;
       BuildTrend(InpTm2Per, PeriodSeconds(), PeriodSeconds(InpTm2Tf), g_tm2);
    }
+   if(InpVpOn) BuildVolumeProfile();
    return true;
 }
 
@@ -786,7 +927,16 @@ bool OkTm(const double estado, const int side)
    return estado * side > 0.0;
 }
 
-// orden de los filtros = el del backtester: sesion, SMA, VWAP, ADX, rango, ATR, tendencia mayor 1 y 2
+bool OkVp(const int i, const int side)
+{
+   const double poc = g_vpPoc[i];
+   if(!V(poc)) return false;
+   if(InpVpMode == 0) return (g_c[i] - poc) * side > 0.0;
+   if(InpVpMode == 1) return (side == 1) ? g_c[i] > g_vpVah[i] : g_c[i] < g_vpVal[i];
+   return g_c[i] >= g_vpVal[i] && g_c[i] <= g_vpVah[i];
+}
+
+// orden de los filtros = el del backtester: sesion, SMA, VWAP, ADX, rango, ATR, tendencia mayor 1 y 2, Volume Profile
 bool PassFilters(const int i, const int side, const bool withSession)
 {
    if(InpSesOn && withSession && !InSession(g_time[i])) return false;
@@ -797,6 +947,7 @@ bool PassFilters(const int i, const int side, const bool withSession)
    if(InpAtrOn && !OkAtr(i)) return false;
    if(InpTm1On && !OkTm(g_tm1[i], side)) return false;
    if(InpTm2On && !OkTm(g_tm2[i], side)) return false;
+   if(InpVpOn && !OkVp(i, side)) return false;
    return true;
 }
 
@@ -827,6 +978,9 @@ string FiltrosTxt(const int i, const int side, const bool withSession)
       r += Sep(r) + "Tendencia mayor " + TfName(InpTm1Tf) + " " + (OkTm(g_tm1[i], side) ? "ok" : "RECHAZA");
    if(InpTm2On)
       r += Sep(r) + "Tendencia mayor " + TfName(InpTm2Tf) + " " + (OkTm(g_tm2[i], side) ? "ok" : "RECHAZA");
+   if(InpVpOn)
+      r += Sep(r) + "Volume Profile " + (OkVp(i, side) ? "ok" : "RECHAZA") + " (cierre " + DoubleToString(g_c[i], 2) + " vs POC "
+           + (V(g_vpPoc[i]) ? DoubleToString(g_vpPoc[i], 2) + ", VAL " + DoubleToString(g_vpVal[i], 2) + ", VAH " + DoubleToString(g_vpVah[i], 2) : "n/d") + ")";
    if(InpAtrOn)
       r += Sep(r) + "ATR " + (OkAtr(i) ? "ok" : "RECHAZA") + " (" + DoubleToString(g_atr[i] / g_c[i] * 100.0, 3) + " % del precio)";
    if(r == "") r = "sin filtros activos";

@@ -3,7 +3,7 @@ Funciona en Chrome y Edge (API de acceso a archivos). En otros navegadores, o si
 descarga el archivo directamente con el nombre sugerido."""
 import json
 
-ALTO = 52          # alto del bloque: el botón mide 40 px y deja lugar para la sombra
+ALTO = 82          # alto del bloque: el botón mide 40 px y deja lugar para que la sombra no se corte (igual que «Cargar»)
 BOTON = 40
 
 
@@ -14,7 +14,7 @@ def _js_str(x: str) -> str:
 def html(p: dict, nombre: str, texto: str, etiqueta: str = "💾 Guardar configuración") -> str:
     css = f"""
 html,body{{margin:0;background:transparent;overflow:hidden;}}
-body{{font-family:"Source Sans","Source Sans Pro","Source Sans 3","Segoe UI",system-ui,sans-serif;padding:6px 4px 0;box-sizing:border-box;}}
+body{{font-family:"Source Sans","Source Sans Pro","Source Sans 3","Segoe UI",system-ui,sans-serif;padding:20px 18px 22px;box-sizing:border-box;}}
 button{{display:block;width:100%;height:{BOTON}px;border:1px solid rgba(255,255,255,.55);border-radius:12px;cursor:pointer;
   background:{p['BTNG']};color:{p['BTNTXT']};font:inherit;font-weight:700;font-size:.9rem;line-height:1.6;
   box-shadow:0 4px 14px {p['GLOW']};transition:filter .15s,transform .15s,box-shadow .15s;}}

@@ -502,3 +502,48 @@ def test_nombre_elegido_del_bot():
 def _magic_igual(a, b):
     f = lambda t: re.search(r"InpMagic\s+= (\d+)", t).group(1)
     return f(a) == f(b)
+
+
+@pytest.mark.skipif(not HAY_GPP, reason="sin g++")
+@pytest.mark.parametrize("modo,dias,esc", [("poc", 1, 1.0), ("fuera", 3, 2.0), ("dentro", 2, 0.5)])
+def test_volume_profile_del_bot_coincide_con_python(modo, dias, esc):
+    import test_backtester as tb
+    df = tb._m5_vp(16, semilla=21)
+    c = _cfg(vp_activo=True, vp_modo=modo, vp_dias=dias, vp_escalon=esc, servidor_offset_horas=2.0, servidor_dst_eeuu=True)
+    (poc, vah, val), _ = eng.niveles_vp(df, c)
+    t = _gen(c, "XAUUSD", "M5", 0.1)
+    assert "@@" not in t and t.count("{") == t.count("}")
+    main = '''int main(){int n;std::cin>>n;g_psec=300;g_m=n;g_time.resize(n);g_h.resize(n);g_l.resize(n);g_c.resize(n);g_tv.resize(n);
+ for(int i=0;i<n;i++){long long tt;std::cin>>tt>>g_h[i]>>g_l[i]>>g_tv[i];g_time[i]=tt;g_c[i]=g_l[i];}
+ BuildVolumeProfile();for(int i=0;i<n;i++)printf("%.12g %.12g %.12g\\n",g_vpPoc[i],g_vpVah[i],g_vpVal[i]);}'''
+    with tempfile.TemporaryDirectory() as d:
+        exe = _compilar(t, main, d)
+        inp = f"{len(df)}\n" + "\n".join(f"{int(x.timestamp())} {h!r} {l!r} {float(v)!r}" for x, h, l, v in
+                                        zip(df.index, df["High"], df["Low"], df["Volume"]))
+        out = np.array(subprocess.run([exe], input=inp, capture_output=True, text=True).stdout.split(), float).reshape(-1, 3)
+    sin_c = out[:, 0] < -1e299
+    assert np.array_equal(sin_c, np.isnan(poc))
+    ok = ~sin_c
+    assert ok.sum() > 1000
+    assert np.allclose(out[ok, 0], poc[ok]) and np.allclose(out[ok, 1], vah[ok]) and np.allclose(out[ok, 2], val[ok])
+
+
+@pytest.mark.skipif(not HAY_GPP, reason="sin g++")
+@pytest.mark.parametrize("modo", ["poc", "fuera", "dentro"])
+def test_volume_profile_filtro_del_bot_coincide_con_python(modo):
+    import test_backtester as tb
+    df = tb._m5_vp(30, semilla=4)
+    c = _cfg(vp_activo=True, vp_modo=modo, vp_dias=1, servidor_offset_horas=2.0)
+    P = eng.preparar(df, c)
+    t = _gen(c, "XAUUSD", "M5", 0.1)
+    main = '''int main(){int n;std::cin>>n;g_psec=300;g_m=n;g_time.resize(n);g_h.resize(n);g_l.resize(n);g_c.resize(n);g_tv.resize(n);
+ for(int i=0;i<n;i++){long long tt;std::cin>>tt>>g_h[i]>>g_l[i]>>g_c[i]>>g_tv[i];g_time[i]=tt;}
+ BuildVolumeProfile();for(int i=0;i<n;i++)printf("%d %d\\n",(int)OkVp(i,1),(int)OkVp(i,-1));}'''
+    with tempfile.TemporaryDirectory() as d:
+        exe = _compilar(t, main, d)
+        inp = f"{len(df)}\n" + "\n".join(f"{int(x.timestamp())} {h!r} {l!r} {cc!r} {float(v)!r}" for x, h, l, cc, v in
+                                        zip(df.index, df["High"], df["Low"], df["Close"], df["Volume"]))
+        out = np.array(subprocess.run([exe], input=inp, capture_output=True, text=True).stdout.split(), int).reshape(-1, 2)
+    for i, lado, motivo in P.cruces:
+        assert bool(out[i, 0 if lado == 1 else 1]) == (motivo != "vp")
+    assert out.any() and not out.all()

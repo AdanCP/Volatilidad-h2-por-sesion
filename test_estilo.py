@@ -1,4 +1,5 @@
 """Pruebas de los componentes visuales (no necesitan Streamlit)."""
+import os
 import re
 import sys
 from html.parser import HTMLParser
@@ -46,8 +47,16 @@ def todos():
         ui.barras_divergentes([("a", 1.0), ("b", -0.5, ui.VIOLETA), ("c", float("nan"))]),
         ui.embudo([("a", 100), ("b", 50), ("c", 10)]), ui.curva_equity([0, 1, 2, 1, 3], "a", "b", 2),
         ui.barras_verticales([(2020, 0.3, "10 op."), (2021, -0.2, "5 op.")]), ui.insight("t", "<b>x</b>"),
-        ui.chips([("a", 1)]),
+        ui.chips([("a", 1)]), ui.equivalencia_precio("t", "US$1", "US$5", "1 lotes", [("X", "1", "5"), ("Y", "2", None)], "n"),
     ]
+
+
+def test_equivalencia_precio():
+    h = ui.equivalencia_precio("Equivalencia en precio", "US$175,00", "US$875,00", "0,17 lotes",
+                               [("XAUUSD", "10,29", "51,47"), ("A<B", "1,00", None)], "nota")
+    assert "XAUUSD" in h and "TP (precio)" in h and "A&lt;B" in h and h.count("<table") == h.count("</table>") == 1
+    h2 = ui.equivalencia_precio("t", "US$1", "US$5", "1 lotes", [("X", "1", None)])
+    assert "TP (precio)" not in h2 and "US$5" not in h2
 
 
 def test_html_balanceado():
@@ -224,3 +233,15 @@ def test_boton_pdf_de_resultados():
     import ui_estilo as v
     assert ".st-key-fila_bt_pdf{margin-bottom:14px;}" in v.css()                          # alineado con los chips de la barra
     assert ".st-key-fila_bt_pdf button[kind=\"secondary\"]" in v.css()                # mismo estilo que los botones de arriba
+
+
+def test_guia_html_autonoma_con_indice_y_listas_balanceadas():
+    import guia_html as g
+    md = "### Intro\nTexto con **negrita**, *cursiva* y `cod`.\n\n## 1. Uno\n- a\n  - b\n  1. c\n- d\n\n## 2. Dos <x>\nFin"
+    h = g.convertir(md, "T")
+    assert h.startswith("<!doctype html>") and h.count("<h2") == 2 and 'href="#s2"' in h
+    assert "<strong>negrita</strong>" in h and "<em>cursiva</em>" in h and "<code>cod</code>" in h and "&lt;x&gt;" in h
+    for t in ("ul", "ol", "li"):
+        assert h.count(f"<{t}>") == h.count(f"</{t}>")
+    real = g.convertir(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "guia_campos.md"), encoding="utf-8").read())
+    assert real.count("<li>") == real.count("</li>") and "**" not in real and real.count("<h2") >= 8

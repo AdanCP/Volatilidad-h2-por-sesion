@@ -67,6 +67,12 @@ class Config:
     tm2_activo: bool = False
     tm2_tf: str = "H4"
     tm2_periodo: int = 200
+    # filtro Volume Profile: perfil de volumen (volumen de ticks) de los ultimos N dias completos YA CERRADOS (dia CE(S)T), fijo durante todo el dia.
+    # modo "poc": compra sobre el POC / venta bajo el POC | "fuera": compra sobre el VAH / venta bajo el VAL | "dentro": solo entre VAL y VAH.
+    vp_activo: bool = False
+    vp_modo: str = "poc"
+    vp_dias: int = 1
+    vp_escalon: float = 1.0         # tamaño del escalon de precio (unidades de precio)
     # filtro VWAP (diario: se reinicia cada dia del servidor; volumen de ticks)
     vwap_activo: bool = False
     vwap_dist_min_atr: float = 0.5  # el precio debe estar al menos a 0,5 ATR del VWAP (0 = sin condicion); regla practica habitual
@@ -170,6 +176,10 @@ class Config:
         for k in ("tm1", "tm2"):
             if getattr(self, k + "_tf") not in TF_MINUTOS or int(getattr(self, k + "_periodo")) < 2:
                 raise ValueError("La tendencia mayor necesita una temporalidad M15, M30, H1, H4 o D1 y una SMA de al menos 2 periodos.")
+        if self.vp_modo not in VP_MODOS or int(self.vp_dias) < 1 or not self.vp_escalon > 0:
+            raise ValueError("Volume Profile: el modo debe ser 'poc', 'fuera' o 'dentro', los dias de perfil al menos 1 y el escalon mayor que 0.")
+        if self.vp_activo and self.servidor_offset_horas is None:
+            raise ValueError("El filtro Volume Profile necesita el desfase horario del servidor (servidor_offset_horas) para cortar el dia a medianoche CE(S)T.")
         if self.media_tipo not in ("ema", "sma"):
             raise ValueError("El tipo de media debe ser 'ema' o 'sma'.")
         if self.modo_senal not in ("cruce", "precio"):
@@ -205,7 +215,11 @@ class Config:
 
 TF_MINUTOS = {"M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
 
-FILTROS_APAGADOS = dict(tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False)
+VP_MODOS = ("poc", "fuera", "dentro")
+VP_AREA = 0.70                  # el area de valor reune el 70 % del volumen del perfil
+VP_MIN_MINUTOS = 360            # un dia solo cuenta para el perfil si tiene al menos 6 horas de velas (descarta domingos y feriados casi vacios)
+
+FILTROS_APAGADOS = dict(vp_activo=False, tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False)
 
 
 @dataclass
@@ -229,7 +243,8 @@ class Preparado:
     diff: Optional[np.ndarray] = None       # lado de la media por vela: >0 arriba (alcista), <0 abajo; base de la salida por señal
     sl_ref: Optional[np.ndarray] = None     # media de referencia del SL (solo con sl_modo "ema"): el SL queda en sl_ref -/+ sl_off
     sl_off: object = 0.0                    # distancia entre la media y el SL, en unidades de precio (un numero, o una por vela si va en %)
-    tm_aviso: tuple = ()                    # avisos de los filtros de tendencia mayor (p. ej. historial corto para su SMA)
+    tm_aviso: tuple = ()                    # avisos de los filtros de tendencia mayor y de Volume Profile (p. ej. historial corto)
+    vp: Optional[tuple] = None              # (POC, VAH, VAL) de cada vela (NaN si todavia no hay perfil), solo con el filtro Volume Profile
 
 
 def _off(P, i: int) -> float:
@@ -272,6 +287,72 @@ def tendencia_mayor(df: pd.DataFrame, tf: str, periodo: int):
     cv, sv = cl.to_numpy(float)[pos], sma[pos]
     hay = ok & np.isfinite(sv)
     return hay & (cv > sv), hay & (cv < sv), ~hay
+
+
+def _perfil_dia(h: np.ndarray, l: np.ndarray, v: np.ndarray, esc: float):
+    """Perfil de volumen de un dia: (k0, volumen por escalon). El escalon k cubre [k*esc, (k+1)*esc). Cada vela reparte su volumen entre
+    los escalones que toca, en proporcion a cuanto de su rango (minimo a maximo) cae en cada uno; una vela sin rango va entera a su escalon."""
+    k0, k1 = int(np.floor(l.min() / esc)), int(np.floor(h.max() / esc))
+    bordes = np.arange(k0, k1 + 2) * esc
+    ancho = np.maximum(h - l, 1e-9)
+    acum = (np.clip((bordes[None, :] - l[:, None]) / ancho[:, None], 0.0, 1.0) * v[:, None]).sum(axis=0)
+    return k0, np.maximum(np.diff(acum), 0.0)
+
+
+def _area_valor(vol: np.ndarray):
+    """(escalon del POC, escalon inferior, escalon superior del area de valor). POC = escalon de mayor volumen (el mas bajo si hay empate).
+    El area parte del POC y suma de a UN escalon, siempre el vecino de mayor volumen (a igualdad, el de arriba), hasta reunir VP_AREA del total."""
+    poc = int(np.argmax(vol))
+    objetivo = VP_AREA * float(vol.sum())
+    lo = hi = poc
+    acum, n = float(vol[poc]), len(vol)
+    while acum < objetivo:
+        arriba = float(vol[hi + 1]) if hi + 1 < n else -1.0
+        abajo = float(vol[lo - 1]) if lo - 1 >= 0 else -1.0
+        if arriba < 0 and abajo < 0:
+            break
+        if arriba >= abajo:
+            hi += 1
+            acum += arriba
+        else:
+            lo -= 1
+            acum += abajo
+    return poc, lo, hi
+
+
+def niveles_vp(df: pd.DataFrame, cfg: Config):
+    """(POC, VAH, VAL) para cada vela: el perfil de volumen de los ultimos `vp_dias` dias completos anteriores al dia de la vela (dia CE(S)T).
+    Los niveles son fijos todo el dia y solo usan dias ya cerrados (no mira el futuro). Un dia entra al perfil si tiene al menos
+    VP_MIN_MINUTOS de velas; se cuentan dias con datos, asi que el fin de semana no cuenta. Sin N dias previos validos -> NaN.
+    POC = centro de su escalon; VAL/VAH = borde inferior del escalon de abajo / borde superior del escalon de arriba del area de valor.
+    Devuelve ademas True si no habia volumen de ticks y se uso la cantidad de velas."""
+    n = len(df)
+    h, l = df["High"].to_numpy(float), df["Low"].to_numpy(float)
+    sin_vol = "Volume" not in df
+    v = np.ones(n) if sin_vol else df["Volume"].to_numpy(float)
+    esc, N = float(cfg.vp_escalon), int(cfg.vp_dias)
+    base_min = pd.Series(df.index).diff().median() / pd.Timedelta(minutes=1)
+    dia = claves_dia(df.index, cfg)
+    cortes = np.flatnonzero(np.diff(dia)) + 1
+    ini, fin = np.r_[0, cortes], np.r_[cortes, n]
+    perfiles = []                                   # solo los dias validos, en orden
+    poc, vah, val = (np.full(n, np.nan) for _ in range(3))
+    for a, b in zip(ini, fin):
+        previos = perfiles[-N:]
+        if len(previos) >= N:
+            k0 = min(p[0] for p in previos)
+            k1 = max(p[0] + len(p[1]) for p in previos)
+            vol = np.zeros(k1 - k0)
+            for pk, pv in previos:
+                vol[pk - k0: pk - k0 + len(pv)] += pv
+            if vol.sum() > 0:
+                kp, klo, khi = _area_valor(vol)
+                poc[a:b] = (k0 + kp + 0.5) * esc
+                val[a:b] = (k0 + klo) * esc
+                vah[a:b] = (k0 + khi + 1) * esc
+        if (b - a) * base_min >= VP_MIN_MINUTOS:
+            perfiles.append(_perfil_dia(h[a:b], l[a:b], v[a:b], esc))
+    return (poc, vah, val), sin_vol
 
 
 def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
@@ -339,6 +420,15 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
             if sin_m.mean() > 0.30:
                 tm_aviso.append(f"Tendencia mayor {tf_}: la SMA {per_} no existe en el {100 * sin_m.mean():.0f}% de las velas (necesita {per_} velas de {tf_} "
                                 "de historial). Esas señales se descartan: cargá un período más largo o usá una SMA más corta.")
+    vp = None
+    if cfg.vp_activo:
+        vp, _sin_vol = niveles_vp(df, cfg)
+        if _sin_vol:
+            tm_aviso.append("Volume Profile: los datos no traen volumen de ticks; el perfil se armó con la cantidad de velas (tiempo en cada precio).")
+        _sp = np.isnan(vp[0])
+        if _sp.mean() > 0.30:
+            tm_aviso.append(f"Volume Profile: el {100 * _sp.mean():.0f}% de las velas no tiene perfil todavía (necesita {int(cfg.vp_dias)} día(s) completo(s) "
+                            "de historial previo). Esas señales se descartan: cargá un período más largo o usá menos días de perfil.")
     adx = ind.adx_wilder(h, l, c, cfg.adx_periodo)[0] if cfg.adx_activo else None
     er = ind.eficiencia(c, cfg.rango_ventana) if cfg.rango_activo else None
     atr_pct = atr / c * 100.0
@@ -365,6 +455,16 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
         if vwap_min[i] < cfg.vwap_min_minutos or np.isnan(vwap[i]) or (c[i] - vwap[i]) * lado <= 0:
             return False
         return not (cfg.vwap_dist_min_atr > 0 and abs(c[i] - vwap[i]) < cfg.vwap_dist_min_atr * atr[i])
+
+    def ok_vp(i, lado):
+        pc, ah, al = vp[0][i], vp[1][i], vp[2][i]
+        if np.isnan(pc):
+            return False
+        if cfg.vp_modo == "poc":
+            return (c[i] - pc) * lado > 0
+        if cfg.vp_modo == "fuera":
+            return c[i] > ah if lado == 1 else c[i] < al
+        return al <= c[i] <= ah
 
     def ok_adx(i):
         if not entre(adx[i], cfg.adx_min, cfg.adx_max):
@@ -407,6 +507,8 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
             motivo = "tm1"
         elif "tm2" in tm and not (tm["tm2"][0][i] if lado == 1 else tm["tm2"][1][i]):
             motivo = "tm2"
+        elif cfg.vp_activo and not ok_vp(i, lado):
+            motivo = "vp"
         cruces.append((i, lado, motivo))
 
     sp = _spread(df, cfg)
@@ -414,7 +516,7 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     return Preparado(h, l, c, sp, atr, dist, df.index, cruces, 100 * float((raw == 0).mean()),
                      ema_c, ema_l, sube, baja, ok_ses if (cfg.pb_efectivo() and cfg.sesion_activo) else None,
                      claves_dia(df.index, cfg) if cfg.reglas_activas else None, diff,
-                     sl_ref, sl_off, tuple(tm_aviso))
+                     sl_ref, sl_off, tuple(tm_aviso), vp)
 
 
 def pb_de(cfg: Config):

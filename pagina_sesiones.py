@@ -33,7 +33,7 @@ objetivo = st.sidebar.number_input(
 )
 
 
-st.html(vis.barra_superior(
+st.html(vis.banda_titulo(
     "XAU/USD · Movimiento de las sesiones",
     "Rango High-Low en dólares durante las dos primeras horas de Tokio, Londres y Nueva York.",
     [("Desde", f"{fecha_inicio:%d/%m/%Y}"), ("Hasta", f"{fecha_fin:%d/%m/%Y}"), ("Objetivo", f"${objetivo:,.2f}")]))
