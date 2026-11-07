@@ -1102,12 +1102,22 @@ dinero = None
 
 st.write("")
 st.markdown(pdf_pantalla.marca_html(), unsafe_allow_html=True)       # lo que está arriba de esta marca no sale en el PDF
-_c_tit, _c_pdf = st.columns([0.8, 0.2], vertical_alignment="center")
+def _pedir_pdf():
+    estado.imprimir_pdf = True
+
+
+_c_tit, _c_pdf = st.columns([0.7, 0.3], vertical_alignment="center")
 with _c_tit:
     html(vis.barra_superior(f"Resultado de {act_res}", f"Prueba n.º {r['prueba']} de esta sesión",
                             [("In-sample", f"{int(ti['resueltas'])} op."), ("Out-of-sample", f"{int(to['resueltas'])} op.")]))
 with _c_pdf:
-    components.html(pdf_pantalla.boton_html(f"Resultados {act_res} - prueba {r['prueba']}", vis.ROSA, vis.VIOLETA), height=52)
+    with st.container(key="fila_bt_pdf"):
+        st.button("Descargar resultados (PDF)", key="btn_pdf", use_container_width=True,
+                  on_click=_pedir_pdf,
+                  help="Abre el cuadro de impresión con los resultados listos: elegí «Guardar como PDF». Se imprime lo que está desplegado.")
+if estado.get("imprimir_pdf"):
+    estado.imprimir_pdf = False
+    components.html(pdf_pantalla.lanzar_html(f"Resultados {act_res} - prueba {r['prueba']}", vis.TEMAS[vis.TEMA]["BG"]), height=0)
 if act_res != activo:
     st.warning(f"Este resultado es de {act_res}; el símbolo seleccionado ahora es {activo}. "
                "Volvé a correr el backtest para actualizarlo.")

@@ -1,12 +1,11 @@
 """Boton «Descargar resultados (PDF)»: imprime la zona de resultados tal como se ve en pantalla.
 
-El navegador no puede bajar un PDF solo, asi que el boton abre el cuadro de impresion con todo lo de arriba de los
+El navegador no puede bajar un PDF solo, asi que el boton (con el estilo de los de arriba) abre el cuadro de impresion con todo lo de arriba de los
 resultados oculto (barra lateral, parametros, etc.) y la pagina lista para imprimir en horizontal. Ahi se elige
 «Guardar como PDF». El nombre sugerido del archivo es el titulo que se le pasa.
 Es solo del lado del navegador: no toca el calculo ni lo que se muestra en pantalla.
 """
 import json
-from html import escape
 
 CLASE_MARCA = "res-inicio"
 
@@ -75,13 +74,17 @@ def marca_html() -> str:
     return f'<div class="{CLASE_MARCA}" style="height:0;margin:0;padding:0"></div>'
 
 
-def boton_html(titulo_pdf: str, color_a: str, color_b: str, texto: str = "Descargar resultados (PDF)") -> str:
+def css_fondo(bg: str) -> str:
+    """Fija el color de fondo de la pagina al imprimir. Sin esto, algunos navegadores imprimen el fondo con el tema oscuro de Streamlit
+    (casi negro) aunque en pantalla se vea el color de la app. Al ir en el fondo de la raiz (html), tambien tapa los margenes del papel."""
+    return ("@media print { html, body, .stApp, [data-testid=\"stApp\"], [data-testid=\"stAppViewContainer\"], [data-testid=\"stMain\"], "
+            "section.main, [data-testid=\"stMainBlockContainer\"], .block-container, [data-testid=\"stVerticalBlock\"] "
+            "{ background: " + bg + " !important; } }\n")
+
+
+def lanzar_html(titulo_pdf: str, fondo: str = "#ffffff") -> str:
+    """Pagina invisible (alto 0) que abre el cuadro de impresion apenas se carga. Se muestra solo justo despues de apretar el boton
+    «Descargar resultados (PDF)», que es un boton comun de Streamlit con el mismo estilo que los de arriba."""
     seguro = lambda x: json.dumps(x).replace("<", "\\u003c")          # nada que cierre el <script> desde el titulo
-    js = _JS % {"titulo": seguro(titulo_pdf), "css": seguro(CSS_IMPRESION), "marca": CLASE_MARCA}
-    return f"""<!doctype html><html><head><meta charset="utf-8"><style>
-html,body{{margin:0;padding:0;background:transparent;font-family:Inter,'Segoe UI',system-ui,sans-serif;}}
-button{{width:100%;height:46px;border:0;border-radius:14px;cursor:pointer;color:#fff;font-weight:700;font-size:14px;
-background:linear-gradient(90deg,{escape(color_a)},{escape(color_b)});box-shadow:0 4px 14px rgba(0,0,0,.18);}}
-button:hover{{filter:brightness(1.07);}} button:focus-visible{{outline:2px solid #fff;outline-offset:2px;}}
-</style></head><body><button type="button" onclick="imprimirResultados()">&#x2B07; {escape(texto)}</button>
-<script>{js}</script></body></html>"""
+    js = _JS % {"titulo": seguro(titulo_pdf), "css": seguro(CSS_IMPRESION + css_fondo(fondo)), "marca": CLASE_MARCA}
+    return f"<!doctype html><html><body><script>{js}\nsetTimeout(window.imprimirResultados, 600);</script></body></html>"

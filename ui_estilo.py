@@ -241,15 +241,16 @@ button[kind="secondary"]:hover,[data-testid="stBaseButton-secondary"]:hover{back
   transform:translateY(-2px);box-shadow:0 0 0 3px @CARD@,0 0 0 5px @ACC@,0 10px 22px @SHADOW@;}
 button:active{transform:translateY(0);filter:brightness(.97);}
 /* fila de acciones del backtester: botones secundarios con borde degradé, a juego con «Correr backtest» */
-.st-key-fila_bt button[kind="secondary"],.st-key-fila_bt [data-testid="stBaseButton-secondary"]{
+.st-key-fila_bt button[kind="secondary"],.st-key-fila_bt [data-testid="stBaseButton-secondary"],
+.st-key-fila_bt_pdf button[kind="secondary"],.st-key-fila_bt_pdf [data-testid="stBaseButton-secondary"]{
   border:1.5px solid transparent !important;border-radius:12px;
   background:linear-gradient(@CARD@,@CARD@) padding-box,@BTNG@ border-box !important;
   box-shadow:0 4px 14px @GLOW@;min-height:2.6rem;}
-.st-key-fila_bt button[kind="secondary"] :is(p,span,div){color:@ACC@ !important;font-weight:700;white-space:normal;line-height:1.2;}
-.st-key-fila_bt button[kind="secondary"]:not(:disabled):hover{
+.st-key-fila_bt button[kind="secondary"] :is(p,span,div),.st-key-fila_bt_pdf button[kind="secondary"] :is(p,span,div){color:@ACC@ !important;font-weight:700;white-space:normal;line-height:1.2;}
+.st-key-fila_bt button[kind="secondary"]:not(:disabled):hover,.st-key-fila_bt_pdf button[kind="secondary"]:not(:disabled):hover{
   background:@BTNG@ border-box !important;transform:translateY(-2px);filter:brightness(1.12) saturate(1.1);
   box-shadow:0 0 0 3px @CARD@,0 0 0 5px @ACC@,0 10px 22px @GLOW@;}
-.st-key-fila_bt button[kind="secondary"]:not(:disabled):hover :is(p,span,div){color:@BTNTXT@ !important;}
+.st-key-fila_bt button[kind="secondary"]:not(:disabled):hover :is(p,span,div),.st-key-fila_bt_pdf button[kind="secondary"]:not(:disabled):hover :is(p,span,div){color:@BTNTXT@ !important;}
 .st-key-fila_bt button[kind="secondary"]:disabled{opacity:.5;box-shadow:none;cursor:not-allowed;}
 [data-testid="stDataFrame"]{border-radius:12px;overflow:hidden;}
 [data-testid="stExpander"]{background:@CARD@;border-radius:14px;border:0;box-shadow:0 4px 16px @SHADOW2@;}

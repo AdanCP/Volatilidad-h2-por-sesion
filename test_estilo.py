@@ -214,8 +214,12 @@ def test_anillo_acepta_alto_minimo():
 
 def test_boton_pdf_de_resultados():
     import pdf_pantalla as pp
-    h = pp.boton_html('Resultados "XAU" <1>', "#ff4fa3", "#8b5cf6")
-    assert "imprimirResultados" in h and pp.CLASE_MARCA in h and "window.print" in h.replace("P.print", "window.print")
+    h = pp.lanzar_html('Resultados "XAU" <1>')
+    assert "imprimirResultados" in h and pp.CLASE_MARCA in h and "P.print()" in h and "setTimeout(window.imprimirResultados" in h
     assert "<1>" not in h.split("<script>")[1] and "\\u003c1>" in h                # el titulo va escapado dentro del script
     assert "@media print" in pp.CSS_IMPRESION and "stSidebar" in pp.CSS_IMPRESION and "landscape" in pp.CSS_IMPRESION
     assert pp.CLASE_MARCA in pp.marca_html()
+    f = pp.lanzar_html("x", "#eef0fb")
+    assert "background: #eef0fb !important" in f and "stAppViewContainer" in f          # el fondo se fija al color de la app
+    import ui_estilo as v
+    assert ".st-key-fila_bt_pdf button[kind=\"secondary\"]" in v.css()                # mismo estilo que los botones de arriba
