@@ -222,4 +222,5 @@ def test_boton_pdf_de_resultados():
     f = pp.lanzar_html("x", "#eef0fb")
     assert "background: #eef0fb !important" in f and "stAppViewContainer" in f          # el fondo se fija al color de la app
     import ui_estilo as v
+    assert ".st-key-fila_bt_pdf{margin-bottom:14px;}" in v.css()                          # alineado con los chips de la barra
     assert ".st-key-fila_bt_pdf button[kind=\"secondary\"]" in v.css()                # mismo estilo que los botones de arriba

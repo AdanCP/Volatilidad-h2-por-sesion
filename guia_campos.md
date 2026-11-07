@@ -34,7 +34,7 @@ En "3. Señal y gestión", el campo **SL en** tiene la opción **Distancia al cr
 - **Referencia**: el nivel del cruce, que es el punto medio entre la media corta y la larga en la vela de la señal (en esa vela valen casi lo mismo). Con "Precio cruza una SMA", la única media.
 - **Distancia en pips, en dólares de precio o en % del precio.** Con «% del precio» la distancia es un porcentaje del propio nivel de referencia: 0,15 % de un nivel en 2.350 son 3,53 (crece o baja con el precio, sin convertir nada). 1 pip = 10 puntos = 10 × tick_size del símbolo: en el oro 0,10 (30 pips = 3,00), en EURUSD 0,0001. «Dólares (precio)» es la distancia en el precio del activo (en el oro, 3 = el precio se mueve 3,00). El «% del precio» de acá es sobre el nivel del cruce; el SL en «% del precio» (otro modo) se mide desde el precio de entrada. Tampoco es lo mismo que el SL en «Dólares fijos», que es una pérdida en dinero de la cuenta.
 - **Cómo queda el SL:** fijo en el nivel del cruce **menos** la distancia en las compras y **más** la distancia en las ventas, tomado en la vela de la señal (con pullback, en la vela anterior al llenado). No se mueve después.
-- El **riesgo cambia en cada operación**: depende de qué tan lejos estaba el precio de la media. Con el lote fijo, eso cambia los dólares en juego. Para acotarlo, usá «Riesgo máximo por operación» en «4. Lotaje y dinero».
+- El **riesgo cambia en cada operación**: depende de qué tan lejos estaba el precio de la media. Con el lote fijo, eso cambia los dólares en juego. Para acotarlo, usá «Riesgo máximo por operación» en «7. Lotaje y dinero».
 - Si al entrar la media quedó del lado equivocado del precio (el SL quedaría al revés), **esa señal no se opera**. El embudo muestra cuántas fueron.
 - El TP por RR (1:x) y la salida por cruce contrario siguen funcionando: el RR se mide sobre la distancia real al SL de esa operación. El bot de MT5 lo respeta.
 
@@ -47,15 +47,19 @@ En "3. Señal y gestión", el campo **Salida (Take Profit)** permite elegir:
 - En los resultados, «TP» son las operaciones que cerraron con ganancia y «SL» las que cerraron con pérdida (por SL o por la señal). La tabla de operaciones trae la columna «motivo» (tp / sl / senal) y el R de cada una es el real, no uno fijo; el % de equilibrio se calcula con el pago medio observado.
 - El **bot de MT5** respeta esta salida: abre sin TP y cierra a mercado cuando una vela cerrada queda del otro lado de la media (también lo detecta si el PC estuvo apagado), y avisa «SALIDA POR SENAL» al celular.
 
-## 4. Filtros
-Cada filtro activo tiene un botón «⚙ Parámetros». Se pueden activar todos los filtros que quieras a la vez, pero los parámetros se muestran de a uno: al abrir los de un filtro se ocultan los del anterior (los valores se conservan). Al activar un filtro se abren solos.
+## 4. Filtros de estructura y contexto
+Cada filtro activo tiene un botón «⚙ Parámetros». Los filtros se reparten en tres menús según qué miden, pero siguen siendo independientes y se pueden combinar todos a la vez: un cruce se toma solo si pasa todos los filtros activos. Dentro de cada menú los parámetros se muestran de a uno: al abrir los de un filtro se ocultan los del anterior de ese menú (los valores se conservan). Al activar un filtro se abren solos.
 
+Responden a «¿dónde está el precio respecto de una referencia?».
 Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los filtros activos.
 - **SMA.** Compra solo si el cierre está por encima de la SMA y venta solo si está por debajo.
   - *Distancia mínima*: pide que el cierre esté a por lo menos N × ATR de la SMA, para evitar cruces pegados a ella (0 = sin condición).
   - *Pendiente a favor*: la SMA tiene que estar subiendo (en compras) o bajando (en ventas) respecto de hace N velas.
 - **Filtro de tendencia mayor.** Un solo filtro (con su botón «⚙ Parámetros») que adentro tiene dos tendencias independientes, «Tendencia mayor 1» y «Tendencia mayor 2»: podés activar una sola o las dos (si están las dos se exigen las dos). Cada una tiene su **temporalidad** (M15, M30, H1, H4 o D1; tiene que ser mayor a la de las velas) y el **período de su SMA** (200 por defecto). Una compra se toma solo si el cierre de esa temporalidad está **sobre** su SMA y una venta solo si está **debajo**; con el cierre justo en la SMA no se opera. Se usa siempre la **última vela mayor ya cerrada** en ese momento, así que el backtest no mira el futuro y el bot hace lo mismo. Con velas M5 lo más útil suele ser H1 y H4. Ojo con el arranque: la SMA necesita ese número de velas mayores para existir (200 velas H4 son más de un mes), y hasta entonces las señales se descartan; si pasa en más del 30% del período, la app lo avisa. Entra en la ablación con la temporalidad y el período que elegiste.
 - **VWAP (diario).** Precio medio del día ponderado por volumen (precio típico = (máx + mín + cierre) / 3), reiniciado en cada día del servidor. Largos solo si el cierre está sobre el VWAP y cortos solo si está debajo: es un filtro de contexto, no una señal por sí solo. En forex, oro e índices el volumen es el de ticks (cuántas veces cambió el precio), no el volumen real. *Distancia mínima* (por defecto 0,5×ATR): exige que el precio esté al menos esa distancia del VWAP, para no operar en la zona de ruido pegada a él. *Minutos mínimos desde el inicio del día* (por defecto 30): al abrir, el VWAP es casi igual al precio y filtrar ahí es ruido. Ninguno de los dos valores es un estándar formal: son reglas prácticas habituales, y la ablación te dice si aportan. Necesita velas menores a D1; con datos de demo (volumen constante) es solo un promedio simple.
+
+## 5. Filtros de dinámica, régimen y volatilidad
+Responden a «¿el mercado está en condiciones de ser operado?». No dicen hacia dónde ir, sino si conviene operar.
 - **ADX.** Mide la **fuerza** de la tendencia, no su dirección.
   - *Mínimo*: descarta los cruces con ADX bajo (por ejemplo menor a 20, mercado sin tendencia).
   - *Máximo*: descarta tendencias ya muy extendidas (0 = sin límite).
@@ -69,6 +73,9 @@ Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los
 - **ATR.** Mide la volatilidad.
   - *Mínimo / máximo (% del precio)*: ATR dividido el cierre, por cien.
   - *Modo relativo*: compara el ATR actual con su promedio de las últimas N velas. Con mínimo 0,8 descarta el mercado dormido y con máximo 2,0 descarta la volatilidad extrema.
+
+## 6. Filtro de sesión
+Es el único filtro que mira la hora y no el precio, por eso tiene su propio menú. No lleva botón «⚙ Parámetros»: sus campos se muestran directamente al marcarlo.
 - **Sesión y horario.** Con el casillero **sin marcar** (por defecto) opera **24/5, todo el mercado**: toma cruces a cualquier hora en que el mercado esté abierto, sin filtro y sin necesitar el desfase del servidor. Con el casillero **marcado** solo toma cruces dentro de la rueda de Tokio (9:00 a 15:30), Londres (8:00 a 16:30) o Nueva York (9:30 a 16:00), en horario local de cada bolsa y con el horario de verano de cada plaza. Se pueden elegir varias. Ojo: las tres juntas no equivalen a 24/5, porque dejan afuera unas 4 a 5 horas por día (entre el cierre de Nueva York y la apertura de Tokio, y entre el cierre de Tokio y la apertura de Londres).
   - *Limitar horario de cada sesión*: por defecto cada sesión se mide **completa**. Al marcar «Limitar horario de…» elegís un rango **en hora Argentina**; arranca cuando abre la bolsa de esa plaza (hoy: Tokio 21:00, Londres 05:00, Nueva York 11:30) y termina donde cierra esa bolsa (hoy: Tokio 03:30, Londres 13:30, Nueva York 18:00). Ejemplo: para operar solo las dos primeras horas de Nueva York, ponés 11:30 a 13:30.
   - *Se corre solo con el horario de verano*: el rango se guarda como hora de esa plaza (por ejemplo, 9:30 a 11:30 de Nueva York), no como número fijo en hora Argentina. Cuando cambia el horario de verano de Londres o de Nueva York, el rango se corre una hora en hora Argentina y sigue siendo la misma franja de la plaza. Tokio no cambia. En el backtest esto vale para todo el historial, y el bot lo hace igual. Los números que ves en hora Argentina son los de hoy.
@@ -81,7 +88,7 @@ Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los
   - *El servidor cambia con EE.UU.*: casi todos los brokers pasan de GMT+2 a GMT+3 con el verano de EE.UU.
   - En BTC el filtro se desactiva solo (opera 24/7).
 
-## 5. Lotaje y dinero
+## 7. Lotaje y dinero
 - **Lotes.** Tamaño de la posición (1, 0,5, 0,1...). Tiene que respetar el mínimo y el paso del símbolo.
 - **tick_size y tick_value.** Datos del contrato. Con MT5 directo se leen solos de cada símbolo. Con CSV o sintéticos los cargás a mano (en MT5: clic derecho en el símbolo → Especificación).
 - **Comisión por lote.** Se resta de cada operación.
@@ -90,7 +97,7 @@ Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los
 - **Fórmula.** Dinero por cada 1,00 de precio = tick_value / tick_size × lotes. En oro con 0,10 lotes son 10 US$ por cada 1,00.
 - **Qué cambia y qué no.** En SL por ATR o por porcentaje, el lote solo escala los resultados en dinero (R y % no cambian). Con SL en dólares, el lote **sí** cambia las operaciones, porque define qué tan lejos queda el stop en precio.
 
-## 6. Reglas de la cuenta
+## 8. Reglas de la cuenta
 - **Aplicar reglas de cuenta en el backtest.** Tildado (por defecto), el backtest simula la cuenta en orden cronológico y respeta los límites y controles de abajo: las operaciones bloqueadas no cuentan y los resultados, el veredicto y el azar reflejan esas reglas. Destildado, funciona como antes. Los valores quedan cargados y el bot de MT5 los usa igual. Cada tramo (todo, in-sample, out-of-sample) y cada corrida al azar arranca con una cuenta nueva.
 - **Pérdida diaria máxima (%) y modo.** 5 % por defecto (0 = sin límite). *Trailing*: el límite es un % del balance con el que empezó el día y se recalcula cada día. *Estático*: un monto fijo en dólares (el % del capital inicial) que se resta del balance de inicio del día. Se vigila el equity, con lo flotante incluido. Al tocarlo se cierra todo y no se opera más ese día.
 - **Pérdida total máxima (%) y modo.** 10 % por defecto (0 = sin límite). *Estático*: el piso es fijo (capital inicial menos el %), como en FTMO. *Trailing*: el piso sube con el balance máximo alcanzado y nunca baja. Al tocarlo la cuenta «se quema»: el backtest termina ahí y el bot se detiene hasta que lo reactives a mano.
@@ -100,18 +107,18 @@ Son independientes y se pueden combinar. Un cruce se toma solo si pasa todos los
 - **Desfase del servidor.** Sirve para cortar el día a medianoche de Europa Central (hora CE(S)T), como FTMO, y no a la del servidor. Medilo con el mercado abierto; es el mismo dato del filtro de sesión (si lo usás, manda ese).
 - **Resultados de las reglas.** Con las reglas aplicadas aparecen: días bloqueados por el límite diario, señales salteadas (por día bloqueado, protección, riesgo o pausa), si la cuenta se quemó y el peor día. Dentro de una vela no se conoce el máximo flotante, así que los límites del día se aplican de forma aproximada.
 
-## 7. Gestión de riesgo
+## 9. Gestión de riesgo
 - **Pausa para volver a operar tras una pérdida (minutos).** Destildado por defecto. Después de una operación que cierra en pérdida (por SL, por límite o por la salida por señal), las señales que caen dentro de ese tiempo se descartan, no se posponen.
 - **Pausa para volver a operar tras una ganancia (minutos).** Destildado por defecto. Igual que el anterior, pero después de una operación que cierra en ganancia: las señales que caen dentro de ese tiempo se descartan, no se posponen. Se pueden usar los dos a la vez. En el resumen de las reglas de la cuenta, las señales salteadas se cuentan por separado («pausa tras pérdida» y «pausa tras ganancia»). El bot también lo respeta.
 - **Retroceso para volver a operar tras una ganancia (%) y vencimiento.** Tiene su propia casilla y es independiente de la pausa por minutos: podés usar solo una, solo la otra, o las dos juntas. Solo para ganancias y solo en el *mismo sentido*. Destildado por defecto. Si está activo, después de una compra ganadora la próxima compra solo se toma cuando el precio retrocede ese % del recorrido de la ganancia (de la entrada al cierre), medido desde el cierre: compra a 4000, TP 4050, 50% → próxima compra solo con precio ≤ 4025. En una venta ganadora es al revés (precio ≥ cierre + %). Si las dos están activas se exigen las dos cosas: que pasen los minutos y que el precio retroceda. *Vencimiento*: **Nunca** (rige hasta que el precio retroceda o haya otra operación), **Al terminar el día** (hora CE(S)T) o **Después de N horas**; pasado ese momento se vuelve a operar sin exigir el retroceso. Las señales descartadas se cuentan como «sin retroceso». El bot lo respeta y guarda el precio de cierre y el recorrido de la última ganadora de cada lado.
 - **Sentido de la pausa (tras pérdida y tras ganancia).** Cada pausa tiene su selector: *Ambos* frena a todas las señales (como siempre), *Mismo sentido* solo a las del mismo lado que la operación que cerró (si cerró una compra, espera antes de otra compra) y *Sentido contrario* solo a las del lado opuesto (si cerró una compra, espera antes de una venta). Cada operación cerrada arranca su propio reloj según su sentido y su resultado, y si hay dos pausas activas una señal se descarta si cualquiera la frena. Por defecto no hay ninguna pausa activa. El bot lo respeta y recuerda de qué lado fue la última operación ganadora y perdedora.
 
-## 8. Costos
+## 10. Costos
 - **Spread.** *De la vela*: el spread de cierre de cada vela (en historial viejo suele venir en 0, lo que subestima el costo). *Ceros → mediana*: reemplaza los ceros por la mediana. *Valor fijo*: el que indiques. *Sin spread*: solo para comparar.
 - **Cómo se aplica.** Los largos entran al precio de venta (ask). En los cortos, el SL y el TP se activan con el ask.
 - **Costo extra por operación.** Unidades de precio que se restan a cada operación resuelta (slippage, comisión). En R equivale a costo / distancia del SL.
 
-## 9. Control de sobreajuste
+## 11. Control de sobreajuste
 - **Out-of-sample reservado (%).** El último tramo del historial, que se mide aparte. Si el modelo funciona en el tramo de ajuste (in-sample) pero no en este, probablemente era azar o sobreajuste.
 - **Repeticiones del azar.** Cuántas veces se simulan entradas aleatorias con la misma cantidad de operaciones y las mismas reglas de SL, TP y spread. Sirve de vara de comparación.
 - **Pruebas en la sesión.** Cuenta cuántas configuraciones evaluaste. Con muchas pruebas, un buen resultado puede ser casualidad.
@@ -166,13 +173,13 @@ El botón **Generar bot (.mq5)** descarga un Expert Advisor de MetaTrader 5 con 
 **Avisos al celular (notificaciones push de MT5).** El bot avisa: operación abierta (a mercado o por pullback), cierre por TP, por SL o por otro motivo (con el resultado en dinero), freno diario, freno total, rechazo al arrancar, bot iniciado (primera puesta en marcha) o recargado (cada vez que se vuelve a cargar), bot detenido (con el motivo), trading algorítmico desactivado o reactivado, pérdida y recuperación de la conexión con el servidor, reinicio tras un hueco (PC apagada, suspendida o MT5 cerrado) y un chequeo diario a las 20:00 de Argentina («CHEQUEO DIARIO OK» si todo anda, o «CON PROBLEMAS» y el motivo). Si un día no llega el chequeo de las 20:00, el bot o la PC no están funcionando. Requiere configurar el MetaQuotes ID en Herramientas → Opciones → Notificaciones.
 
 ## Objetivo y retiros
-(Con «Retirar al llegar al objetivo» activo en la sección 5 («Lotaje y dinero»), esta sección se reemplaza por «Retiros de la cuenta» y «Monto ideal a retirar», que usan la simulación de la cuenta con sus límites.)
+(Con «Retirar al llegar al objetivo» activo en la sección 7 («Lotaje y dinero»), esta sección se reemplaza por «Retiros de la cuenta» y «Monto ideal a retirar», que usan la simulación de la cuenta con sus límites.)
 Muestra cuánto tarda la estrategia en ganar un porcentaje del balance inicial (por defecto 5 %) y, si retiraras cada vez, cuánto tarda en volver a ganarlo, hasta el final del período.
 - **Primer objetivo:** tiempo desde el inicio del período hasta que la ganancia acumulada de las operaciones cerradas llega al objetivo.
 - **Retiros logrados:** cuántas veces lo alcanzó. En cada retiro se supone que retirás todo lo ganado, así que el balance vuelve al inicial y arranca un ciclo nuevo.
 - **Tiempo medio entre retiros:** promedio, mediana, mínimo y máximo de los ciclos.
 - **Ciclo en curso:** cuánto lleva ganado el tramo final, que todavía no llegó al objetivo.
-- *Objetivo por retiro:* lo podés cambiar (por ejemplo 8 o 10 %). Se calcula sobre el **capital** cargado en la sección 5.
+- *Objetivo por retiro:* lo podés cambiar (por ejemplo 8 o 10 %). Se calcula sobre el **capital** cargado en la sección 7.
 - Las caídas cuentan: si el ciclo baja de cero, hay que recuperarlas antes de llegar al objetivo. El tiempo es calendario (incluye fines de semana) y es teórico: no cuenta la ganancia flotante.
 
 ## Backtester SMA (página aparte en el menú)

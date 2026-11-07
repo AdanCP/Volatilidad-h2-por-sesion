@@ -221,31 +221,38 @@ def _sep_filtro():
 _FILTRO_ABIERTO = "filtro_abierto"
 
 
-def _acc_alternar(clave):
-    """Abre los parámetros de un filtro (y cierra el que estaba abierto) o los cierra si ya estaban abiertos."""
-    st.session_state[_FILTRO_ABIERTO] = None if st.session_state.get(_FILTRO_ABIERTO) == clave else clave
+def _clave_abierto(grupo):
+    """Cada menú de filtros tiene su propio acordeón: abrir un filtro de un menú no cierra el de otro."""
+    return f"{_FILTRO_ABIERTO}_{grupo}"
 
 
-def _acc_cab(clave, lista):
-    """Botón para mostrar u ocultar los parámetros de un filtro activo. Al activarlo se abre solo (y se cierra el anterior).
-    Los parámetros siguen dibujados cuando están ocultos, así que no pierden su valor."""
+def _acc_alternar(clave, grupo):
+    """Abre los parámetros de un filtro (y cierra el que estaba abierto en su menú) o los cierra si ya estaban abiertos."""
+    k = _clave_abierto(grupo)
+    st.session_state[k] = None if st.session_state.get(k) == clave else clave
+
+
+def _acc_cab(clave, lista, grupo):
+    """Botón para mostrar u ocultar los parámetros de un filtro activo. Al activarlo se abre solo (y se cierra el anterior
+    de su menú). Los parámetros siguen dibujados cuando están ocultos, así que no pierden su valor."""
     lista.append(clave)
     previo = f"_acc_prev_{clave}"
     if not st.session_state.get(previo, False):
-        st.session_state[_FILTRO_ABIERTO] = clave
+        st.session_state[_clave_abierto(grupo)] = clave
     st.session_state[previo] = True
-    st.button("⚙ Parámetros", key=f"acc_btn_{clave}", on_click=_acc_alternar, args=(clave,), use_container_width=True)
+    st.button("⚙ Parámetros", key=f"acc_btn_{clave}", on_click=_acc_alternar, args=(clave, grupo), use_container_width=True)
 
 
-def _acc_css(lista, activos):
-    """Oculta los parámetros de los filtros que no son el abierto y limpia la marca de los que se desactivaron."""
-    for c in ("sma", "vwap", "adx", "rango", "atr", "ses", "tm"):
+def _acc_css(lista, activos, grupo, claves):
+    """Oculta los parámetros de los filtros del menú que no son el abierto y limpia la marca de los que se desactivaron."""
+    for c in claves:
         if c not in activos:
             st.session_state[f"_acc_prev_{c}"] = False
-    ab = st.session_state.get(_FILTRO_ABIERTO)
+    k = _clave_abierto(grupo)
+    ab = st.session_state.get(k)
     if ab not in lista:
         ab = None
-        st.session_state[_FILTRO_ABIERTO] = None
+        st.session_state[k] = None
     ocultar = [f".st-key-acc_{c}" for c in lista if c != ab]
     if ocultar:
         st.markdown("<style>" + ",".join(ocultar) + "{display:none !important;}</style>", unsafe_allow_html=True)
@@ -456,12 +463,12 @@ with st.sidebar:
         if not usa_atr:
             st.caption("Desactivado: con SL en dólares o en % del precio y sin filtros que usen ATR, este valor no interviene.")
 
-    with st.expander("4. Filtros (independientes)", expanded=False):
+    with st.expander("4. Filtros de estructura y contexto", expanded=False):
         _acc_lista, _acc_activos = [], set()
         sma_on = _W(st).checkbox("Filtro SMA", key="f_sma")
         if sma_on:
             _acc_activos.add("sma")
-            _acc_cab("sma", _acc_lista)
+            _acc_cab("sma", _acc_lista, "ctx")
             with st.container(key="acc_sma"):
                 sma_per = _W(st).number_input("Período SMA", 2, 1000, 200)
                 sma_dist = _W(st).number_input("Distancia mínima al cierre (múltiplos de ATR, 0 = sin)", 0.0, value=0.0, step=0.1, key="f_sma_dist")
@@ -477,7 +484,7 @@ with st.sidebar:
         _tmv = {"tm1": (False, "H1", 200), "tm2": (False, "H4", 200)}
         if tm_on:
             _acc_activos.add("tm")
-            _acc_cab("tm", _acc_lista)
+            _acc_cab("tm", _acc_lista, "ctx")
             with st.container(key="acc_tm"):
                 for _k, _n, _tf0 in (("tm1", 1, "H1"), ("tm2", 2, "H4")):
                     _on = _W(st).checkbox(f"Tendencia mayor {_n}", key=f"f_{_k}")
@@ -495,7 +502,7 @@ with st.sidebar:
         vwap_on = _W(st).checkbox("Filtro VWAP (diario)", key="f_vwap")
         if vwap_on:
             _acc_activos.add("vwap")
-            _acc_cab("vwap", _acc_lista)
+            _acc_cab("vwap", _acc_lista, "ctx")
             with st.container(key="acc_vwap"):
                 vwap_dist = _W(st).number_input("Distancia mínima al VWAP (múltiplos de ATR, 0 = sin)", 0.0, value=0.5, step=0.1, key="f_vwap_dist",
                                             help="Regla práctica habitual: exigir al menos 0,5 ATR de distancia para no operar en la zona de ruido pegada al VWAP.")
@@ -506,11 +513,14 @@ with st.sidebar:
                            "Largos solo con el cierre sobre el VWAP; cortos solo debajo. Necesita velas menores a D1.")
         else:
             vwap_dist, vwap_min = 0.5, 30
-        _sep_filtro()
+        _acc_css(_acc_lista, _acc_activos, "ctx", ("sma", "tm", "vwap"))
+
+    with st.expander("5. Filtros de dinámica, régimen y volatilidad", expanded=False):
+        _acc_lista, _acc_activos = [], set()
         adx_on = _W(st).checkbox("Filtro ADX")
         if adx_on:
             _acc_activos.add("adx")
-            _acc_cab("adx", _acc_lista)
+            _acc_cab("adx", _acc_lista, "reg")
             with st.container(key="acc_adx"):
                 adx_per = _W(st).number_input("Período ADX", 2, 100, 14)
                 adx_min = _W(st).number_input("ADX mínimo", 0.0, 100.0, 20.0)
@@ -524,7 +534,7 @@ with st.sidebar:
                                     "limpia, 0 = va y viene sin avanzar (rango). Si el ratio es menor al mínimo, la señal no se opera.")
         if rango_on:
             _acc_activos.add("rango")
-            _acc_cab("rango", _acc_lista)
+            _acc_cab("rango", _acc_lista, "reg")
             with st.container(key="acc_rango"):
                 rango_vent = _W(st).number_input("Ventana (velas)", 2, 500, 20, key="rango_vent")
                 rango_min = _W(st).number_input("Ratio mínimo (0 a 1)", 0.0, 1.0, 0.30, 0.05, format="%.2f", key="rango_min")
@@ -536,7 +546,7 @@ with st.sidebar:
         atr_on = _W(st).checkbox("Filtro ATR", key="f_atr")
         if atr_on:
             _acc_activos.add("atr")
-            _acc_cab("atr", _acc_lista)
+            _acc_cab("atr", _acc_lista, "reg")
             with st.container(key="acc_atr"):
                 atr_min = _W(st).number_input("ATR mínimo (% del precio, 0 = sin)", 0.0, value=0.0, step=0.01, format="%.3f")
                 atr_max = _W(st).number_input("ATR máximo (% del precio, 0 = sin)", 0.0, value=0.0, step=0.01, format="%.3f")
@@ -549,7 +559,9 @@ with st.sidebar:
                     rel_n, rel_min, rel_max = 0, 0.0, 0.0
         else:
             atr_min = atr_max = rel_n = rel_min = rel_max = 0
-        _sep_filtro()
+        _acc_css(_acc_lista, _acc_activos, "reg", ("adx", "rango", "atr"))
+
+    with st.expander("6. Filtro de sesión", expanded=False):
         ses_on = _W(st).checkbox("Filtro de sesión y horario", key="filtro_de_sesion",
                              help="Sin marcar, el bot opera 24/5: toma cruces a cualquier hora en que el mercado esté "
                                   "abierto, sin filtro y sin necesitar el desfase del servidor. Marcado, solo toma cruces dentro de las "
@@ -561,60 +573,56 @@ with st.sidebar:
         horarios_ses = None
         _sin_pausa = []
         if ses_on:
-            _acc_activos.add("ses")
-            _acc_cab("ses", _acc_lista)
-            with st.container(key="acc_ses"):
-                sesiones = _W(st).multiselect("Sesiones permitidas", SESIONES, SESIONES)
-                _hoy = date.today()
-                _rangos, _nombre_plaza = {}, {"Tokio": "Tokio", "Londres": "Londres", "Nueva York": "Nueva York"}
-                for _nom in sesiones:
-                    _ini_a, _fin_a = sesmod.ventana_art(_nom, _hoy)
-                    _lim = _W(st).checkbox(f"Limitar horario de {_nom} (hora Argentina)", key=f"limitar_horario_de_{cio.slug(_nom)}", help=(
-                        "Por defecto la sesión se mide completa. Al marcarlo elegís el rango en hora Argentina; arranca cuando abre la "
-                        "bolsa de esa plaza. Se guarda como hora de esa plaza, así que sigue el horario de verano solo."))
-                    if _lim:
-                        _c1, _c2 = st.columns(2)
-                        _d = _W(_c1).time_input("Desde", _hora(int(_ini_a), int(round((_ini_a % 1) * 60))), step=900,
-                                                key=cio.slug(f"{_nom}: desde (hora Argentina)"))
-                        _h = _W(_c2).time_input("Hasta", _hora(int(_fin_a), int(round((_fin_a % 1) * 60))), step=900,
-                                                key=cio.slug(f"{_nom}: hasta (hora Argentina)"))
-                        _rangos[_nom] = (_d.hour + _d.minute / 60.0, _h.hour + _h.minute / 60.0)
-                        try:
-                            _zona = sesmod.SESIONES_LOCAL[_nom][0]
-                            _l1, _l2 = (sesmod.art_a_local(x, _zona, _hoy) for x in _rangos[_nom])
-                            st.caption(f"= {_l1 // 1:02.0f}:{round((_l1 % 1) * 60):02d} a {_l2 // 1:02.0f}:{round((_l2 % 1) * 60):02d} hora local de "
-                                       f"{_nom}. " + ("Tokio no cambia de horario." if _nom == "Tokio" else "Se corre solo con el horario de verano."))
-                        except Exception:
-                            pass
-                    else:
-                        st.caption(f"{_nom} completa: {_ini_a // 1:02.0f}:{round((_ini_a % 1) * 60):02d} a "
-                                   f"{_fin_a // 1:02.0f}:{round((_fin_a % 1) * 60):02d} hora Argentina (hoy).")
-                    _pa, _pb = sesmod.pausa_art(_nom, _hoy)
-                    _hm = lambda x: f"{int(round(x * 60)) % 1440 // 60:02d}:{int(round(x * 60)) % 60:02d}"
-                    if _W(st).checkbox(f"Excluir pausa de mediodía de {_nom}", key=f"excluir_pausa_de_{cio.slug(_nom)}", help=(
-                            "Opera la sesión salvo en su pausa de mediodía. Se excluyen las velas que abren desde el inicio de la pausa "
-                            "hasta antes del fin (en M5 con la pausa de 11:30 a 12:30, de la vela 11:30 a la 12:25). Solo bloquea "
-                            "entradas nuevas: lo que ya está abierto sigue. La pausa es fija y se guarda en hora de esa plaza, "
-                            "así que sigue el horario de verano sola.")):
-                        _sin_pausa.append(_nom)
-                        _z = sesmod.PAUSAS_LOCAL[_nom][0]
-                        st.caption(f"Sin pausa: {_hm(_pa)} a {_hm(_pb)} hora Argentina (hoy) = "
-                                   f"{_hm(sesmod.PAUSAS_LOCAL[_nom][1])} a {_hm(sesmod.PAUSAS_LOCAL[_nom][2])} hora local de {_nom}. "
-                                   + ("Tokio no cambia de horario." if _nom == "Tokio" else "Se corre sola con el horario de verano."))
-                try:
-                    horarios_ses = sesmod.horarios_con_rangos(_rangos, _hoy) if _rangos else None
-                except ValueError as e:
-                    st.error(str(e))
-                offset = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)
-                dst = _W(st).checkbox("El servidor cambia de hora con EE.UU.", True)
-                st.caption("Confirmá el desfase midiéndolo con el mercado abierto. Los horarios de "
-                           "las sesiones se mueven con el horario de verano de cada plaza. En BTC el "
-                           "filtro se desactiva solo (opera 24/7).")
+            sesiones = _W(st).multiselect("Sesiones permitidas", SESIONES, SESIONES)
+            _hoy = date.today()
+            _rangos, _nombre_plaza = {}, {"Tokio": "Tokio", "Londres": "Londres", "Nueva York": "Nueva York"}
+            for _nom in sesiones:
+                _ini_a, _fin_a = sesmod.ventana_art(_nom, _hoy)
+                _lim = _W(st).checkbox(f"Limitar horario de {_nom} (hora Argentina)", key=f"limitar_horario_de_{cio.slug(_nom)}", help=(
+                    "Por defecto la sesión se mide completa. Al marcarlo elegís el rango en hora Argentina; arranca cuando abre la "
+                    "bolsa de esa plaza. Se guarda como hora de esa plaza, así que sigue el horario de verano solo."))
+                if _lim:
+                    _c1, _c2 = st.columns(2)
+                    _d = _W(_c1).time_input("Desde", _hora(int(_ini_a), int(round((_ini_a % 1) * 60))), step=900,
+                                            key=cio.slug(f"{_nom}: desde (hora Argentina)"))
+                    _h = _W(_c2).time_input("Hasta", _hora(int(_fin_a), int(round((_fin_a % 1) * 60))), step=900,
+                                            key=cio.slug(f"{_nom}: hasta (hora Argentina)"))
+                    _rangos[_nom] = (_d.hour + _d.minute / 60.0, _h.hour + _h.minute / 60.0)
+                    try:
+                        _zona = sesmod.SESIONES_LOCAL[_nom][0]
+                        _l1, _l2 = (sesmod.art_a_local(x, _zona, _hoy) for x in _rangos[_nom])
+                        st.caption(f"= {_l1 // 1:02.0f}:{round((_l1 % 1) * 60):02d} a {_l2 // 1:02.0f}:{round((_l2 % 1) * 60):02d} hora local de "
+                                   f"{_nom}. " + ("Tokio no cambia de horario." if _nom == "Tokio" else "Se corre solo con el horario de verano."))
+                    except Exception:
+                        pass
+                else:
+                    st.caption(f"{_nom} completa: {_ini_a // 1:02.0f}:{round((_ini_a % 1) * 60):02d} a "
+                               f"{_fin_a // 1:02.0f}:{round((_fin_a % 1) * 60):02d} hora Argentina (hoy).")
+                _pa, _pb = sesmod.pausa_art(_nom, _hoy)
+                _hm = lambda x: f"{int(round(x * 60)) % 1440 // 60:02d}:{int(round(x * 60)) % 60:02d}"
+                if _W(st).checkbox(f"Excluir pausa de mediodía de {_nom}", key=f"excluir_pausa_de_{cio.slug(_nom)}", help=(
+                        "Opera la sesión salvo en su pausa de mediodía. Se excluyen las velas que abren desde el inicio de la pausa "
+                        "hasta antes del fin (en M5 con la pausa de 11:30 a 12:30, de la vela 11:30 a la 12:25). Solo bloquea "
+                        "entradas nuevas: lo que ya está abierto sigue. La pausa es fija y se guarda en hora de esa plaza, "
+                        "así que sigue el horario de verano sola.")):
+                    _sin_pausa.append(_nom)
+                    _z = sesmod.PAUSAS_LOCAL[_nom][0]
+                    st.caption(f"Sin pausa: {_hm(_pa)} a {_hm(_pb)} hora Argentina (hoy) = "
+                               f"{_hm(sesmod.PAUSAS_LOCAL[_nom][1])} a {_hm(sesmod.PAUSAS_LOCAL[_nom][2])} hora local de {_nom}. "
+                               + ("Tokio no cambia de horario." if _nom == "Tokio" else "Se corre sola con el horario de verano."))
+            try:
+                horarios_ses = sesmod.horarios_con_rangos(_rangos, _hoy) if _rangos else None
+            except ValueError as e:
+                st.error(str(e))
+            offset = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)
+            dst = _W(st).checkbox("El servidor cambia de hora con EE.UU.", True)
+            st.caption("Confirmá el desfase midiéndolo con el mercado abierto. Los horarios de "
+                       "las sesiones se mueven con el horario de verano de cada plaza. En BTC el "
+                       "filtro se desactiva solo (opera 24/7).")
         else:
             sesiones, offset, dst = list(SESIONES), None, True
-        _acc_css(_acc_lista, _acc_activos)
 
-    with st.expander("5. Lotaje y dinero", expanded=False):
+    with st.expander("7. Lotaje y dinero", expanded=False):
         lotes = _W(st).number_input("Lotes", 0.01, 1000.0, 0.10, 0.01, format="%.2f")
         tick_size_man, tick_value_man = 0.01, 1.0
         if any(s not in specs for s in datos):
@@ -635,7 +643,7 @@ with st.sidebar:
                                      "pérdida del día. Solo el backtest: el bot opera con el balance real y los retiros los hacés vos.")
         retiro_pct = _W(st).number_input("Objetivo por retiro (% del capital inicial)", 0.5, 100.0, 5.0, 0.5, disabled=not retiro_on)
 
-    with st.expander("6. Reglas de la cuenta", expanded=False):
+    with st.expander("8. Reglas de la cuenta", expanded=False):
         reglas_on = _W(st).checkbox("Aplicar reglas de cuenta en el backtest", value=True,
                                 help="Tildado: el backtest simula la cuenta en orden cronológico y respeta los límites y controles de "
                                      "abajo (las operaciones bloqueadas no cuentan). Destildado: funciona como hasta ahora, sin "
@@ -678,7 +686,7 @@ with st.sidebar:
                    "mercado abierto; es el mismo dato del filtro de sesión.")
         limite_pct = perd_tot
 
-    with st.expander("7. Gestión de riesgo", expanded=False):
+    with st.expander("9. Gestión de riesgo", expanded=False):
         pausa_on = _W(st).checkbox("Pausa para volver a operar tras una pérdida", key=cio.slug("Tiempo mínimo tras una pérdida (minutos)"),
                                help="Después de una operación que cierra en pérdida, las señales que caen dentro de este "
                                     "tiempo se descartan.")
@@ -704,12 +712,12 @@ with st.sidebar:
         pausa_gan_vence_h = _W(st).number_input("Horas de vigencia del retroceso", 0.5, 10_000.0, 24.0, 1.0,
                                                 disabled=not (retro_on and pausa_gan_vence == "horas"))
 
-    with st.expander("8. Costos", expanded=False):
+    with st.expander("10. Costos", expanded=False):
         spread = SPREADS[_W(st).selectbox("Spread", list(SPREADS))]
         spread_fijo = _W(st).number_input("Spread fijo (unid. de precio)", 0.0, value=0.3) if spread == "fijo" else 0.0
         costo_extra = _W(st).number_input("Costo extra por operación (unid. de precio)", 0.0, value=0.0)
 
-    with st.expander("9. Control de sobreajuste", expanded=False):
+    with st.expander("11. Control de sobreajuste", expanded=False):
         oos = _W(st).slider("Out-of-sample reservado (%)", 10, 50, 30)
         azar_n = _W(st).number_input("Repeticiones del azar", 20, 500, 100, 20)
 
@@ -860,7 +868,7 @@ if sl_modo == SL_EMA:
                          + ("del cruce" if sl_ema_ref == "cruce" else "de la media") + (": distancia en % del nivel" if sl_ema_unidad == "pct" else ": distancia en precio"), vis.chips(conv),
                          "El SL real de cada operación es la media (al entrar) menos o más esa distancia, así que el riesgo en dólares "
                          "cambia de una operación a otra con el lote fijo. Para limitarlo, usá «Riesgo máximo por operación» en "
-                         "«5. Lotaje y dinero»."))
+                         "«7. Lotaje y dinero»."))
     except ValueError as e:
         st.error(str(e))
 
@@ -1451,7 +1459,7 @@ if len(res) and dinero and not _retiro_sim:
             html(f"<div style='padding-top:2.05rem;font-size:.8rem;color:{vis.SUAVE}'>= US$ {vis.n(_cap * _obj_pct / 100, 0)} "
                  f"sobre un balance inicial de US$ {vis.n(_cap, 0)}</div>")
     if _cap <= 0:
-        st.info("Cargá el capital de la cuenta (sección 5 de la barra lateral, «Lotaje y dinero») y volvé a correr para calcular el objetivo.")
+        st.info("Cargá el capital de la cuenta (sección 7 de la barra lateral, «Lotaje y dinero») y volvé a correr para calcular el objetivo.")
     else:
         _ob = met.ciclos_objetivo(tr, r["P"].indice, tick_size, tick_value, lotes_u, comision_u, _cap, _obj_pct)
         _rs, _ec, _cs = _ob["resumen"], _ob["en_curso"], _ob["ciclos"]

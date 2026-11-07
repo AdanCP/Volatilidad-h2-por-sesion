@@ -258,6 +258,7 @@ button:active{transform:translateY(0);filter:brightness(.97);}
 .tb{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin:0 0 14px;}
 .tb h1{margin:0;font-size:1.7rem;font-weight:800;color:@TXT@;}
 .tb .sub{color:@MUTED@;font-size:.9rem;margin-top:2px;}
+.st-key-fila_bt_pdf{margin-bottom:14px;}
 .chips{display:flex;gap:8px;flex-wrap:wrap;}
 .chip{background:@CARD@;border-radius:999px;padding:6px 14px;font-size:.78rem;font-weight:600;color:@ACC@;
   box-shadow:0 3px 10px @SHADOW@;white-space:nowrap;}
