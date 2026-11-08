@@ -371,67 +371,74 @@ with st.sidebar:
             ema_c = _W(c1).number_input(f"{MEDIA} corta", 2, 500, 20 if ES_SMA else 13)
             ema_l = _W(c2).number_input(f"{MEDIA} larga", 3, 1000, 50 if ES_SMA else 34)
         direccion = DIRECCIONES[_W(st).selectbox("Dirección", list(DIRECCIONES))]
-        st.divider()
+        _acc_lista, _acc_activos = [], {"sl", "tp"}      # acordeón como el de los filtros: un solo bloque abierto a la vez
+        st.session_state.setdefault(_clave_abierto("sg"), "sl")
+        st.session_state["_acc_prev_sl"] = st.session_state["_acc_prev_tp"] = True      # siempre activos: no se abren solos
+        _sep_filtro()
         pb_on = _W(st).checkbox(f"Entrar en pullback a la {MEDIA} (opcional)",
                             help="Apagado: se entra al cierre de la vela del cruce, como siempre. Encendido: el cruce sigue "
                                  f"siendo la señal, pero la entrada se hace cuando el precio retrocede hacia la {MEDIA}.")
         pb_pct, pb_ema, pb_velas = 50, "corta", 10
         if pb_on:
-            pb_pct = _W(st).number_input(f"Retroceso hacia la {MEDIA} (%)", 0, 100, 50, 5,
-                                     help="0 = entrar al cierre (igual que sin pullback). 100 = entrar recién cuando el precio "
-                                          f"toca la {MEDIA}. Se mide sobre la distancia entre el extremo posterior al cruce y la {MEDIA}.")
-            if modo_senal == "cruce":
-                pb_ema = {"Corta": "corta", "Larga": "larga"}[_W(st).radio(f"{MEDIA} de referencia", ["Corta", "Larga"], horizontal=True)]
-            pb_velas = _W(st).number_input("Caducidad (velas)", 1, 200, 10,
-                                       help="Si en estas velas el precio no hizo el retroceso, la orden se cancela. También "
-                                            "se cancela si aparece un cruce en sentido contrario.")
-            st.caption("Con pullback, el filtro de sesión se evalúa cuando se ejecuta la entrada.")
-        st.divider()
+            _acc_activos.add("pb")
+            _acc_cab("pb", _acc_lista, "sg")
+            with st.container(key="acc_pb"):
+                pb_pct = _W(st).number_input(f"Retroceso hacia la {MEDIA} (%)", 0, 100, 50, 5,
+                                         help="0 = entrar al cierre (igual que sin pullback). 100 = entrar recién cuando el precio "
+                                              f"toca la {MEDIA}. Se mide sobre la distancia entre el extremo posterior al cruce y la {MEDIA}.")
+                if modo_senal == "cruce":
+                    pb_ema = {"Corta": "corta", "Larga": "larga"}[_W(st).radio(f"{MEDIA} de referencia", ["Corta", "Larga"], horizontal=True)]
+                pb_velas = _W(st).number_input("Caducidad (velas)", 1, 200, 10,
+                                           help="Si en estas velas el precio no hizo el retroceso, la orden se cancela. También "
+                                                "se cancela si aparece un cruce en sentido contrario.")
+                st.caption("Con pullback, el filtro de sesión se evalúa cuando se ejecuta la entrada.")
+        _sep_filtro()
         _sal_cruce = modo_senal == "cruce"
         _op_sal = "Cuando las medias se cruzan en sentido contrario" if _sal_cruce else "Cuando el precio cambia de lado de la media"
         _k_sal = f"salida_tp_{modo_senal}"
         # Primero va el Stop Loss y después el Take Profit; la salida elegida se lee de session_state (el radio se dibuja más abajo).
         salida_modo = "senal" if str(_sv(_k_sal)).startswith("Cuando") else "rr"
         SL_EMA = SL_EMA_PRECIO if modo_senal == "precio" else SL_EMA_CRUCE        # el nombre depende de la señal
-        sl_modo = _W(st).radio("Stop Loss (SL) en", [SL_ATR, SL_PCT, SL_USD, SL_EMA],
-                               help=f"{SL_EMA}: el SL queda fijo en el nivel "
+        _ayuda_sl = (f"{SL_EMA}: el SL queda fijo en el nivel "
                                     + ("de la media" if modo_senal == "precio" else "del cruce de las dos medias (el punto medio entre ambas en la vela de la señal)")
                                     + " más o menos una distancia en pips o en dólares de precio. Los otros modos miden el SL desde el precio de entrada.")
-        sl_ema_ref, sl_ema_unidad = ("larga" if modo_senal == "precio" else "cruce"), "precio"   # en modo precio hay una sola media
-        sl_usd = tp_usd = 0.0
-        tp_modo = TP_RR
-        if sl_modo == SL_EMA:
-            if modo_senal == "precio":
-                st.caption(f"Media de referencia: la {MEDIA} de {int(media_unica)} períodos.")
+        st.markdown("**Stop Loss (SL)**", help=_ayuda_sl)
+        _acc_cab("sl", _acc_lista, "sg")
+        with st.container(key="acc_sl"):
+            sl_modo = _W(st).radio("Stop Loss (SL) en", [SL_ATR, SL_PCT, SL_USD, SL_EMA], label_visibility="collapsed")
+            sl_ema_ref, sl_ema_unidad = ("larga" if modo_senal == "precio" else "cruce"), "precio"   # en modo precio hay una sola media
+            sl_usd = tp_usd = 0.0
+            tp_modo = TP_RR
+            if sl_modo == SL_EMA:
+                if modo_senal == "precio":
+                    st.caption(f"Media de referencia: la {MEDIA} de {int(media_unica)} períodos.")
+                else:
+                    st.caption(f"Referencia: el cruce de las {MEDIA} {int(ema_c)}/{int(ema_l)} (punto medio de las dos en la vela de la señal).")
+                sl_ema_unidad = {"Pips": "pips", "Dólares (precio)": "precio", "% del precio": "pct"}[_W(st).radio(
+                    "Distancia en", ["Pips", "Dólares (precio)", "% del precio"], horizontal=True,
+                    help="Pips: 1 pip = 10 puntos = 10 × tick_size del símbolo (en el oro 0,10; en EURUSD 0,0001). "
+                         "Dólares (precio): la distancia en el precio del activo (en el oro, 3 = el precio se mueve 3,00). "
+                         "% del precio: un porcentaje del nivel de referencia (0,15 % de 2.350 son 3,53).")]
+                if sl_ema_unidad == "pct":
+                    sl_valor = _W(st).number_input("Distancia a la media (% del precio)", 0.0, 100.0, 0.15, 0.05, format="%.3f")
+                else:
+                    sl_valor = _W(st).number_input("Distancia a la media (pips)" if sl_ema_unidad == "pips" else "Distancia a la media (dólares de precio)",
+                                                   0.0, 1_000_000.0, 30.0 if sl_ema_unidad == "pips" else 3.0, 1.0 if sl_ema_unidad == "pips" else 0.5)
+                st.caption(("El SL queda fijo en el nivel del cruce" if modo_senal == "cruce" else "El SL queda fijo en la media")
+                           + " menos la distancia (compras) o más la distancia (ventas), tomado en la vela de la señal. "
+                           "Si al entrar ese nivel quedó del lado equivocado del precio, la señal no se opera.")
+            elif sl_modo == SL_USD:
+                sl_usd = _W(st).number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
+                sl_valor = sl_usd
             else:
-                st.caption(f"Referencia: el cruce de las {MEDIA} {int(ema_c)}/{int(ema_l)} (punto medio de las dos en la vela de la señal).")
-            sl_ema_unidad = {"Pips": "pips", "Dólares (precio)": "precio", "% del precio": "pct"}[_W(st).radio(
-                "Distancia en", ["Pips", "Dólares (precio)", "% del precio"], horizontal=True,
-                help="Pips: 1 pip = 10 puntos = 10 × tick_size del símbolo (en el oro 0,10; en EURUSD 0,0001). "
-                     "Dólares (precio): la distancia en el precio del activo (en el oro, 3 = el precio se mueve 3,00). "
-                     "% del precio: un porcentaje del nivel de referencia (0,15 % de 2.350 son 3,53).")]
-            if sl_ema_unidad == "pct":
-                sl_valor = _W(st).number_input("Distancia a la media (% del precio)", 0.0, 100.0, 0.15, 0.05, format="%.3f")
-            else:
-                sl_valor = _W(st).number_input("Distancia a la media (pips)" if sl_ema_unidad == "pips" else "Distancia a la media (dólares de precio)",
-                                               0.0, 1_000_000.0, 30.0 if sl_ema_unidad == "pips" else 3.0, 1.0 if sl_ema_unidad == "pips" else 0.5)
-            st.caption(("El SL queda fijo en el nivel del cruce" if modo_senal == "cruce" else "El SL queda fijo en la media")
-                       + " menos la distancia (compras) o más la distancia (ventas), tomado en la vela de la señal. "
-                       "Si al entrar ese nivel quedó del lado equivocado del precio, la señal no se opera.")
-        elif sl_modo == SL_USD:
-            sl_usd = _W(st).number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
-            sl_valor = sl_usd
-        else:
-            sl_valor = _W(st).number_input("Valor del SL", 0.01, 100.0, 1.5 if sl_modo == SL_ATR else 0.5, 0.1)
+                sl_valor = _W(st).number_input("Valor del SL", 0.01, 100.0, 1.5 if sl_modo == SL_ATR else 0.5, 0.1)
 
-        st.divider()
+        _sep_filtro()
         _OP_RR, _OP_USD = "Objetivo fijo: RR (1:x)", "Objetivo fijo: US$ por operación"
         _opciones = [_OP_RR] + ([_OP_USD] if sl_modo == SL_USD else []) + [_op_sal]   # el TP en US$ pide el SL en dólares fijos
         if st.session_state.get(_wk(_k_sal)) not in _opciones:
             st.session_state.pop(_wk(_k_sal), None)
-        salida_txt = _W(st).radio(
-            "Take Profit (TP) en", _opciones, key=_k_sal,
-            help="Objetivo fijo: TP a una distancia fija del SL (en múltiplos del riesgo, RR, o en US$ por operación; el de US$ "
+        _ayuda_tp = ("Objetivo fijo: TP a una distancia fija del SL (en múltiplos del riesgo, RR, o en US$ por operación; el de US$ "
                  "necesita el SL en dólares fijos). " + (
                 f"Cruce contrario: no hay TP; la operación se cierra al cierre de la primera vela en que la {MEDIA} corta queda del "
                 f"otro lado de la larga (un largo sale cuando la corta pasa por debajo de la larga, un corto cuando pasa por "
@@ -439,54 +446,63 @@ with st.sidebar:
                 "Cambio de lado: no hay TP; se cierra al cierre de la primera vela que queda del otro lado de la media (un largo "
                 "sale cuando una vela cierra por debajo, un corto cuando cierra por encima). ")
             + "El SL sigue activo y se revisa antes en cada vela.")
-        salida_modo = "senal" if salida_txt == _op_sal else "rr"
-        if salida_modo == "senal":
-            rr = 2.0                                  # el RR no interviene
-            st.caption("Sin TP fijo: la operación dura hasta que las medias se cruzan al revés o toca el SL." if _sal_cruce else
-                       "Sin TP fijo: la operación dura hasta que una vela cierra del otro lado de la media o toca el SL.")
-        elif salida_txt == _OP_USD:
-            tp_modo = TP_USD
-            tp_usd = _W(st).number_input("Take Profit (US$ por operación)", 1.0, 10_000_000.0, 200.0, 10.0)
-            rr = tp_usd / sl_usd
-            st.caption(f"Relación TP/SL: {rr:.2f}")
-        else:
-            rr = _W(st).number_input("RR (1:x)", 0.1 if sl_modo == SL_EMA else 1.0, 50.0 if sl_modo == SL_EMA else 10.0, 2.0, 0.5)
-            if sl_modo != SL_USD:
-                st.caption("El TP en US$ por operación está disponible con el SL en dólares fijos.")
-        st.divider()
-        st.markdown("**Breakeven**")
-        be_on = _W(st).checkbox("Mover el SL a breakeven (opcional)",
+        st.markdown("**Take Profit (TP)**", help=_ayuda_tp)
+        _acc_cab("tp", _acc_lista, "sg")
+        with st.container(key="acc_tp"):
+            salida_txt = _W(st).radio("Take Profit (TP) en", _opciones, key=_k_sal, label_visibility="collapsed")
+            salida_modo = "senal" if salida_txt == _op_sal else "rr"
+            if salida_modo == "senal":
+                rr = 2.0                                  # el RR no interviene
+                st.caption("Sin TP fijo: la operación dura hasta que las medias se cruzan al revés o toca el SL." if _sal_cruce else
+                           "Sin TP fijo: la operación dura hasta que una vela cierra del otro lado de la media o toca el SL.")
+            elif salida_txt == _OP_USD:
+                tp_modo = TP_USD
+                tp_usd = _W(st).number_input("Take Profit (US$ por operación)", 1.0, 10_000_000.0, 200.0, 10.0)
+                rr = tp_usd / sl_usd
+                st.caption(f"Relación TP/SL: {rr:.2f}")
+            else:
+                rr = _W(st).number_input("RR (1:x)", 0.1 if sl_modo == SL_EMA else 1.0, 50.0 if sl_modo == SL_EMA else 10.0, 2.0, 0.5)
+                if sl_modo != SL_USD:
+                    st.caption("El TP en US$ por operación está disponible con el SL en dólares fijos.")
+        _sep_filtro()
+        be_on = _W(st).checkbox("Breakeven (opcional)", key=cio.slug("Mover el SL a breakeven (opcional)"),
                                 help="Apenas el precio llega al nivel de activación (sin esperar al cierre de la vela) el SL se mueve a la "
                                      "entrada más el nivel que elijas (0 = justo en la entrada; nunca menos que 0). Si el precio vuelve, "
                                      "la operación cierra ahí. Ese cierre no cuenta como ganada ni perdida, no corta rachas ni dispara las "
                                      "pausas, pero su resultado en R y en dinero sí entra a la expectativa y al balance.")
         _BE_ACT = {"Múltiplos de R": "r", "US$ fijos": "usd", "% del camino al TP": "pct_tp"}
         _BE_NIV = {"Múltiplos de R sobre la entrada": "r", "US$ fijos sobre la entrada": "usd"}
-        _ops_be = [k_ for k_, v_ in _BE_ACT.items() if v_ != "pct_tp" or salida_modo == "rr"]     # sin TP no hay % del camino al TP
-        if st.session_state.get(_wk("be_act_modo")) not in _ops_be:
-            st.session_state.pop(_wk("be_act_modo"), None)
-        be_act_modo = _BE_ACT[_W(st).radio("Se activa cuando la operación gana", _ops_be, key="be_act_modo", disabled=not be_on,
-                                           help="Múltiplos de R: 1 R es la distancia del SL. US$ fijos: ganancia flotante en dólares con los lotes "
-                                                "elegidos (se convierte a precio por símbolo, como el SL en US\\$). % del camino al TP: "
-                                                "solo con TP fijo.")]
-        if be_act_modo == "r":
-            be_act_valor = _W(st).number_input("Activación (múltiplos de R)", 0.1, 50.0, 1.0, 0.1, disabled=not be_on)
-        elif be_act_modo == "usd":
-            be_act_valor = _W(st).number_input("Activación (US$ de ganancia)", 1.0, 10_000_000.0, 100.0, 10.0, disabled=not be_on)
-        else:
-            be_act_valor = _W(st).number_input("Activación (% del camino al TP)", 1.0, 99.0, 50.0, 5.0, disabled=not be_on)
-        if salida_modo == "senal":
-            st.caption("Con salida por señal no hay TP, así que no se puede activar en % del camino al TP.")
-        be_niv_modo = _BE_NIV[_W(st).radio("Se mueve el SL a", list(_BE_NIV), key="be_niv_modo", disabled=not be_on)]
-        if be_niv_modo == "r":
-            be_niv_valor = _W(st).number_input("Nivel del SL (R sobre la entrada)", 0.0, 50.0, 0.0, 0.1, disabled=not be_on)
-        else:
-            be_niv_valor = _W(st).number_input("Nivel del SL (US$ sobre la entrada)", 0.0, 10_000_000.0, 0.0, 5.0, disabled=not be_on)
-        st.caption("En cuanto el precio llega al nivel de activación se mueve el SL, sin esperar al cierre de la vela. "
-                   "0 = el SL queda justo en el precio de entrada.")
+        be_act_modo, be_act_valor, be_niv_modo, be_niv_valor = "r", 1.0, "r", 0.0
+        if be_on:
+            _acc_activos.add("be")
+            _acc_cab("be", _acc_lista, "sg")
+            with st.container(key="acc_be"):
+                _ops_be = [k_ for k_, v_ in _BE_ACT.items() if v_ != "pct_tp" or salida_modo == "rr"]     # sin TP no hay % del camino al TP
+                if st.session_state.get(_wk("be_act_modo")) not in _ops_be:
+                    st.session_state.pop(_wk("be_act_modo"), None)
+                be_act_modo = _BE_ACT[_W(st).radio("Se activa cuando la operación gana", _ops_be, key="be_act_modo", disabled=not be_on,
+                                                   help="Múltiplos de R: 1 R es la distancia del SL. US$ fijos: ganancia flotante en dólares con los lotes "
+                                                        "elegidos (se convierte a precio por símbolo, como el SL en US\\$). % del camino al TP: "
+                                                        "solo con TP fijo.")]
+                if be_act_modo == "r":
+                    be_act_valor = _W(st).number_input("Activación (múltiplos de R)", 0.1, 50.0, 1.0, 0.1, disabled=not be_on)
+                elif be_act_modo == "usd":
+                    be_act_valor = _W(st).number_input("Activación (US$ de ganancia)", 1.0, 10_000_000.0, 100.0, 10.0, disabled=not be_on)
+                else:
+                    be_act_valor = _W(st).number_input("Activación (% del camino al TP)", 1.0, 99.0, 50.0, 5.0, disabled=not be_on)
+                if salida_modo == "senal":
+                    st.caption("Con salida por señal no hay TP, así que no se puede activar en % del camino al TP.")
+                be_niv_modo = _BE_NIV[_W(st).radio("Se mueve el SL a", list(_BE_NIV), key="be_niv_modo", disabled=not be_on)]
+                if be_niv_modo == "r":
+                    be_niv_valor = _W(st).number_input("Nivel del SL (R sobre la entrada)", 0.0, 50.0, 0.0, 0.1, disabled=not be_on)
+                else:
+                    be_niv_valor = _W(st).number_input("Nivel del SL (US$ sobre la entrada)", 0.0, 10_000_000.0, 0.0, 5.0, disabled=not be_on)
+                st.caption("En cuanto el precio llega al nivel de activación se mueve el SL, sin esperar al cierre de la vela. "
+                           "0 = el SL queda justo en el precio de entrada.")
         if be_on and be_act_modo == "r" and be_niv_modo == "r" and be_niv_valor >= be_act_valor:
             st.error("El nivel del SL tiene que ser menor que la activación.")
-        st.divider()
+        _acc_css(_acc_lista, _acc_activos, "sg", ("pb", "be"))
+        _sep_filtro()
         # El ATR solo interviene si el SL va en múltiplos de ATR o si algún filtro lo usa (los filtros se definen más abajo:
         # sus valores ya están en session_state al comienzo de cada ejecución).
         usa_atr = (sl_modo == SL_ATR or bool(_sv("f_atr"))
