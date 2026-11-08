@@ -22,7 +22,11 @@ def resumen(tr: pd.DataFrame, rr: float) -> dict:
     tp = int((res["res"] == "TP").sum()) if len(res) else 0
     sl = int((res["res"] == "SL").sum()) if len(res) else 0
     n = tp + sl
-    eq = res["R"].cumsum().to_numpy() if n else np.array([0.0])
+    # el breakeven (res "BE") es neutro para la tasa de acierto y las rachas, pero su resultado en R es plata real:
+    # entra a la expectativa, al R total y a la caida maxima
+    con_be = tr[tr["res"].isin(["TP", "SL", "BE"])] if len(tr) else tr
+    n_be = int((tr["res"] == "BE").sum()) if len(tr) else 0
+    eq = con_be["R"].cumsum().to_numpy() if len(con_be) else np.array([0.0])
     racha = mejor = 0
     for x in (res["res"] if n else []):
         racha = racha + 1 if x == "SL" else 0
@@ -35,10 +39,12 @@ def resumen(tr: pd.DataFrame, rr: float) -> dict:
             "abiertas": int((tr["res"] == "ABIERTA").sum()) if len(tr) else 0,
             "ambiguas": int(tr["amb"].sum()) if len(tr) else 0,
             "%TP": 100 * tp / n if n else np.nan, "%equilibrio": 100 / (1 + rr),
-            "exp_R": float(res["R"].mean()) if n else np.nan,
-            "R_total": float(res["R"].sum()) if n else 0.0,
+            "exp_R": float(con_be["R"].mean()) if len(con_be) else np.nan,
+            "R_total": float(con_be["R"].sum()) if len(con_be) else 0.0,
             "maxDD_R": float((np.maximum.accumulate(np.r_[0.0, eq]) - np.r_[0.0, eq]).max()),
-            "racha_SL": mejor}
+            "racha_SL": mejor,
+            "BE": n_be, "be_activadas": int(tr["be"].sum()) if len(tr) and "be" in tr else 0,
+            "be_R": float(tr.loc[tr["res"] == "BE", "R"].sum()) if n_be else 0.0}
 
 
 def azar(P, cfg, lo, hi, n_sig, veces, rng) -> np.ndarray:
@@ -52,7 +58,7 @@ def azar(P, cfg, lo, hi, n_sig, veces, rng) -> np.ndarray:
         idx = np.sort(rng.choice(np.arange(lo, hi), size=n_sig, replace=False))
         sig = list(zip(idx, rng.choice(lados, size=n_sig)))
         tr, _ = eng.simular(P, sig, cfg.rr, cfg.costo_extra, eng.pb_de(cfg), cfg.salida_modo,
-                              eng.cuenta_de(P, cfg))
+                              eng.cuenta_de(P, cfg), eng.be_de(cfg))
         out.append(resumen(tr, cfg.rr)["exp_R"])
     return np.array([x for x in out if not np.isnan(x)])
 
@@ -116,12 +122,15 @@ FILTROS_ABLACION = {
 
 def ablacion(df, cfg_base, filtros=None, oos_pct=0.3, azar_veces=100, semilla=42, contador=None):
     """Cruce solo y luego cada filtro de a uno (mas todos juntos). Devuelve un DataFrame."""
+    por_defecto = filtros is None
     filtros = FILTROS_ABLACION if filtros is None else filtros
     if filtros is FILTROS_ABLACION and cfg_base.pb_efectivo():     # el pullback elegido entra como un paso mas
         filtros = {**FILTROS_ABLACION, "Pullback": dict(pullback_activo=True)}
-    if filtros is FILTROS_ABLACION:                                 # los de tendencia mayor entran con la temporalidad y SMA que elegiste
+    if por_defecto:                                                 # los de tendencia mayor entran con la temporalidad y SMA que elegiste (tambien con pullback)
         extra = {f"Tendencia mayor {k[2]} ({getattr(cfg_base, k + '_tf')})": {k + "_activo": True} for k in ("tm1", "tm2") if getattr(cfg_base, k + "_activo")}
         filtros = {**filtros, **extra}
+    if por_defecto and cfg_base.be_activo:                         # el breakeven elegido entra como un paso mas (se compara contra no usarlo)
+        filtros = {**filtros, "Breakeven": dict(be_activo=True)}
     base = replace(cfg_base, **eng.FILTROS_APAGADOS)
     configs = [("Cruce solo", base)]
     omitidos = []
@@ -174,7 +183,7 @@ def valor_por_unidad(tick_size, tick_value, lotes) -> float:
 
 def resumen_dinero(tr: pd.DataFrame, tick_size, tick_value, lotes, comision_por_lote=0.0) -> dict:
     """Resultados en moneda de la cuenta. Teoricos: slippage y gaps pueden empeorarlos."""
-    res = tr[tr["res"].isin(["TP", "SL"])]
+    res = tr[tr["res"].isin(["TP", "SL", "BE"])]               # el breakeven es neutro para las tasas, pero su dinero cuenta
     if not len(res):
         return {"operaciones": 0}
     vu = valor_por_unidad(tick_size, tick_value, lotes)
@@ -186,6 +195,7 @@ def resumen_dinero(tr: pd.DataFrame, tick_size, tick_value, lotes, comision_por_
             "ganancia_media_TP": float(pnl[res["res"].to_numpy() == "TP"].mean()) if (res["res"] == "TP").any() else 0.0,
             "perdida_media_SL": float(pnl[res["res"].to_numpy() == "SL"].mean()) if (res["res"] == "SL").any() else 0.0,
             "neto": float(pnl.sum()), "comisiones": float(comision_por_lote * lotes * len(res)),
+            "breakeven": int((res["res"] == "BE").sum()),
             "max_drawdown": float((pico - np.r_[0.0, eq]).max())}
 
 
@@ -350,7 +360,7 @@ def ciclos_objetivo(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comi
     Devuelve {"objetivo_usd", "objetivo_pct", "ciclos": [{"n","desde","hasta","min","ops","ganado"}], "en_curso": {...} o None}."""
     objetivo = float(capital) * float(objetivo_pct) / 100.0
     out = {"objetivo_usd": objetivo, "objetivo_pct": float(objetivo_pct), "ciclos": [], "en_curso": None}
-    res = tr[tr["res"].isin(["TP", "SL"])] if len(tr) else tr
+    res = tr[tr["res"].isin(["TP", "SL", "BE"])] if len(tr) else tr          # el dinero del breakeven cuenta para llegar al objetivo
     if objetivo <= 0 or len(indice) < 2:
         return out
     inicio, fin = pd.Timestamp(indice[0]), pd.Timestamp(indice[-1])
@@ -380,7 +390,7 @@ def ciclos_objetivo(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comi
 def extremos_diarios(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comision_por_lote=0.0) -> dict:
     """Peor y mejor día en dinero y en R. Cada operación cuenta en el día en que se cerró (salida).
     Es sobre operaciones cerradas: no ve el flotante intradía."""
-    res = tr[tr["res"].isin(["TP", "SL"])]
+    res = tr[tr["res"].isin(["TP", "SL", "BE"])]
     if not len(res):
         return {}
     vu = valor_por_unidad(tick_size, tick_value, lotes)

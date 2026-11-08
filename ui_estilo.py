@@ -191,7 +191,10 @@ _CSS_SIDEBAR = """
   filter:brightness(1.2) saturate(1.12);transform:translateY(-2px);
   box-shadow:0 0 0 3px @SIDETXT@,0 0 22px 6px @GLOW@;}
 /* «Guardar configuración» (iframe con el cuadro «Guardar como»): se compensa el aire para la sombra */
-[data-testid="stSidebar"] .st-key-cfg_guardar iframe{display:block;width:calc(100% + 36px) !important;margin:-20px -18px -22px;color-scheme:normal !important;background:transparent !important;}
+[data-testid="stSidebar"] .st-key-cfg_guardar{position:relative;height:40px;flex:none;overflow:visible !important;}
+[data-testid="stSidebar"] .st-key-cfg_cargar{position:relative;z-index:1;}
+[data-testid="stSidebar"] .st-key-cfg_guardar > div{overflow:visible !important;}
+[data-testid="stSidebar"] .st-key-cfg_guardar iframe{position:absolute;top:-20px;left:-18px;margin:0;display:block;width:calc(100% + 36px) !important;height:82px !important;color-scheme:normal !important;background:transparent !important;}
 /* «Cargar configuración»: el contenedor del selector es el botón (alto fijo, igual al de guardar); el selector real
    queda encima, invisible, para recibir el clic y los archivos arrastrados */
 [data-testid="stSidebar"] .st-key-cfg_cargar [data-testid="stFileUploader"]{

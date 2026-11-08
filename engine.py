@@ -128,6 +128,16 @@ class Config:
     pausa_gan_vence_h: float = 24.0
     retiro_activo: bool = False             # retirar toda la ganancia del ciclo al llegar al objetivo (solo con reglas de cuenta)
     retiro_pct: float = 5.0                 # objetivo por retiro (% del capital inicial)
+    # breakeven (opcional): apenas el precio llega a la ACTIVACION (sin esperar al cierre de la vela) el SL se mueve a la entrada
+    # mas un NIVEL (0 = justo en la entrada; nunca menor que 0). Activacion: "r" (multiplos de R), "usd" (US$ fijos) o "pct_tp"
+    # (% del camino al TP). Nivel: "r" o "usd". Una salida por ese SL es un resultado propio ("BE"): neutro para la tasa de acierto,
+    # las rachas y las pausas (salvo be_pausa_perdida), pero su resultado en R y en dinero entra al balance y a la expectativa.
+    be_activo: bool = False
+    be_act_modo: str = "r"
+    be_act_valor: float = 1.0
+    be_nivel_modo: str = "r"
+    be_nivel_valor: float = 0.0
+    be_pausa_perdida: bool = False          # True: una salida en breakeven tambien dispara la pausa tras una perdida
 
     def pb_efectivo(self) -> bool:
         """El pullback solo actua si esta activo y el porcentaje es mayor que 0 (0 % = entrada al cierre, como sin pullback)."""
@@ -163,6 +173,33 @@ class Config:
         if self.reglas_activas and (self.capital <= 0 or self.usd_por_unidad <= 0):
             raise ValueError("Las reglas de cuenta necesitan el capital de la cuenta y el valor por unidad de precio "
                              "(cargá el capital en «Lotaje y dinero»).")
+
+    def _validar_be(self) -> None:
+        if not self.be_activo:
+            return
+        if self.be_act_modo not in BE_ACT_MODOS or self.be_nivel_modo not in BE_NIVEL_MODOS:
+            raise ValueError("Breakeven: la activacion debe ser 'r', 'usd' o 'pct_tp' y el nivel 'r' o 'usd'.")
+        if not self.be_act_valor > 0:
+            raise ValueError("Breakeven: la activacion debe ser mayor que 0.")
+        if self.be_nivel_valor < 0:
+            raise ValueError("Breakeven: el nivel no puede ser menor que 0 (lo mejor que se puede hacer es salir sin perdida).")
+        if self.be_act_modo == "pct_tp":
+            if self.salida_modo == "senal":
+                raise ValueError("Breakeven: la activacion en % del camino al TP necesita un TP fijo; con salida por señal no hay TP. "
+                                 "Elegi multiplos de R o US$ fijos.")
+            if not self.be_act_valor < 100:
+                raise ValueError("Breakeven: la activacion debe ser menor que 100 % del camino al TP.")
+        if "usd" in (self.be_act_modo, self.be_nivel_modo) and not self.usd_por_unidad > 0:
+            raise ValueError("Breakeven en US$ fijos: necesita los lotes y el valor por unidad de precio (cargalos en «Lotaje y dinero»).")
+        # con la distancia del SL conocida de antemano (SL fijo en precio) se puede comprobar el orden aca; si no, se revisa en cada operacion
+        d = self.sl_valor if self.sl_modo == "precio" else None
+        act, niv = be_en_r(self.be_act_modo, self.be_act_valor, d, self.rr, self.usd_por_unidad), \
+            be_en_r(self.be_nivel_modo, self.be_nivel_valor, d, self.rr, self.usd_por_unidad)
+        if act is not None and niv is not None and not niv < act:
+            raise ValueError("Breakeven: el nivel al que se mueve el SL tiene que ser menor que la activacion; si no, el SL quedaria "
+                             "mas alla del precio y la operacion se cerraria al instante.")
+        if act is not None and self.salida_modo == "rr" and not act < self.rr:
+            raise ValueError("Breakeven: la activacion tiene que ser menor que el TP (si el TP llega antes, el breakeven nunca actua).")
 
     def validar(self) -> None:
         if self.vwap_dist_min_atr < 0 or self.vwap_min_minutos < 0:
@@ -204,6 +241,7 @@ class Config:
                 raise ValueError("La relacion TP/SL debe estar entre 0,05 y 50.")
         elif not 1 <= self.rr <= 10:
             raise ValueError("El RR debe estar entre 1 y 10.")
+        self._validar_be()
         if self.direccion not in ("ambas", "largos", "cortos"):
             raise ValueError("Direccion invalida.")
         if self.spread not in ("vela", "mediana", "fijo", "ninguno"):
@@ -215,11 +253,34 @@ class Config:
 
 TF_MINUTOS = {"M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
 
+BE_ACT_MODOS = ("r", "usd", "pct_tp")
+BE_NIVEL_MODOS = ("r", "usd")
+
+
+def be_en_r(modo: str, valor: float, d, rr: float, vu: float):
+    """Distancia del breakeven medida en R (multiplos de la distancia del SL `d`), o None si no se puede saber sin conocer `d`."""
+    if modo == "r":
+        return float(valor)
+    if modo == "pct_tp":
+        return float(valor) / 100.0 * rr
+    if d is None or not d > 0 or not vu > 0:
+        return None
+    return float(valor) / vu / d
+
+
+def be_distancia(modo: str, valor: float, d: float, rr: float, vu: float) -> float:
+    """Distancia de precio del breakeven para una operacion con SL a distancia d (precio)."""
+    if modo == "r":
+        return valor * d
+    if modo == "pct_tp":
+        return valor / 100.0 * rr * d
+    return valor / vu
+
 VP_MODOS = ("poc", "fuera", "dentro")
 VP_AREA = 0.70                  # el area de valor reune el 70 % del volumen del perfil
 VP_MIN_MINUTOS = 360            # un dia solo cuenta para el perfil si tiene al menos 6 horas de velas (descarta domingos y feriados casi vacios)
 
-FILTROS_APAGADOS = dict(vp_activo=False, tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False)
+FILTROS_APAGADOS = dict(vp_activo=False, tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False, be_activo=False)
 
 
 @dataclass
@@ -552,10 +613,19 @@ def cuenta_de(P: Preparado, cfg: Config):
             "pausa_sentido": cfg.pausa_sentido, "pausa_gan_sentido": cfg.pausa_gan_sentido,
             "gan_retro_pct": float(cfg.pausa_gan_retroceso_pct) if (cfg.pausa_gan_retroceso_activo and cfg.pausa_gan_retroceso_pct > 0) else None,
             "gan_vence": cfg.pausa_gan_vence, "gan_vence_h": float(cfg.pausa_gan_vence_h),
+            "be_pausa_perdida": bool(cfg.be_activo and cfg.be_pausa_perdida),
             "retiro_usd": float(cfg.capital) * float(cfg.retiro_pct) / 100.0 if (cfg.retiro_activo and cfg.retiro_pct > 0) else None}
 
 
-def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None):
+def be_de(cfg: Config):
+    """Parametros del breakeven para simular(), o None si no se usa."""
+    if not cfg.be_activo:
+        return None
+    return {"act_modo": cfg.be_act_modo, "act_valor": float(cfg.be_act_valor), "nivel_modo": cfg.be_nivel_modo,
+            "nivel_valor": float(cfg.be_nivel_valor), "vu": float(cfg.usd_por_unidad)}
+
+
+def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None, be=None):
     """señales: lista de (indice, lado). Devuelve (DataFrame de operaciones, ignoradas).
 
     pb=None: entrada al cierre de la vela de la señal. pb={"pct","ema","velas"}: la señal deja una orden pendiente.
@@ -566,10 +636,14 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
     cuenta (ver cuenta_de): simula la cuenta en orden cronologico con limites de perdida diaria y total, proteccion del SL,
     riesgo maximo por operacion y pausa tras una perdida; el resumen queda en .attrs["cuenta"]. Si el equity llega a un
     limite con una operacion abierta, se cierra en ese nivel (motivo "limite").
+    be (ver be_de): breakeven. Apenas el precio llega a la activacion (dentro de la vela: no se espera al cierre) el SL pasa a la
+    entrada mas el nivel. Si en esa misma vela toca el SL original, cuenta SL; si toca la activacion y vuelve al nivel nuevo
+    (o el nivel nuevo y el TP en una misma vela), cuenta breakeven (peor caso, vela ambigua). Una salida por ese SL es res "BE";
+    la columna "be" marca las operaciones que llegaron a activarlo.
     En la tabla, "i" es la vela de ENTRADA real y "señal" la vela del cruce (iguales sin pullback)."""
     h, l, c, sp, dist = P.h, P.l, P.c, P.sp, P.dist
     n = len(c)
-    filas, libre, ignoradas, sl_invalido = [], 0, 0, 0
+    filas, libre, ignoradas, sl_invalido, be_invalidas = [], 0, 0, 0, 0
     st = {"ordenes": 0, "llenadas": 0, "caducadas": 0, "cruce_contrario": 0}
     por_senal = salida == "senal"
     if por_senal and P.diff is None:
@@ -643,7 +717,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         lim = max(margen, 0.0) / vu
         return "ok", (lim if lim < d else None)
 
-    def cerrar(r, d, j_out, lado, entrada):
+    def cerrar(r, d, j_out, lado, entrada, es_be=False):
         """Aplica el resultado de la operacion a la cuenta y revisa los limites."""
         pnl = r * d * vu - comm
         rodar_dia(j_out)                 # si cruzo la medianoche, el dia nuevo parte del balance previo a este cierre
@@ -652,7 +726,10 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         cs["peor_dia_usd"] = min(cs["peor_dia_usd"], S["bal"] - S["bal_dia"])
         cs["balance_min"] = min(cs["balance_min"], S["bal"])
         cs["balance_max"] = S["pico"]                    # si se quema, es lo maximo que llego a ganar antes de quemarse
-        if pnl < 0:
+        if es_be:                        # breakeven: ni perdida ni ganancia para las pausas (salvo que se pida lo contrario)
+            if ct.get("be_pausa_perdida"):
+                S["perd_j"][lado] = j_out
+        elif pnl < 0:
             S["perd_j"][lado] = j_out
         elif pnl > 0:
             S["gan_j"][lado] = j_out
@@ -674,29 +751,51 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                                   "piso": float(pt_) if np.isfinite(pt_) else None})
             cs["retirado"] += float(w)
 
-    def recorrer(desde, lado, sl, tp, entrada=None, lim=None):
+    def recorrer(desde, lado, sl, tp, entrada=None, lim=None, bepar=None):
+        """Devuelve (resultado, ambigua, vela de salida, breakeven activado). bepar = (distancia de activacion, distancia del nivel)."""
+        armada, sl_cur = False, sl
+        if bepar is not None:
+            act_px, be_px = entrada + lado * bepar[0], entrada + lado * bepar[1]
         for j in range(desde, n):
-            if lim is not None:                          # el equity toca un limite de cuenta antes que el SL
+            if lim is not None and not armada:           # el equity toca un limite de cuenta antes que el SL
                 adverso = (entrada - l[j]) if lado == 1 else (h[j] + sp[j] - entrada)
                 if adverso >= lim:
-                    return "LIM", False, j
-            if por_senal:
-                if (l[j] <= sl) if lado == 1 else (h[j] + sp[j] >= sl):
-                    return "SL", False, j
-                if (P.diff[j] < 0) if lado == 1 else (P.diff[j] > 0):
-                    return "SEN", False, j
-                continue
+                    return "LIM", False, j, False
             if lado == 1:
-                hit_sl, hit_tp = l[j] <= sl, h[j] >= tp
+                hit_sl = l[j] <= sl_cur
+                hit_tp = (not por_senal) and h[j] >= tp
+                trig = bepar is not None and not armada and h[j] >= act_px
             else:
-                hit_sl, hit_tp = h[j] + sp[j] >= sl, l[j] + sp[j] <= tp
-            if hit_sl and hit_tp:
-                return "SL", True, j
-            if hit_sl:
-                return "SL", False, j
+                hit_sl = h[j] + sp[j] >= sl_cur
+                hit_tp = (not por_senal) and l[j] + sp[j] <= tp
+                trig = bepar is not None and not armada and l[j] + sp[j] <= act_px
+            if not armada:
+                if hit_sl:                               # SL original (si en la misma vela toca la activacion, se asume el peor caso)
+                    return "SL", bool(hit_tp), j, False
+                if trig:                                 # activacion dentro de la vela: no se espera al cierre
+                    armada, sl_cur = True, be_px
+                    vuelve = (l[j] <= be_px) if lado == 1 else (h[j] + sp[j] >= be_px)
+                    if vuelve:                           # no se sabe el orden dentro de la vela: peor caso
+                        return "BE", True, j, True
+            elif hit_sl:                                 # ya con el SL en el nivel de breakeven
+                return "BE", bool(hit_tp), j, True
             if hit_tp:
-                return "TP", False, j
-        return "ABIERTA", False, n - 1
+                return "TP", False, j, armada
+            if por_senal and ((P.diff[j] < 0) if lado == 1 else (P.diff[j] > 0)):
+                return "SEN", False, j, armada
+        return "ABIERTA", False, n - 1, armada
+
+    def bepar_de(d):
+        """(distancia de activacion, distancia del nivel) en precio para una operacion con SL a distancia d, o None sin breakeven."""
+        nonlocal be_invalidas
+        if be is None:
+            return None
+        a = be_distancia(be["act_modo"], be["act_valor"], d, rr, be["vu"])
+        b = be_distancia(be["nivel_modo"], be["nivel_valor"], d, rr, be["vu"])
+        if not (a > 0 and 0 <= b < a):
+            be_invalidas += 1
+            return None
+        return (a, b)
 
     for i, lado in señales:
         if i < libre:                                   # operacion en curso (o orden pendiente): se ignora
@@ -741,7 +840,8 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                             cs["prot_desde"] = i
                     continue
             sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
-            res, amb, j_out = recorrer(i + 1, lado, sl, tp, entrada, lim)
+            bepar = bepar_de(d)
+            res, amb, j_out, armada = recorrer(i + 1, lado, sl, tp, entrada, lim, bepar)
         else:
             st["ordenes"] += 1
             ema = P.ema_c if pb["ema"] == "corta" else P.ema_l
@@ -795,13 +895,15 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
             # en la vela de entrada no se sabe que paso primero: si toca el SL, cuenta como SL; el TP recien desde la siguiente
             toca_sl = l[k] <= sl if lado == 1 else h[k] + sp[k] >= sl
+            bepar = bepar_de(d)
+            armada = False
             if lim is not None and ((entrada - l[k]) if lado == 1 else (h[k] + sp[k] - entrada)) >= lim:
                 res, amb, j_out = "LIM", True, k
             elif toca_sl:
                 res, amb, j_out = "SL", True, k
             else:
-                res, amb, j_out = recorrer(k + 1, lado, sl, tp, entrada, lim)
-        motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal", "LIM": "limite"}.get(res, "")
+                res, amb, j_out, armada = recorrer(k + 1, lado, sl, tp, entrada, lim, bepar)
+        motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal", "LIM": "limite", "BE": "be"}.get(res, "")
         if res == "SEN":                                # sale al cierre: el largo vende al bid, el corto compra al ask
             salida_px = c[j_out] if lado == 1 else c[j_out] + sp[j_out]
             r = lado * (salida_px - entrada) / d
@@ -810,6 +912,8 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             r = -lim / d
             res = "SL"
             cs["forzadas"] += 1
+        elif res == "BE":                               # sale en el nivel de breakeven: gana (o pierde, con costo extra) ese nivel
+            r = bepar[1] / d
         else:
             r = rr if res == "TP" else (-1.0 if res == "SL" else 0.0)
         if res != "ABIERTA" and costo_extra:
@@ -817,16 +921,17 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         if ct:
             cs["prot_desde"], cs["prot_n"] = None, 0          # se abrio una operacion: la cuenta tiene margen
         filas.append({"i": k, "señal": i, "lado": lado, "entrada": entrada, "sl": sl, "tp": tp, "dist": d,
-                      "res": res, "amb": amb, "salida": j_out, "R": r, "motivo": motivo_sal})
+                      "res": res, "amb": amb, "salida": j_out, "R": r, "motivo": motivo_sal, "be": int(armada)})
         if res == "ABIERTA":
             break
         libre = j_out + 1
         if ct:
-            cerrar(r, d, j_out, lado, entrada)
-    cols = ["i", "señal", "lado", "entrada", "sl", "tp", "dist", "res", "amb", "salida", "R", "motivo"]
+            cerrar(r, d, j_out, lado, entrada, res == "BE")
+    cols = ["i", "señal", "lado", "entrada", "sl", "tp", "dist", "res", "amb", "salida", "R", "motivo", "be"]
     out = pd.DataFrame(filas, columns=cols)
     out.attrs["pb"] = st
     out.attrs["sl_invalido"] = sl_invalido            # señales sin operar porque el SL anclado a la media quedaba al reves
+    out.attrs["be_invalidas"] = be_invalidas          # operaciones donde el nivel del breakeven no quedaba por debajo de la activacion
     if ct:
         cs["balance_final"] = S["bal"]
         out.attrs["cuenta"] = cs
@@ -853,6 +958,6 @@ def ejecutar(P: Preparado, cfg: Config, lo: int = 0, hi: Optional[int] = None) -
             descartes[m] = descartes.get(m, 0) + 1
     señales = [(i, lado) for i, lado, m in en_rango if m is None]
     pb = pb_de(cfg)
-    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo, cuenta_de(P, cfg))
+    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo, cuenta_de(P, cfg), be_de(cfg))
     return Resultado(tr, descartes, len(en_rango), len(señales), ign, dict(tr.attrs.get("pb", {})) if pb else {},
                      dict(tr.attrs.get("cuenta", {})))

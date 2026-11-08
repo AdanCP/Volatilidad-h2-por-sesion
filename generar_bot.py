@@ -135,12 +135,20 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
     if limpiar_nombre(nombre):
         cab.append(f"// Nombre del bot: {limpiar_nombre(nombre)}")
     act = [n for n, on in (("SMA", cfg.sma_activo), ("VWAP", cfg.vwap_activo), ("ADX", cfg.adx_activo),
-                           ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("tendencia mayor 1", cfg.tm1_activo), ("tendencia mayor 2", cfg.tm2_activo), ("Volume Profile", cfg.vp_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo())) if on]
+                           ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("tendencia mayor 1", cfg.tm1_activo), ("tendencia mayor 2", cfg.tm2_activo), ("Volume Profile", cfg.vp_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo()), ("breakeven", cfg.be_activo)) if on]
     cab.append("// Filtros/opciones activos: " + (", ".join(act) if act else "ninguno"))
     if cfg.vp_activo:
         cab.append(f"// Volume Profile: {cfg.vp_dias} dia(s) de perfil, escalon {_f(cfg.vp_escalon, 4)}, regla "
                    + {"poc": "A (compra sobre el POC, venta bajo el POC)", "fuera": "B (compra sobre el VAH, venta bajo el VAL)",
                       "dentro": "C (solo entre VAL y VAH)"}[cfg.vp_modo])
+    if cfg.be_activo:
+        _ma = {"r": f"{_f(cfg.be_act_valor, 2)} R de ganancia", "usd": f"US${_f(cfg.be_act_valor, 2)} de ganancia",
+               "pct_tp": f"{_f(cfg.be_act_valor, 1)} % del camino al TP"}[cfg.be_act_modo]
+        _mn = ("la entrada" if cfg.be_nivel_valor == 0 else (f"{_f(cfg.be_nivel_valor, 2)} R sobre la entrada" if cfg.be_nivel_modo == "r"
+                                                              else f"US${_f(cfg.be_nivel_valor, 2)} sobre la entrada"))
+        cab.append(f"// Breakeven: al llegar a {_ma} el SL pasa a {_mn}. Se activa por TICK (apenas el precio llega al nivel, sin esperar al cierre "
+                   "de la vela). Un cierre en breakeven no cuenta como ganada ni perdida para las pausas"
+                   + (" (salvo que se haya pedido que dispare la pausa tras perdida)." if cfg.be_pausa_perdida else "."))
     if cfg.sesion_activo:
         _hor = {**_SES_LOCAL, **(cfg.horarios or {})}
         _hh = lambda x: f"{int(x):02d}:{int(round((x % 1) * 60)):02d}"
@@ -217,6 +225,9 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "PAUSA_GAN_VENCE": str(("nunca", "dia", "horas").index(cfg.pausa_gan_vence)),
         "PAUSA_GAN_VENCE_H": _f(cfg.pausa_gan_vence_h, 2),
         "COMISION": _f(cfg.comision_op_usd, 4),
+        "BE_ON": _b(cfg.be_activo), "BE_ACT_MODO": str(eng.BE_ACT_MODOS.index(cfg.be_act_modo)), "BE_ACT_VAL": _f(cfg.be_act_valor, 4),
+        "BE_NIV_MODO": str(eng.BE_NIVEL_MODOS.index(cfg.be_nivel_modo)), "BE_NIV_VAL": _f(cfg.be_nivel_valor, 4),
+        "BE_PAUSA_PERD": _b(cfg.be_activo and cfg.be_pausa_perdida and cfg.pausa_activa),
     }
     txt = _PLANTILLA
     for k, v in valores.items():
@@ -354,6 +365,12 @@ const double          InpPauseWinRetro  = @@PAUSA_GAN_RETRO@@;    // Retroceso p
 const int             InpPauseWinVence  = @@PAUSA_GAN_VENCE@@;    // ... vencimiento de esa condicion: 0 nunca, 1 al terminar el dia (CET), 2 despues de N horas
 const double          InpPauseWinVenceH = @@PAUSA_GAN_VENCE_H@@;  // ... horas de vigencia (si el vencimiento es 2)
 const double          InpCommissionUsd  = @@COMISION@@;           // Comision por operacion (US$)
+const bool            InpBeOn           = @@BE_ON@@;              // Breakeven: al llegar la ganancia a la activacion, el SL pasa a la entrada mas un nivel (por tick, sin esperar al cierre de la vela)
+const int             InpBeActMode      = @@BE_ACT_MODO@@;        // ... activacion: 0 = multiplos de R, 1 = US$ fijos (con los lotes del bot), 2 = % del camino al TP
+const double          InpBeActVal       = @@BE_ACT_VAL@@;         // ... valor de la activacion (en la unidad de arriba)
+const int             InpBeLvlMode      = @@BE_NIV_MODO@@;        // ... nivel del nuevo SL sobre la entrada: 0 = multiplos de R, 1 = US$ fijos
+const double          InpBeLvlVal       = @@BE_NIV_VAL@@;         // ... valor del nivel (0 = justo en la entrada; nunca menor que 0)
+const bool            InpBePauseLoss    = @@BE_PAUSA_PERD@@;      // Un cierre en breakeven tambien dispara la pausa tras una operacion perdedora (por defecto no dispara ninguna pausa)
 
 // ============================ estado ==========================================
 const double SENT = -1.0e300;          // "sin dato" (equivale a NaN en el backtester)
@@ -1380,6 +1397,110 @@ bool GuardsOK()
    return true;
 }
 
+// ============================ breakeven =======================================
+// Igual que el backtester (engine.py): apenas el precio llega a la ACTIVACION (se mira en CADA TICK: no se espera al cierre de la
+// vela) el SL pasa a la entrada mas un nivel (0 = justo en la entrada; nunca menos). Largo: se activa con el bid y el SL se toca con
+// el bid; corto: con el ask. Si el precio ya volvio al nivel nuevo antes de poder mover el SL, se cierra al instante (igual que el
+// backtester cuando una misma vela activa y vuelve). Un cierre por este SL no cuenta como ganada ni perdida para las pausas.
+ulong  g_beId     = 0;         // posicion (identificador) cuyo breakeven ya se activo
+double g_beSl     = 0.0;       // SL nuevo de esa posicion (entrada + nivel)
+bool   g_beDone   = false;     // el SL de esa posicion ya se movio
+bool   g_beCerrar = false;     // el cierre en curso es el breakeven (el precio volvio al nivel antes de mover el SL)
+
+// distancia de precio de un parametro del breakeven (misma regla que engine.be_distancia)
+double BeDist(const int modo, const double valor, const double d, const double vu)
+{
+   if(modo == 0) return valor * d;                     // multiplos de R
+   if(modo == 2) return valor / 100.0 * InpRR * d;     // % del camino al TP (solo con TP)
+   return (vu > 0.0) ? valor / vu : 0.0;               // US$ fijos con los lotes del bot
+}
+
+// distancia de activacion y SL nuevo (entrada + nivel) para una posicion con SL original a distancia d; false si no son validos
+bool BeLevels(const int side, const double open, const double d, double &act, double &sl)
+{
+   const double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   const double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   const double vu = (tickSize > 0.0 && tickValue > 0.0) ? tickValue / tickSize * InpLots : 0.0;
+   act = BeDist(InpBeActMode, InpBeActVal, d, vu);
+   const double niv = BeDist(InpBeLvlMode, InpBeLvlVal, d, vu);
+   if(!(act > 0.0 && niv >= 0.0 && niv < act)) return false;
+   sl = open + side * niv;
+   return true;
+}
+
+bool BeTriggered(const int side, const double open, const double act, const double bid, const double ask)
+{
+   return (side == 1) ? (bid >= open + act) : (ask <= open - act);
+}
+
+void ManageBreakeven()
+{
+   if(!InpBeOn) return;
+   for(int k = PositionsTotal() - 1; k >= 0; k--)
+   {
+      if(PositionGetSymbol(k) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+      const ulong id    = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      const int   side  = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+      const double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      const double slNow = PositionGetDouble(POSITION_SL);
+      const double bid  = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      const double ask  = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      if(g_beId != id)                                  // todavia no se activo
+      {
+         if(slNow <= 0.0) return;
+         const double d = side * (open - slNow);        // distancia del SL original (la posicion lo trae desde la entrada)
+         if(d <= 0.0) return;
+         double act = 0.0, nuevo = 0.0;
+         if(!BeLevels(side, open, d, act, nuevo)) return;
+         if(!BeTriggered(side, open, act, bid, ask)) return;
+         g_beId = id;
+         g_beSl = nuevo;
+         g_beDone = false;
+         GlobalVariableSet(g_gv + "BEID", (double)id);
+         GlobalVariableSet(g_gv + "BESL", nuevo);
+         GlobalVariableSet(g_gv + "BEDONE", 0.0);
+         Print("Breakeven activado: el SL pasa a ", DoubleToString(Px(nuevo), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)), ".");
+      }
+      if(g_beDone) return;
+      const double pt = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+      const double minDist = (double)MathMax(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL), SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL)) * pt;
+      const double px = (side == 1) ? bid : ask;        // precio con el que se toca el SL
+      if(side * (slNow - g_beSl) >= -0.5 * pt)          // el SL ya esta en el nivel (o mejor): por ejemplo, tras reiniciar el bot
+      {
+         g_beDone = true;
+         GlobalVariableSet(g_gv + "BEDONE", 1.0);
+         return;
+      }
+      if(side * (px - g_beSl) <= 0.0)                   // el precio ya volvio al nivel nuevo: no se puede poner el SL ahi, se cierra
+      {
+         Print("Breakeven: el precio volvio al nivel antes de mover el SL. Se cierra la operacion.");
+         g_beCerrar = true;
+         CloseAll();
+         return;
+      }
+      if(side * (px - g_beSl) < minDist) return;        // muy cerca para que el broker acepte el SL: se reintenta en el proximo tick
+      MqlTradeRequest rq;
+      MqlTradeResult  rs;
+      ZeroMemory(rq);
+      ZeroMemory(rs);
+      rq.action   = TRADE_ACTION_SLTP;
+      rq.position = (ulong)PositionGetInteger(POSITION_TICKET);
+      rq.symbol   = _Symbol;
+      rq.sl       = Px(g_beSl);
+      rq.tp       = PositionGetDouble(POSITION_TP);
+      rq.magic    = InpMagic;
+      if(OrderSend(rq, rs) && (rs.retcode == TRADE_RETCODE_DONE || rs.retcode == TRADE_RETCODE_PLACED))
+      {
+         g_beDone = true;
+         GlobalVariableSet(g_gv + "BEDONE", 1.0);
+         Avisar("BREAKEVEN: SL movido a " + DoubleToString(Px(g_beSl), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)));
+      }
+      else
+         Print("Breakeven: no se pudo mover el SL (", rs.retcode, "). Se reintenta en el proximo tick.");
+      return;
+   }
+}
+
 // ============================ logica por vela =================================
 void OnNewBar()
 {
@@ -1522,6 +1643,12 @@ int OnInit()
    g_lastLoss[1] = GlobalVariableCheck(g_gv + "LASTLOSS_S") ? (datetime)GlobalVariableGet(g_gv + "LASTLOSS_S") : 0;
    g_lastWin[0]  = GlobalVariableCheck(g_gv + "LASTWIN_B")  ? (datetime)GlobalVariableGet(g_gv + "LASTWIN_B")  : 0;
    g_lastWin[1]  = GlobalVariableCheck(g_gv + "LASTWIN_S")  ? (datetime)GlobalVariableGet(g_gv + "LASTWIN_S")  : 0;
+   if(GlobalVariableCheck(g_gv + "BEID"))               // breakeven de una operacion abierta antes de reiniciar el bot
+   {
+      g_beId   = (ulong)GlobalVariableGet(g_gv + "BEID");
+      g_beSl   = GlobalVariableCheck(g_gv + "BESL") ? GlobalVariableGet(g_gv + "BESL") : 0.0;
+      g_beDone = (GlobalVariableCheck(g_gv + "BEDONE") && GlobalVariableGet(g_gv + "BEDONE") > 0.5);
+   }
    const string sfx[2] = {"_B", "_S"};
    for(int q = 0; q < 2; q++)
    {
@@ -1706,14 +1833,26 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       else if(motivo == DEAL_REASON_CLIENT || motivo == DEAL_REASON_MOBILE || motivo == DEAL_REASON_WEB) que = "CIERRE MANUAL";
       const double res = HistoryDealGetDouble(trans.deal, DEAL_PROFIT) + HistoryDealGetDouble(trans.deal, DEAL_SWAP)
                          + HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
-      if(res != 0.0)                                 // operacion perdedora o ganadora: arranca el tiempo minimo que corresponda (si esta activo)
+      // cierre por el SL movido a breakeven (o por el cierre inmediato cuando el precio volvio antes de moverlo): no es ganada ni perdida
+      const ulong posId = (ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+      const bool esBe = InpBeOn && posId == g_beId && ((g_beDone && motivo == DEAL_REASON_SL) || (g_beCerrar && motivo == DEAL_REASON_EXPERT));
+      if(esBe) que = "BREAKEVEN";
+      if(esBe || res != 0.0)                         // operacion perdedora o ganadora: arranca el tiempo minimo que corresponda (si esta activo)
       {
          datetime b = (datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME);
          b -= (datetime)((long)b % PeriodSeconds());
          if(g_salidaSenal) b -= (datetime)PeriodSeconds();      // la salida por senal es de la vela que acaba de cerrar
          const int ladoPos = (tipo == DEAL_TYPE_SELL) ? 0 : 1;   // el cierre de una compra es una venta: 0 = la operacion era una compra
          const string suf = (ladoPos == 0) ? "_B" : "_S";
-         if(res < 0.0)
+         if(esBe)                                    // breakeven: neutro para las pausas, salvo que se haya pedido lo contrario
+         {
+            if(InpBePauseLoss)
+            {
+               g_lastLoss[ladoPos] = b;
+               GlobalVariableSet(g_gv + "LASTLOSS" + suf, (double)b);
+            }
+         }
+         else if(res < 0.0)
          {
             g_lastLoss[ladoPos] = b;
             GlobalVariableSet(g_gv + "LASTLOSS" + suf, (double)b);
@@ -1729,6 +1868,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
          }
       }
       g_salidaSenal = false;
+      g_beCerrar = false;
       Avisar(que + ": " + string(tipo == DEAL_TYPE_SELL ? "compra" : "venta") + " cerrada a " + DoubleToString(precio, dig)
              + " | resultado " + (res >= 0.0 ? "+" : "") + DoubleToString(res, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY));
    }
@@ -1736,6 +1876,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
 
 void OnTick()
 {
+   ManageBreakeven();                              // el breakeven se revisa en cada tick (no espera al cierre de la vela)
    if(!GuardsOK()) return;
    const datetime t0 = iTime(_Symbol, _Period, 0);
    if(g_lastBar == 0) { g_lastBar = t0; return; }   // primera vez: se espera una vela nueva

@@ -372,6 +372,21 @@ with st.sidebar:
             ema_l = _W(c2).number_input(f"{MEDIA} larga", 3, 1000, 50 if ES_SMA else 34)
         direccion = DIRECCIONES[_W(st).selectbox("Dirección", list(DIRECCIONES))]
         st.divider()
+        pb_on = _W(st).checkbox(f"Entrar en pullback a la {MEDIA} (opcional)",
+                            help="Apagado: se entra al cierre de la vela del cruce, como siempre. Encendido: el cruce sigue "
+                                 f"siendo la señal, pero la entrada se hace cuando el precio retrocede hacia la {MEDIA}.")
+        pb_pct, pb_ema, pb_velas = 50, "corta", 10
+        if pb_on:
+            pb_pct = _W(st).number_input(f"Retroceso hacia la {MEDIA} (%)", 0, 100, 50, 5,
+                                     help="0 = entrar al cierre (igual que sin pullback). 100 = entrar recién cuando el precio "
+                                          f"toca la {MEDIA}. Se mide sobre la distancia entre el extremo posterior al cruce y la {MEDIA}.")
+            if modo_senal == "cruce":
+                pb_ema = {"Corta": "corta", "Larga": "larga"}[_W(st).radio(f"{MEDIA} de referencia", ["Corta", "Larga"], horizontal=True)]
+            pb_velas = _W(st).number_input("Caducidad (velas)", 1, 200, 10,
+                                       help="Si en estas velas el precio no hizo el retroceso, la orden se cancela. También "
+                                            "se cancela si aparece un cruce en sentido contrario.")
+            st.caption("Con pullback, el filtro de sesión se evalúa cuando se ejecuta la entrada.")
+        st.divider()
         _sal_cruce = modo_senal == "cruce"
         _op_sal = "Cuando las medias se cruzan en sentido contrario" if _sal_cruce else "Cuando el precio cambia de lado de la media"
         _k_sal = f"salida_tp_{modo_senal}"
@@ -439,20 +454,38 @@ with st.sidebar:
             if sl_modo != SL_USD:
                 st.caption("El TP en US$ por operación está disponible con el SL en dólares fijos.")
         st.divider()
-        pb_on = _W(st).checkbox(f"Entrar en pullback a la {MEDIA} (opcional)",
-                            help="Apagado: se entra al cierre de la vela del cruce, como siempre. Encendido: el cruce sigue "
-                                 f"siendo la señal, pero la entrada se hace cuando el precio retrocede hacia la {MEDIA}.")
-        pb_pct, pb_ema, pb_velas = 50, "corta", 10
-        if pb_on:
-            pb_pct = _W(st).number_input(f"Retroceso hacia la {MEDIA} (%)", 0, 100, 50, 5,
-                                     help="0 = entrar al cierre (igual que sin pullback). 100 = entrar recién cuando el precio "
-                                          f"toca la {MEDIA}. Se mide sobre la distancia entre el extremo posterior al cruce y la {MEDIA}.")
-            if modo_senal == "cruce":
-                pb_ema = {"Corta": "corta", "Larga": "larga"}[_W(st).radio(f"{MEDIA} de referencia", ["Corta", "Larga"], horizontal=True)]
-            pb_velas = _W(st).number_input("Caducidad (velas)", 1, 200, 10,
-                                       help="Si en estas velas el precio no hizo el retroceso, la orden se cancela. También "
-                                            "se cancela si aparece un cruce en sentido contrario.")
-            st.caption("Con pullback, el filtro de sesión se evalúa cuando se ejecuta la entrada.")
+        st.markdown("**Breakeven**")
+        be_on = _W(st).checkbox("Mover el SL a breakeven (opcional)",
+                                help="Apenas el precio llega al nivel de activación (sin esperar al cierre de la vela) el SL se mueve a la "
+                                     "entrada más el nivel que elijas (0 = justo en la entrada; nunca menos que 0). Si el precio vuelve, "
+                                     "la operación cierra ahí. Ese cierre no cuenta como ganada ni perdida, no corta rachas ni dispara las "
+                                     "pausas, pero su resultado en R y en dinero sí entra a la expectativa y al balance.")
+        _BE_ACT = {"Múltiplos de R": "r", "US$ fijos": "usd", "% del camino al TP": "pct_tp"}
+        _BE_NIV = {"Múltiplos de R sobre la entrada": "r", "US$ fijos sobre la entrada": "usd"}
+        _ops_be = [k_ for k_, v_ in _BE_ACT.items() if v_ != "pct_tp" or salida_modo == "rr"]     # sin TP no hay % del camino al TP
+        if st.session_state.get(_wk("be_act_modo")) not in _ops_be:
+            st.session_state.pop(_wk("be_act_modo"), None)
+        be_act_modo = _BE_ACT[_W(st).radio("Se activa cuando la operación gana", _ops_be, key="be_act_modo", disabled=not be_on,
+                                           help="Múltiplos de R: 1 R es la distancia del SL. US$ fijos: ganancia flotante en dólares con los lotes "
+                                                "elegidos (se convierte a precio por símbolo, como el SL en US\\$). % del camino al TP: "
+                                                "solo con TP fijo.")]
+        if be_act_modo == "r":
+            be_act_valor = _W(st).number_input("Activación (múltiplos de R)", 0.1, 50.0, 1.0, 0.1, disabled=not be_on)
+        elif be_act_modo == "usd":
+            be_act_valor = _W(st).number_input("Activación (US$ de ganancia)", 1.0, 10_000_000.0, 100.0, 10.0, disabled=not be_on)
+        else:
+            be_act_valor = _W(st).number_input("Activación (% del camino al TP)", 1.0, 99.0, 50.0, 5.0, disabled=not be_on)
+        if salida_modo == "senal":
+            st.caption("Con salida por señal no hay TP, así que no se puede activar en % del camino al TP.")
+        be_niv_modo = _BE_NIV[_W(st).radio("Se mueve el SL a", list(_BE_NIV), key="be_niv_modo", disabled=not be_on)]
+        if be_niv_modo == "r":
+            be_niv_valor = _W(st).number_input("Nivel del SL (R sobre la entrada)", 0.0, 50.0, 0.0, 0.1, disabled=not be_on)
+        else:
+            be_niv_valor = _W(st).number_input("Nivel del SL (US$ sobre la entrada)", 0.0, 10_000_000.0, 0.0, 5.0, disabled=not be_on)
+        st.caption("En cuanto el precio llega al nivel de activación se mueve el SL, sin esperar al cierre de la vela. "
+                   "0 = el SL queda justo en el precio de entrada.")
+        if be_on and be_act_modo == "r" and be_niv_modo == "r" and be_niv_valor >= be_act_valor:
+            st.error("El nivel del SL tiene que ser menor que la activación.")
         st.divider()
         # El ATR solo interviene si el SL va en múltiplos de ATR o si algún filtro lo usa (los filtros se definen más abajo:
         # sus valores ya están en session_state al comienzo de cada ejecución).
@@ -721,6 +754,11 @@ with st.sidebar:
                                     "tiempo se descartan.")
         pausa_min = _W(st).number_input("Minutos sin operar tras una pérdida", 0.0, 100_000.0, 60.0, 5.0, disabled=not pausa_on)
         pausa_sent = _SENT[_W(st).selectbox("Sentido de la pausa tras una pérdida", list(_SENT), disabled=not pausa_on, help=_AYUDA_SENT)]
+        be_pausa_perd = _W(st).checkbox("El breakeven también activa la pausa tras pérdida", disabled=not (pausa_on and be_on),
+                                        help="Por defecto un cierre en breakeven no dispara ninguna pausa. Tildado, dispara la pausa tras "
+                                             "una pérdida (la de arriba), con su mismo tiempo y sentido. Sirve para comprobar si parte de la "
+                                             "mejora del breakeven viene de volver a operar antes. Necesita el breakeven y la pausa tras "
+                                             "pérdida encendidos.")
         _sep_filtro()
         pausa_gan_on = _W(st).checkbox("Pausa para volver a operar tras una ganancia", key=cio.slug("Tiempo mínimo tras una ganancia (minutos)"),
                                    help="Después de una operación que cierra en ganancia, las señales que caen dentro de este "
@@ -735,7 +773,7 @@ with st.sidebar:
                                                "retrocede este % del recorrido de la ganancia (de la entrada al cierre), medido desde el cierre. "
                                                "Ej.: compra a 4000, TP 4050, 50% → la próxima compra solo con precio ≤ 4025. En una venta es al revés. "
                                                "Si también está activa la pausa por minutos, se exigen las dos cosas.")
-        _VENCE = {"Nunca": "nunca", "Al terminar el día": "dia", "Después de N horas": "horas"}
+        _VENCE ={"Nunca": "nunca", "Al terminar el día": "dia", "Después de N horas": "horas"}
         pausa_gan_vence = _VENCE[_W(st).selectbox("Vencimiento del retroceso", list(_VENCE), disabled=not retro_on,
                                                   help="Hasta cuándo rige la condición de precio. Pasado ese momento se vuelve a operar sin exigir el retroceso.")]
         pausa_gan_vence_h = _W(st).number_input("Horas de vigencia del retroceso", 0.5, 10_000.0, 24.0, 1.0,
@@ -824,7 +862,9 @@ def construir_config(simbolo: str = None) -> eng.Config:
         pausa_activa=bool(pausa_on), pausa_min=float(pausa_min), pausa_sentido=pausa_sent,
         pausa_gan_activa=bool(pausa_gan_on), pausa_gan_min=float(pausa_gan_min), pausa_gan_sentido=pausa_gan_sent,
         pausa_gan_retroceso_activo=bool(retro_on), pausa_gan_retroceso_pct=float(pausa_gan_retro), pausa_gan_vence=pausa_gan_vence, pausa_gan_vence_h=float(pausa_gan_vence_h),
-        retiro_activo=bool(retiro_on), retiro_pct=float(retiro_pct))
+        retiro_activo=bool(retiro_on), retiro_pct=float(retiro_pct),
+        be_activo=bool(be_on), be_act_modo=be_act_modo, be_act_valor=float(be_act_valor),
+        be_nivel_modo=be_niv_modo, be_nivel_valor=float(be_niv_valor), be_pausa_perdida=bool(be_pausa_perd and pausa_on))
 
 
 # ------------------------------------------------------------------ cuerpo
@@ -1138,7 +1178,7 @@ if cfg_usada.salida_modo == "senal":
     st.caption("Salida por " + ("cruce contrario" if cfg_usada.modo_senal == "cruce" else "cambio de lado") + ": aquí «TP» son las operaciones que cerraron con ganancia y «SL» las que cerraron con "
                "pérdida (ya sea por el SL o por la señal de salida). La columna «motivo» de la tabla dice cómo cerró cada una; "
                "el R de cada operación es el real, no uno fijo.")
-res = tr[tr["res"].isin(["TP", "SL"])] if len(tr) else tr
+res = tr[tr["res"].isin(["TP", "SL", "BE"])] if len(tr) else tr      # el breakeven no cuenta como ganada ni perdida, pero su dinero sí
 dinero = None
 
 st.write("")
@@ -1405,6 +1445,34 @@ if len(res):
     st.caption("El win rate es sobre las operaciones resueltas (TP o SL). La duración va desde la entrada hasta la vela en que se "
                "cerró, contada en velas (la vela de salida cuenta entera) y pasada a tiempo con la temporalidad; no incluye fines de semana.")
 
+# ------------------------------------------------------------- breakeven
+if getattr(cfg_usada, "be_activo", False) and len(tr) and "be" in tr:
+    _n_be = int((tr["res"] == "BE").sum())
+    _n_act = int(tr["be"].sum())
+    _n_ops = int(tr["res"].isin(["TP", "SL", "BE"]).sum())
+    _n_sig = int(((tr["be"] == 1) & (tr["res"] == "TP")).sum())
+    _R_be = float(tr.loc[tr["res"] == "BE", "R"].sum())
+    st.write("")
+    html(vis.titulo_seccion("Breakeven", "Cuántas operaciones movieron el SL a breakeven y cómo terminaron (tramo «Todo»)"))
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        html(vis.kpi("Activaron breakeven", vis.n(_n_act, 0),
+                     f"de {vis.n(_n_ops, 0)} operaciones ({vis.n(100 * _n_act / max(_n_ops, 1), 1)} %)", vis.AZUL, 165))
+    with b2:
+        html(vis.kpi("Cerraron en breakeven", vis.n(_n_be, 0),
+                     f"{vis.n(100 * _n_be / max(_n_ops, 1), 1)} % de las operaciones · {vis.n(_R_be, 2, True)} R en total", vis.ORQ, 165))
+    with b3:
+        _txt_sig = ("Siguieron hasta el TP" if cfg_usada.salida_modo == "rr" else "Siguieron y cerraron en TP")
+        html(vis.kpi(_txt_sig, vis.n(_n_sig, 0),
+                     f"de las {vis.n(_n_act, 0)} que activaron ({vis.n(100 * _n_sig / max(_n_act, 1), 1)} %)", vis.INDIGO, 165))
+    st.caption("Las operaciones cerradas en breakeven no cuentan como ganadas ni perdidas, no cortan rachas ni activan las pausas "
+               "(salvo que lo pidas en «Gestión de riesgo»). Su resultado en R y en dinero sí entra al balance, a la curva de equity "
+               "y a la expectativa. Si en una misma vela el precio activa el breakeven y vuelve al nivel, se asume lo peor: cierra en "
+               "breakeven.")
+    _inval = int(getattr(tr, "attrs", {}).get("be_invalidas", 0) or 0)
+    if _inval:
+        st.warning(f"En {_inval} operaciones el nivel del breakeven no quedaba por debajo de la activación y no se aplicó.")
+
 # ------------------------------------------------------------- retiros de la cuenta (simulados) u objetivo y retiros (teorico)
 _retiro_sim = bool(cfg_usada.reglas_activas and cfg_usada.retiro_activo and r.get("cuenta"))
 if _retiro_sim:
@@ -1654,6 +1722,8 @@ if len(res):
     with st.expander("Ver operaciones"):
         _d = 5 if float(tr["entrada"].abs().median()) < 10 else 2      # forex: 5 decimales; oro e índices: 2
         _trv = tr if cfg_usada.salida_modo == "senal" else tr.drop(columns=["motivo"], errors="ignore")
+        if not getattr(cfg_usada, "be_activo", False):
+            _trv = _trv.drop(columns=["be"], errors="ignore")
         html(vis.tabla_df(_trv.drop(columns=["i", "salida"]), decs={c: _d for c in ("entrada", "sl", "tp", "dist")},
                           nombre_indice="n.º"))
         st.download_button("Descargar operaciones (CSV)", _trv.to_csv(index=False).encode("utf-8"),

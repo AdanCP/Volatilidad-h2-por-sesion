@@ -8,16 +8,10 @@
 2. **SL por cruce de ADX.** Salir de la operación cuando el ADX cruza un nivel.
    - Definir: qué cruce dispara la salida (ADX bajando de un nivel, cruce de +DI/−DI en contra, o las dos), si reemplaza al SL fijo o convive con él, y que salga al cierre de la vela del cruce (como la salida por señal).
    - Bot: calcular el ADX y chequear la condición en cada vela cerrada.
-3. **Breakeven.** Mover el SL al precio de entrada cuando la operación avanzó lo suficiente.
-   - Definir: cuándo se activa (en R o % del camino al TP), a dónde se mueve (entrada exacta o con margen por spread y comisión) y cómo se simula si en una misma vela toca la activación y vuelve al SL (asumir lo peor).
-   - Bot: modificar el SL de la posición abierta, respetando la distancia mínima del broker.
-   - Medirlo con la ablación: corta ganadoras que habrían llegado al TP.
-4. **Volume profile: HECHO (primera versión).** Falta toma de liquidez, nodos de bajo volumen y niveles como SL/TP (ideas de abajo). Versión hecha: perfil de N días CE(S)T, volumen de ticks, escalón editable, reglas A/B/C, también en el bot.
-   *Idea original:* Perfil de volumen como filtro independiente, y más adelante toma de liquidez.
-   - Perfil del día anterior (o desarrollado solo hasta la vela actual, para no mirar el futuro): POC, área de valor (VAH y VAL) y nodos de bajo volumen.
-   - Usos posibles: comprar solo sobre el POC o el VAH, vender solo debajo; evitar operar dentro de un nodo de bajo volumen; niveles como SL o TP (más adelante).
-   - Límites: el volumen de MT5 en oro es de ticks (varía entre brokers) y dentro de una vela M5 hay que suponer cómo se reparte el volumen.
-   - Toma de liquidez (barrida de máximos o mínimos): se puede escribir como regla, pero hay que fijar qué nivel se barre (últimas N velas, pivote, sesión anterior) y que el cierre vuelva adentro en 1 a 3 velas. Solo ideas por ahora.
+3. ~~**Breakeven.**~~ **HECHO (primera versión).** Activación en múltiplos de R, US$ fijos o % del camino al TP; el SL pasa a la entrada más un nivel en R o US$ (mínimo 0). Por tick en el bot; en el backtest, peor caso dentro de la vela. Cierre «BE» neutro para win rate, RR, rachas y pausas, pero su dinero entra a balance, equity y expectativa. Sección «Breakeven» en los resultados, paso «+ Breakeven» en la ablación y casilla opcional «el breakeven también activa la pausa tras pérdida» (apagada). Queda probarlo en la app y compilar el bot en MetaEditor.
+   - Límite conocido: el anillo «% TP vs. equilibrio» y la probabilidad de ventaja de la conclusión cuentan solo TP y SL (suponen un pago fijo); con breakeven son una aproximación. Se podría recalcularlos.
+4. ~~**Volume profile.**~~ **HECHO** (cerrado por el usuario). Perfil de N días CE(S)T, volumen de ticks, escalón editable, reglas A/B/C, también en el bot. Queda probar la compilación del bot en MetaEditor.
+   *Ideas sueltas, sin fecha (no son pendientes):* toma de liquidez (barrida de máximos o mínimos con cierre de vuelta en 1 a 3 velas), nodos de bajo volumen como filtro y niveles del perfil como SL o TP.
 
 ## Decisiones abiertas
 - **Piso trailing después de un retiro.** Hoy se mantiene en el máximo anterior y, con retiros, la cuenta puede quedar sin margen para operar (ahora hay un aviso). Decidir si se recalcula el piso o se deja como está.
@@ -32,4 +26,5 @@
 
 ## Para probar de tu lado (no se pudo en el entorno de desarrollo)
 - Streamlit: menús 4 a 7 reordenados, acordeón de filtros (botón «⚙ Parámetros»), líneas divisorias en Gestión de riesgo, sección «Retiros de la cuenta» (monto ideal, retiro sugerido, aviso «sin margen»), gráfico de equity con la zona de out-of-sample, portada.
-- MetaEditor: que el bot compile con la pausa tras ganancia/pérdida, el sentido, el retroceso y el vencimiento.
+- MetaEditor: que el bot compile con la pausa tras ganancia/pérdida, el sentido, el retroceso y el vencimiento, el Volume Profile y el breakeven (modificar el SL de la posición abierta, distancia mínima del broker, cierre inmediato si el precio ya volvió al nivel).
+- Streamlit (breakeven): el control en el menú 3, la casilla en el menú 9 y la sección «Breakeven» de los resultados.

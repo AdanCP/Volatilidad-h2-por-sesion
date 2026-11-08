@@ -140,6 +140,12 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         gestion = f"SL de {n(cfg.sl_valor, 2)}% del precio y TP a 1:{n(cfg.rr, 1)}"
     else:
         gestion = f"SL fijo de {n(cfg.sl_valor, 2)} de precio y TP a 1:{n(cfg.rr, 2)}"
+    if getattr(cfg, "be_activo", False):
+        _a = {"r": f"{n(cfg.be_act_valor, 2)} R de ganancia", "usd": f"US${n(cfg.be_act_valor)} de ganancia",
+              "pct_tp": f"{n(cfg.be_act_valor, 0)} % del camino al TP"}[cfg.be_act_modo]
+        _v = cfg.be_nivel_valor
+        _b = ("la entrada" if _v == 0 else (f"{n(_v, 2)} R sobre la entrada" if cfg.be_nivel_modo == "r" else f"US${n(_v)} sobre la entrada"))
+        gestion += f" (con breakeven: al llegar a {_a} el SL pasa a {_b})"
     filtros = []
     if cfg.sma_activo:
         x = f"SMA {cfg.sma_periodo}"
