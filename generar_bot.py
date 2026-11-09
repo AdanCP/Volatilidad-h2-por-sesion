@@ -57,6 +57,10 @@ def _magic(cfg, simbolo: str) -> int:
         clave += f"|{cfg.sl_ema_ref}" + ("|pct" if cfg.sl_ema_pct else "")
     if cfg.sin_pausa:
         clave += "|sp" + ",".join(sorted(cfg.sin_pausa))
+    if not cfg.finde_mantener:
+        clave += "|fin" + ("" if cfg.finde_no_abrir_desde is None else f"{cfg.finde_no_abrir_desde:.4f}")
+    if cfg.cortes:
+        clave += "|co" + ",".join(f"{k}:{v[0]:.4f}-{v[1]:.4f}" for k, v in sorted(cfg.cortes.items()))
     h = 0
     for ch in clave:
         h = (h * 31 + ord(ch)) % 90000
@@ -135,7 +139,7 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
     if limpiar_nombre(nombre):
         cab.append(f"// Nombre del bot: {limpiar_nombre(nombre)}")
     act = [n for n, on in (("SMA", cfg.sma_activo), ("VWAP", cfg.vwap_activo), ("ADX", cfg.adx_activo),
-                           ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("tendencia mayor 1", cfg.tm1_activo), ("tendencia mayor 2", cfg.tm2_activo), ("Volume Profile", cfg.vp_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo()), ("breakeven", cfg.be_activo)) if on]
+                           ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("tendencia mayor 1", cfg.tm1_activo), ("tendencia mayor 2", cfg.tm2_activo), ("Volume Profile", cfg.vp_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo()), ("breakeven", cfg.be_activo), ("cierre de fin de semana", not cfg.finde_mantener)) if on]
     cab.append("// Filtros/opciones activos: " + (", ".join(act) if act else "ninguno"))
     if cfg.vp_activo:
         cab.append(f"// Volume Profile: {cfg.vp_dias} dia(s) de perfil, escalon {_f(cfg.vp_escalon, 4)}, regla "
@@ -149,11 +153,17 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         cab.append(f"// Breakeven: al llegar a {_ma} el SL pasa a {_mn}. Se activa por TICK (apenas el precio llega al nivel, sin esperar al cierre "
                    "de la vela). Un cierre en breakeven no cuenta como ganada ni perdida para las pausas"
                    + (" (salvo que se haya pedido que dispare la pausa tras perdida)." if cfg.be_pausa_perdida else "."))
+    if not cfg.finde_mantener:
+        cab.append("// Fin de semana: NO se mantienen posiciones. El viernes a las 16:59 de Nueva York se cierra todo (posiciones y ordenes pendientes) y a partir de "
+                   "ahi no se abren operaciones nuevas"
+                   + (f"; tampoco desde las {int(cfg.finde_no_abrir_desde):02d}:{int(round((cfg.finde_no_abrir_desde % 1) * 60)):02d} (hora de Nueva York) del viernes."
+                      if cfg.finde_no_abrir_desde is not None else "."))
     if cfg.sesion_activo:
         _hor = {**_SES_LOCAL, **(cfg.horarios or {})}
         _hh = lambda x: f"{int(x):02d}:{int(round((x % 1) * 60)):02d}"
         cab.append("// Sesiones (hora LOCAL de cada plaza; el horario de verano se ajusta solo): " + ", ".join(
             f"{n_} {_hh(_hor[n_][1])}-{_hh(_hor[n_][2])}" + (f" sin pausa {_hh(_PAUSAS[n_][1])}-{_hh(_PAUSAS[n_][2])}" if n_ in (cfg.sin_pausa or ()) else "")
+            + (f" sin {_hh(cfg.cortes[n_][0])}-{_hh(cfg.cortes[n_][1])}" if cfg.cortes and n_ in cfg.cortes else "")
             for n_ in ("Tokio", "Londres", "Nueva York") if n_ in cfg.sesiones))
     cab.append(f"// Veredicto del backtester: {_sin_ascii(veredicto.get('titulo', ''))}")
     cab.append("// Parametros FIJOS: para cambiarlos hay que regenerar el bot desde la app (no se editan a mano).")
@@ -207,6 +217,9 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "TOKIO_P_INI": _f(_PAUSAS["Tokio"][1], 4), "TOKIO_P_FIN": _f(_PAUSAS["Tokio"][2], 4),
         "LONDRES_P_INI": _f(_PAUSAS["Londres"][1], 4), "LONDRES_P_FIN": _f(_PAUSAS["Londres"][2], 4),
         "NY_P_INI": _f(_PAUSAS["Nueva York"][1], 4), "NY_P_FIN": _f(_PAUSAS["Nueva York"][2], 4),
+        **{f"{k}_CORTE": _b(bool(cfg.cortes) and n_ in cfg.cortes) for k, n_ in (("TOKIO", "Tokio"), ("LONDRES", "Londres"), ("NY", "Nueva York"))},
+        **{f"{k}_C_INI": _f((cfg.cortes or {}).get(n_, (0.0, 0.0))[0], 4) for k, n_ in (("TOKIO", "Tokio"), ("LONDRES", "Londres"), ("NY", "Nueva York"))},
+        **{f"{k}_C_FIN": _f((cfg.cortes or {}).get(n_, (0.0, 0.0))[1], 4) for k, n_ in (("TOKIO", "Tokio"), ("LONDRES", "Londres"), ("NY", "Nueva York"))},
         "SRV_OFFSET": _f(cfg.servidor_offset_horas if cfg.servidor_offset_horas is not None else 2.0, 2),
         "SRV_DST": _b(cfg.servidor_dst_eeuu),
         "VEREDICTO_OK": "true",
@@ -225,6 +238,8 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "PAUSA_GAN_VENCE": str(("nunca", "dia", "horas").index(cfg.pausa_gan_vence)),
         "PAUSA_GAN_VENCE_H": _f(cfg.pausa_gan_vence_h, 2),
         "COMISION": _f(cfg.comision_op_usd, 4),
+        "FINDE_MANT": _b(cfg.finde_mantener), "FINDE_BLOQ": _b((not cfg.finde_mantener) and cfg.finde_no_abrir_desde is not None),
+        "FINDE_BLOQ_H": _f(cfg.finde_no_abrir_desde if cfg.finde_no_abrir_desde is not None else 0.0, 4),
         "BE_ON": _b(cfg.be_activo), "BE_ACT_MODO": str(eng.BE_ACT_MODOS.index(cfg.be_act_modo)), "BE_ACT_VAL": _f(cfg.be_act_valor, 4),
         "BE_NIV_MODO": str(eng.BE_NIVEL_MODOS.index(cfg.be_nivel_modo)), "BE_NIV_VAL": _f(cfg.be_nivel_valor, 4),
         "BE_PAUSA_PERD": _b(cfg.be_activo and cfg.be_pausa_perdida and cfg.pausa_activa),
@@ -341,6 +356,15 @@ const double          InpLondresPFin    = @@LONDRES_P_FIN@@; // Londres: fin de 
 const bool            InpNYSinPausa     = @@NY_PAUSA@@;   // Nueva York: excluir la pausa de mediodia
 const double          InpNYPIni         = @@NY_P_INI@@;   // Nueva York: inicio de la pausa (hora local)
 const double          InpNYPFin         = @@NY_P_FIN@@;   // Nueva York: fin de la pausa (hora local)
+const bool            InpTokioCorte     = @@TOKIO_CORTE@@; // Tokio: descontar un horario (recorte)
+const double          InpTokioCIni      = @@TOKIO_C_INI@@; // Tokio: inicio del recorte (hora local)
+const double          InpTokioCFin      = @@TOKIO_C_FIN@@; // Tokio: fin del recorte (hora local)
+const bool            InpLondresCorte   = @@LONDRES_CORTE@@; // Londres: descontar un horario (recorte)
+const double          InpLondresCIni    = @@LONDRES_C_INI@@; // Londres: inicio del recorte (hora local)
+const double          InpLondresCFin    = @@LONDRES_C_FIN@@; // Londres: fin del recorte (hora local)
+const bool            InpNYCorte        = @@NY_CORTE@@;   // Nueva York: descontar un horario (recorte)
+const double          InpNYCIni         = @@NY_C_INI@@;   // Nueva York: inicio del recorte (hora local)
+const double          InpNYCFin         = @@NY_C_FIN@@;   // Nueva York: fin del recorte (hora local)
 const double          InpServerOffset   = @@SRV_OFFSET@@; // Desfase del servidor en INVIERNO respecto de GMT (GMT+2 -> 2)
 const bool            InpServerDST      = @@SRV_DST@@;    // El servidor cambia de hora con EE.UU. (GMT+2/+3)
 
@@ -370,6 +394,9 @@ const int             InpBeActMode      = @@BE_ACT_MODO@@;        // ... activac
 const double          InpBeActVal       = @@BE_ACT_VAL@@;         // ... valor de la activacion (en la unidad de arriba)
 const int             InpBeLvlMode      = @@BE_NIV_MODO@@;        // ... nivel del nuevo SL sobre la entrada: 0 = multiplos de R, 1 = US$ fijos
 const double          InpBeLvlVal       = @@BE_NIV_VAL@@;         // ... valor del nivel (0 = justo en la entrada; nunca menor que 0)
+const bool            InpFindeMantener  = @@FINDE_MANT@@;   // Mantener posiciones el fin de semana (false: el viernes 16:59 de Nueva York se cierra todo y se cancelan las ordenes pendientes)
+const bool            InpFindeBloq      = @@FINDE_BLOQ@@;   // Sin mantener el fin de semana: el viernes no se abren operaciones desde una hora
+const double          InpFindeBloqH     = @@FINDE_BLOQ_H@@; // ... hora (local de Nueva York) desde la que no se abren operaciones el viernes
 const bool            InpBePauseLoss    = @@BE_PAUSA_PERD@@;      // Un cierre en breakeven tambien dispara la pausa tras una operacion perdedora (por defecto no dispara ninguna pausa)
 
 // ============================ estado ==========================================
@@ -616,21 +643,49 @@ bool InSession(const datetime t_servidor)
    if(InpSesTokio)
    {
       const double h = HoraLocal(utc, 9.0);
-      if(EnVentana(h, InpTokioIni, InpTokioFin) && !(InpTokioSinPausa && EnVentana(h, InpTokioPIni, InpTokioPFin))) return true;
+      if(EnVentana(h, InpTokioIni, InpTokioFin) && !(InpTokioSinPausa && EnVentana(h, InpTokioPIni, InpTokioPFin)) && !(InpTokioCorte && EnVentana(h, InpTokioCIni, InpTokioCFin))) return true;
    }
    if(InpSesLondres)
    {
       const bool bst = (utc >= LastSunday(u.year, 3) + 3600 && utc < LastSunday(u.year, 10) + 3600);
       const double h = HoraLocal(utc, bst ? 1.0 : 0.0);
-      if(EnVentana(h, InpLondresIni, InpLondresFin) && !(InpLondresSinPausa && EnVentana(h, InpLondresPIni, InpLondresPFin))) return true;
+      if(EnVentana(h, InpLondresIni, InpLondresFin) && !(InpLondresSinPausa && EnVentana(h, InpLondresPIni, InpLondresPFin)) && !(InpLondresCorte && EnVentana(h, InpLondresCIni, InpLondresCFin))) return true;
    }
    if(InpSesNY)
    {
       const bool edt = (utc >= NthSunday(u.year, 3, 2) + 7 * 3600 && utc < NthSunday(u.year, 11, 1) + 6 * 3600);
       const double h = HoraLocal(utc, edt ? -4.0 : -5.0);
-      if(EnVentana(h, InpNYIni, InpNYFin) && !(InpNYSinPausa && EnVentana(h, InpNYPIni, InpNYPFin))) return true;
+      if(EnVentana(h, InpNYIni, InpNYFin) && !(InpNYSinPausa && EnVentana(h, InpNYPIni, InpNYPFin)) && !(InpNYCorte && EnVentana(h, InpNYCIni, InpNYCFin))) return true;
    }
    return false;
+}
+
+// ============================ fin de semana ===================================
+// hora local de Nueva York (con su horario de verano) y dia de la semana (0 = domingo ... 5 = viernes) de un instante del servidor
+void NYAhora(const datetime t_servidor, double &h, int &dow)
+{
+   const datetime utc = ServidorAUtc(t_servidor);
+   MqlDateTime u;
+   TimeToStruct(utc, u);
+   const bool edt = (utc >= NthSunday(u.year, 3, 2) + 7 * 3600 && utc < NthSunday(u.year, 11, 1) + 6 * 3600);
+   const datetime loc = utc + (datetime)((edt ? -4.0 : -5.0) * 3600.0);
+   MqlDateTime s;
+   TimeToStruct(loc, s);
+   h = s.hour + s.min / 60.0 + s.sec / 3600.0;
+   dow = s.day_of_week;
+}
+
+// true si una vela que abre en t_apertura (hora del servidor) no puede abrir operaciones: sin mantener el fin de semana, el viernes
+// la ultima vela (la que cierra a las 17:00 de Nueva York) y, si se pidio, las que abren desde la hora elegida. Igual que el backtester.
+bool FindeBloqueaEntrada(const datetime t_apertura)
+{
+   if(InpFindeMantener) return false;
+   double h;
+   int dow;
+   NYAhora(t_apertura, h, dow);
+   if(dow != 5) return false;
+   if(h + PeriodSeconds() / 3600.0 >= 17.0 - 1e-6) return true;
+   return InpFindeBloq && h >= InpFindeBloqH;
 }
 
 // ============================ Volume Profile ===================================
@@ -956,6 +1011,7 @@ bool OkVp(const int i, const int side)
 // orden de los filtros = el del backtester: sesion, SMA, VWAP, ADX, rango, ATR, tendencia mayor 1 y 2, Volume Profile
 bool PassFilters(const int i, const int side, const bool withSession)
 {
+   if(FindeBloqueaEntrada(g_time[i])) return false;
    if(InpSesOn && withSession && !InSession(g_time[i])) return false;
    if(InpSmaOn && !OkSma(i, side)) return false;
    if(InpVwapOn && !OkVwap(i, side)) return false;
@@ -974,6 +1030,7 @@ string Sep(const string r) { return r == "" ? "" : " | "; }
 string FiltrosTxt(const int i, const int side, const bool withSession)
 {
    string r = "";
+   if(FindeBloqueaEntrada(g_time[i])) r += "viernes tarde RECHAZA";
    if(InpSesOn)
    {
       if(withSession) r += (InSession(g_time[i]) ? "sesion ok" : "sesion RECHAZA");
@@ -1211,6 +1268,24 @@ void CloseAll()
    }
 }
 
+// Sin mantener el fin de semana: el viernes a las 16:59 de Nueva York se cierra todo y se cancelan las ordenes pendientes (cada tick)
+void ManageFinde()
+{
+   if(InpFindeMantener) return;
+   double h;
+   int dow;
+   NYAhora(TimeCurrent(), h, dow);
+   if(dow != 5 || h < 16.0 + 59.0 / 60.0) return;
+   g_pbActive = false;
+   if(HasPosition())
+   {
+      static datetime ultAviso = 0;
+      if(TimeCurrent() - ultAviso > 300) { ultAviso = TimeCurrent(); Avisar("Fin de semana: se cierra la posicion (viernes 16:59 de Nueva York)."); }
+      CloseAll();
+   }
+   else DeletePending();
+}
+
 // Salida por senal (igual que el backtester): sin TP. Se cierra cuando una vela CERRADA, posterior a la de entrada, cierra del
 // otro lado de la media (largo: debajo; corto: encima). Entrada a mercado: cuenta desde la vela en que se abrio (la de la
 // vela siguiente al cruce); entrada por pullback: desde la vela siguiente a la del llenado. Revisa todas las velas cerradas
@@ -1289,6 +1364,12 @@ bool MarketEntry(const int side, const double d0, const double lvl = 0.0)
 void PlacePullback(const int i)
 {
    DeletePending();
+   if(FindeBloqueaEntrada(iTime(_Symbol, _Period, 0)))               // viernes tarde / ultima vela de la semana: se cancela la orden
+   {
+      g_pbActive = false;
+      Print("Pullback cancelado: fin de semana (no se dejan ordenes el viernes desde la hora elegida ni en la ultima vela).");
+      return;
+   }
    if(InpSesOn && !InSession(iTime(_Symbol, _Period, 0)))             // fuera de sesion no se deja orden (sigue contando la caducidad)
    {
       Print("Pullback: fuera de sesion, no se deja orden en esta vela (vela ", g_pbBars, " de ", InpPBBars, ").");
@@ -1876,6 +1957,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
 
 void OnTick()
 {
+   ManageFinde();                                  // sin mantener el fin de semana: viernes 16:59 de Nueva York se cierra todo
    ManageBreakeven();                              // el breakeven se revisa en cada tick (no espera al cierre de la vela)
    if(!GuardsOK()) return;
    const datetime t0 = iTime(_Symbol, _Period, 0);

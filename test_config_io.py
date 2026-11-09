@@ -72,3 +72,11 @@ def test_fechas_ida_y_vuelta():
     b = c.a_bytes("ema", {"desde": date(2021, 3, 4), "periodo": (date(2022, 1, 1), date(2022, 2, 1))})
     out, err = c.leer(b, "ema")
     assert out == {"desde": "2021-03-04", "periodo": ["2022-01-01", "2022-02-01"]}
+
+
+def test_nombre_archivo():
+    assert c.nombre_archivo("", "auto") == "auto.json"
+    assert c.nombre_archivo("  mi prueba ", "auto") == "mi prueba.json"
+    assert c.nombre_archivo("x.json", "auto") == "x.json"
+    assert c.nombre_archivo("a/b\\c:d?", "auto") == "a_b_c_d.json"
+    assert c.nombre_archivo("../..", "auto") == "auto.json"

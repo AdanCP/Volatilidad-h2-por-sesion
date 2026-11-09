@@ -185,3 +185,48 @@ def exportar_df(df: pd.DataFrame, point: float) -> pd.DataFrame:
         "tick_volume": df["Volume"].to_numpy(),
         "spread": np.rint(df["Spread"].to_numpy() / point).astype(int),
         "point": point})
+
+
+# ------------------------------------------------- datos sincronizados (carpeta datos_mt5 del repo)
+CARPETA_SYNC = "datos_mt5"
+
+
+def ruta_sync(carpeta: str, simbolo: str, tf: str) -> str:
+    import os
+    return os.path.join(carpeta, f"{simbolo}_{tf}.csv.gz")
+
+
+def guardar_sync(df: pd.DataFrame, spec: dict, carpeta: str, simbolo: str, tf: str) -> str:
+    """Guarda un simbolo/temporalidad comprimido (bytes reproducibles: sin fecha en el gzip)."""
+    import os
+    os.makedirs(carpeta, exist_ok=True)
+    ruta = ruta_sync(carpeta, simbolo, tf)
+    exportar_df(df, spec["point"]).to_csv(ruta, index=False, compression={"method": "gzip", "mtime": 0})
+    return ruta
+
+
+def leer_manifest(carpeta: str) -> dict:
+    """{'sincronizado': str, 'simbolos': {sim: {'spec': {...}, 'tfs': {tf: {velas, desde, hasta}}}}} o {} si no hay."""
+    import json
+    import os
+    ruta = os.path.join(carpeta, "manifest.json")
+    if not os.path.exists(ruta):
+        return {}
+    with open(ruta, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def escribir_manifest(carpeta: str, manifest: dict) -> None:
+    import json
+    import os
+    os.makedirs(carpeta, exist_ok=True)
+    with open(os.path.join(carpeta, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=1, ensure_ascii=False, sort_keys=True)
+
+
+def cargar_sync(carpeta: str, simbolo: str, tf: str) -> pd.DataFrame:
+    import os
+    ruta = ruta_sync(carpeta, simbolo, tf)
+    if not os.path.exists(ruta):
+        raise ErrorDatos(f"No hay datos sincronizados de {simbolo} {tf}.")
+    return cargar_csv(ruta)

@@ -28,3 +28,8 @@
 - Streamlit: menús 4 a 7 reordenados, acordeón de filtros (botón «⚙ Parámetros»), líneas divisorias en Gestión de riesgo, sección «Retiros de la cuenta» (monto ideal, retiro sugerido, aviso «sin margen»), gráfico de equity con la zona de out-of-sample, portada.
 - MetaEditor: que el bot compile con la pausa tras ganancia/pérdida, el sentido, el retroceso y el vencimiento, el Volume Profile y el breakeven (modificar el SL de la posición abierta, distancia mínima del broker, cierre inmediato si el precio ya volvió al nivel).
 - Streamlit (breakeven): el control en el menú 3, la casilla en el menú 9 y la sección «Breakeven» de los resultados.
+- Streamlit (menú 3 en acordeón): los bloques Pullback, SL, TP y Breakeven con «⚙ Parámetros». Streamlit (menú 6): el recorte de horario por sesión (casilla, Desde/Hasta, equivalencia local, aviso si cae fuera de la sesión).
+- Streamlit (portada): el cartel rojo de cambio de horario (marzo completo: Londres / NY; 20 al 31 de octubre: Londres; 1 al 7 de noviembre: NY). Hoy (8/11) no se ve; para verlo antes hay que probar con una fecha dentro de esas ventanas.
+- Streamlit (fin de semana): casilla «Mantener posición el fin de semana» al final del menú 8, la hora opcional del viernes (14:00 ART por defecto) y la sección «Fin de semana» de los resultados.
+- MetaEditor: que compile el bot con `ManageFinde`, `FindeBloqueaEntrada` y los inputs `InpFinde…` (el viernes 16:59 de Nueva York cierra posiciones y cancela pendientes).
+- MetaEditor: que compile el bot con los inputs de recorte por sesión (`Inp...Corte`, `...CIni`, `...CFin`).

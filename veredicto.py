@@ -146,6 +146,8 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         _v = cfg.be_nivel_valor
         _b = ("la entrada" if _v == 0 else (f"{n(_v, 2)} R sobre la entrada" if cfg.be_nivel_modo == "r" else f"US${n(_v)} sobre la entrada"))
         gestion += f" (con breakeven: al llegar a {_a} el SL pasa a {_b})"
+    if not getattr(cfg, "finde_mantener", True):
+        gestion += " y sin posiciones el fin de semana (se cierra todo el viernes antes del cierre del mercado)"
     filtros = []
     if cfg.sma_activo:
         x = f"SMA {cfg.sma_periodo}"
@@ -191,6 +193,8 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
                if cfg.horarios and n_ in cfg.horarios and tuple(cfg.horarios[n_]) != tuple(_SL[n_]) else n_
                for n_ in cfg.sesiones]
         _tx = [t + " sin pausa de mediodía" if n_ in (cfg.sin_pausa or ()) else t for t, n_ in zip(_tx, cfg.sesiones)]
+        _tx = [t + f" sin {_hh(cfg.cortes[n_][0])}-{_hh(cfg.cortes[n_][1])} hora local" if cfg.cortes and n_ in cfg.cortes else t
+               for t, n_ in zip(_tx, cfg.sesiones)]
         filtros.append("sesión " + " + ".join(_tx))
     filtros_txt = ("filtros: " + "; ".join(filtros)) if filtros else "sin filtros"
     if cfg.pb_efectivo():

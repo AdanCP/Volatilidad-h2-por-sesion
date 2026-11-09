@@ -136,3 +136,102 @@ def test_motor_y_bot_con_pausa():
     assert "InpTokioSinPausa  = false" in src
     assert "&& !(InpNYSinPausa && EnVentana(h, InpNYPIni, InpNYPFin))" in src
     assert "sin pausa 12:00-14:00" in src
+
+
+# ---------------------------------------------------------------- recorte de un horario por sesion
+def test_recorte_ny_17_a_18_argentina_y_pausa_conviven():
+    # invierno: 17:00-18:00 ART = 15:00-16:00 locales de Nueva York; pausa 12:00-14:00 locales. Velas M30 de NY (invierno = UTC-5)
+    c = ses.cortes_con_rangos({"Nueva York": (17.0, 18.0)}, INVIERNO)
+    assert tuple(round(x, 2) for x in c["Nueva York"]) == (15.0, 16.0)
+    idx = pd.date_range("2026-11-05 14:30", "2026-11-05 21:30", freq="30min")      # 09:30 a 16:30 locales
+    m = ses.mascara_sesiones(idx, ("Nueva York",), None, ("Nueva York",), c)
+    horas_loc = [(i - pd.Timedelta(hours=5)).strftime("%H:%M") for i in idx[m]]
+    assert horas_loc == ["09:30", "10:00", "10:30", "11:00", "11:30", "14:00", "14:30"]       # sin 12-14 (pausa) ni 15-16 (recorte)
+
+
+def test_recorte_en_verano_se_corre_en_utc():
+    c = ses.cortes_con_rangos({"Nueva York": (17.0, 18.0)}, VERANO)      # 17-18 ART = 16-17 locales (UTC-4)
+    assert tuple(round(x, 2) for x in c["Nueva York"]) == (16.0, 17.0)
+
+
+def test_recorte_que_cruza_la_medianoche_en_tokio():
+    # 23:00-01:00 ART = 11:00-13:00 locales de Tokio (UTC+9)
+    c = ses.cortes_con_rangos({"Tokio": (23.0, 1.0)}, INVIERNO)
+    assert tuple(round(x, 2) for x in c["Tokio"]) == (11.0, 13.0)
+    # recorte que cruza medianoche en hora local (22:00 a 02:00 de Londres, solo para la mascara)
+    idx = pd.date_range("2026-11-05 00:00", "2026-11-05 23:30", freq="30min")
+    m = ses.mascara_sesiones(idx, ("Londres",), {"Londres": ("Europe/London", 20.0, 8.0)}, (), {"Londres": (22.0, 2.0)})
+    horas = [i.strftime("%H:%M") for i in idx[m]]
+    assert "23:00" not in horas and "01:30" not in horas and "02:00" in horas and "21:30" in horas
+
+
+def test_recorte_sin_duracion_es_error_y_fuera_de_sesion_avisa():
+    with pytest.raises(ValueError):
+        ses.cortes_con_rangos({"Nueva York": (17.0, 17.0)}, INVIERNO)
+    with pytest.raises(ValueError):
+        ses.cortes_con_rangos({"Marte": (1.0, 2.0)}, INVIERNO)
+    assert ses.corte_toca_sesion("Nueva York", (15.0, 16.0))
+    assert not ses.corte_toca_sesion("Nueva York", (20.0, 21.0))
+    # con el rango limitado a 9:30-11:30 locales el recorte de 15-16 ya no toca nada
+    h = ses.horarios_con_rangos({"Nueva York": (11.5, 13.5)}, INVIERNO)
+    assert not ses.corte_toca_sesion("Nueva York", (15.0, 16.0), h)
+
+
+def test_recorte_solo_afecta_a_su_sesion_y_no_toca_sin_recorte():
+    idx = pd.date_range("2026-11-05 00:00", "2026-11-05 23:30", freq="30min")
+    base = ses.mascara_sesiones(idx, ("Tokio", "Nueva York"))
+    assert (ses.mascara_sesiones(idx, ("Tokio", "Nueva York"), None, (), None) == base).all()
+    con = ses.mascara_sesiones(idx, ("Tokio", "Nueva York"), None, (), {"Nueva York": (15.0, 16.0)})
+    assert con.sum() == base.sum() - 2 and (con <= base).all()
+
+
+def test_motor_bot_veredicto_y_magic_con_recorte():
+    import veredicto as ver
+    df = _df()
+    base = dict(sesion_activo=True, sesiones=("Nueva York",), servidor_offset_horas=2.0)
+    cort = {"Nueva York": (15.0, 16.0)}
+    n_ok = lambda P: sum(1 for _, _, m in P.cruces if m is None)
+    a = n_ok(eng.preparar(df, eng.Config(**base)))
+    b = n_ok(eng.preparar(df, eng.Config(**base, cortes=cort)))
+    assert 0 < b < a
+    cfg = eng.Config(**base, sin_pausa=("Nueva York",), cortes=cort)
+    src = gb.generar_mq5(cfg, "XAUUSD", "M15", 0.1, veredicto={"nivel": "ok", "titulo": "x"})
+    assert "InpNYCorte        = true" in src and "InpNYCIni         = 15.0" in src and "InpNYCFin         = 16.0" in src
+    assert "InpTokioCorte     = false" in src and "@@" not in src
+    assert "&& !(InpNYCorte && EnVentana(h, InpNYCIni, InpNYCFin))" in src
+    assert "sin 15:00-16:00" in src
+    # sin recorte, el magic y el texto del bot no cambian
+    assert gb._magic(eng.Config(**base), "XAUUSD") == gb._magic(eng.Config(**base, cortes=None), "XAUUSD")
+    assert gb._magic(eng.Config(**base), "XAUUSD") != gb._magic(eng.Config(**base, cortes=cort), "XAUUSD")
+
+
+def test_recorte_se_guarda_y_se_carga_y_se_rebasa():
+    pares = [(cio.slug("Nueva York: recorte desde (hora Argentina)"), cio.slug("Nueva York: recorte hasta (hora Argentina)"), "America/New_York")]
+    d, h = pares[0][0], pares[0][1]
+    v = ses.rebasar_horas({d: "17:00", h: "18:00", "_ref_fecha": INVIERNO.isoformat()}, pares, VERANO)
+    assert (v[d], v[h]) == ("16:00", "17:00")        # la misma franja de Nueva York (15-16 locales -> 16-17 ART en verano)
+
+
+# ---------------------------------------------------------------- aviso por cambio de horario (portada)
+def test_aviso_cambio_de_horario_todos_los_anios():
+    f = ses.aviso_cambio_horario
+    # marzo completo: Londres / NY
+    for d in (date(2027, 3, 1), date(2027, 3, 15), date(2027, 3, 31), date(2030, 3, 10)):
+        t, det = f(d)
+        assert t == "Verificar filtro de sesión por cambio de horario LONDRES / NY"
+    assert "EE.UU. cambia el domingo 14/03" in f(date(2027, 3, 1))[1] and "Londres cambia el domingo 28/03" in f(date(2027, 3, 1))[1]
+    assert "EE.UU. cambió el domingo 14/03" in f(date(2027, 3, 20))[1] and "Londres cambia el domingo 28/03" in f(date(2027, 3, 20))[1]
+    assert "Londres cambia hoy" in f(date(2027, 3, 28))[1]
+    # octubre: del 20 al 31 inclusive, solo Londres
+    assert f(date(2026, 10, 19)) is None
+    for d in (date(2026, 10, 20), date(2026, 10, 31)):
+        assert f(d)[0] == "Verificar filtro de sesión por cambio de horario LONDRES"
+    assert "Londres cambia el domingo 25/10" in f(date(2026, 10, 20))[1]
+    assert "Londres cambió el domingo 25/10" in f(date(2026, 10, 30))[1]
+    # noviembre: del 1 al 7, solo NY
+    for d in (date(2026, 11, 1), date(2026, 11, 7), date(2027, 11, 1)):
+        assert f(d)[0] == "Verificar filtro de sesión de NY"
+    assert "EE.UU. cambia hoy" in f(date(2026, 11, 1))[1] and "EE.UU. cambia el domingo 07/11" in f(date(2027, 11, 1))[1]
+    assert f(date(2026, 11, 8)) is None
+    # el resto del año no hay aviso
+    assert all(f(date(2026, m, 15)) is None for m in (1, 2, 4, 5, 6, 7, 8, 9, 12))

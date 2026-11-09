@@ -3,10 +3,13 @@
 Se dibuja como una sola pieza HTML de tamaño fijo (components.html) para que el panel y las tarjetas midan siempre lo mismo.
 Al tocar una tarjeta se "hace clic" en el enlace de esa página dentro del menú oculto de Streamlit, así se navega sin recargar
 y no se pierde lo que haya cargado en los backtesters. Los dibujos son miniaturas ilustrativas, no datos reales."""
+from datetime import date
+
 import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 
+import sessions as ses
 import ui_estilo as ui
 
 ALTO = 520      # alto del panel y del bloque de tarjetas (px)
@@ -155,7 +158,41 @@ _CSS = """<style>
 </style>"""
 
 
+_CSS_AVISO = """<style>
+.st-key-aviso_horario{background:linear-gradient(100deg,#e0162b,#b10f25);border:2px solid rgba(255,255,255,.35);border-radius:16px;
+  padding:18px 24px 14px;margin:2.9rem 0 14px;box-shadow:0 10px 28px -6px rgba(200,20,40,.55);gap:.4rem !important;}
+.st-key-aviso_horario .av{display:flex;align-items:center;gap:18px;color:#fff;}
+.st-key-aviso_horario .av .ic{font-size:42px;line-height:1;}
+.st-key-aviso_horario .av .t{font-size:1.7rem;font-weight:800;letter-spacing:-.01em;line-height:1.15;color:#fff;}
+.st-key-aviso_horario .av .s{font-size:.95rem;opacity:.92;margin-top:4px;color:#fff;}
+.st-key-aviso_horario [data-testid="stButton"]{display:flex;justify-content:flex-end;}
+.st-key-aviso_horario button{background:rgba(255,255,255,.16) !important;border:1px solid rgba(255,255,255,.55) !important;color:#fff !important;min-height:0;padding:2px 14px;}
+.st-key-aviso_horario button p{color:#fff !important;font-size:.85rem;}
+</style>"""
+
+
+def _aviso() -> None:
+    """Cartel rojo por cambio de horario de Londres / NY (fechas fijas de cada año, ver sessions.aviso_cambio_horario). Se puede
+    ocultar durante la sesion."""
+    hoy = date.today()
+    try:        # para probarlo: agregar a la direccion ?aviso=2027-03-10 (simula esa fecha; sin eso usa la de hoy)
+        hoy = date.fromisoformat(str(st.query_params.get("aviso", "")))
+    except ValueError:
+        pass
+    av = ses.aviso_cambio_horario(hoy)
+    if not av or st.session_state.get("aviso_oculto") == av[0]:
+        return
+    st.markdown(_CSS_AVISO, unsafe_allow_html=True)
+    with st.container(key="aviso_horario"):
+        st.markdown(f'<div class="av"><div class="ic">⚠️</div><div><div class="t">{av[0]}</div><div class="s">{av[1]}</div></div></div>',
+                    unsafe_allow_html=True)
+        if st.button("Ocultar aviso", key="aviso_ocultar"):
+            st.session_state["aviso_oculto"] = av[0]
+            st.rerun()
+
+
 def render(rutas: dict) -> None:
     p = ui.TEMAS[ui.TEMA]
     st.markdown(_CSS.replace("@ALTO@", str(ALTO + 2 * MARCO)), unsafe_allow_html=True)
+    _aviso()
     components.html(html(p, rutas, ui.TEMA == "oscuro"), height=ALTO + 2 * MARCO)

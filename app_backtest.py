@@ -185,6 +185,9 @@ class _W:
 
 _PARES_HORA = [(cio.slug(f"{n_}: desde (hora Argentina)"), cio.slug(f"{n_}: hasta (hora Argentina)"), z_)
                for n_, (z_, _i, _f) in sesmod.SESIONES_LOCAL.items()]
+_PARES_HORA += [(cio.slug("No abrir operaciones el viernes desde (hora Argentina)"), "_sin_segunda_hora", "America/New_York")]
+_PARES_HORA += [(cio.slug(f"{n_}: recorte desde (hora Argentina)"), cio.slug(f"{n_}: recorte hasta (hora Argentina)"), z_)
+                for n_, (z_, _i, _f) in sesmod.SESIONES_LOCAL.items()]
 
 
 def _cargar_cfg(clave_up):
@@ -195,6 +198,11 @@ def _cargar_cfg(clave_up):
     if err:
         estado.cfg_msg = ("error", err)
         return
+    if "sesiones_permitidas" in vals:         # configuraciones viejas: el selector de sesiones pasó a una casilla por sesión
+        _elegidas = vals.pop("sesiones_permitidas")
+        if isinstance(_elegidas, list):
+            for _n_ in SESIONES:
+                vals.setdefault(f"sesion_{cio.slug(_n_)}", _n_ in _elegidas)
     vals = sesmod.rebasar_horas(vals, _PARES_HORA, date.today())      # las horas Argentina se reajustan al horario de verano de hoy
     if vals.get("fuente_de_datos") == ETQ_MT5 and not MT5_OK:      # MT5 directo no existe en esta máquina
         vals = {k_: v_ for k_, v_ in vals.items() if k_ != "fuente_de_datos"}
@@ -648,48 +656,84 @@ with st.sidebar:
                                   "(después del cierre de Nueva York y antes de Tokio, y entre Tokio y Londres).")
         if not ses_on:
             st.caption("Sin marcar: 24/5, todo el mercado.")
-        horarios_ses = None
-        _sin_pausa = []
+            for _n_ in SESIONES:
+                st.session_state[f"_acc_prev_{cio.slug(_n_)}"] = False
+        horarios_ses, cortes_ses = None, None
+        _sin_pausa, _cortes = [], {}
         if ses_on:
-            sesiones = _W(st).multiselect("Sesiones permitidas", SESIONES, SESIONES)
+            sesiones, _acc_lista, _acc_activos = [], [], set()
             _hoy = date.today()
             _rangos, _nombre_plaza = {}, {"Tokio": "Tokio", "Londres": "Londres", "Nueva York": "Nueva York"}
-            for _nom in sesiones:
-                _ini_a, _fin_a = sesmod.ventana_art(_nom, _hoy)
-                _lim = _W(st).checkbox(f"Limitar horario de {_nom} (hora Argentina)", key=f"limitar_horario_de_{cio.slug(_nom)}", help=(
-                    "Por defecto la sesión se mide completa. Al marcarlo elegís el rango en hora Argentina; arranca cuando abre la "
-                    "bolsa de esa plaza. Se guarda como hora de esa plaza, así que sigue el horario de verano solo."))
-                if _lim:
-                    _c1, _c2 = st.columns(2)
-                    _d = _W(_c1).time_input("Desde", _hora(int(_ini_a), int(round((_ini_a % 1) * 60))), step=900,
-                                            key=cio.slug(f"{_nom}: desde (hora Argentina)"))
-                    _h = _W(_c2).time_input("Hasta", _hora(int(_fin_a), int(round((_fin_a % 1) * 60))), step=900,
-                                            key=cio.slug(f"{_nom}: hasta (hora Argentina)"))
-                    _rangos[_nom] = (_d.hour + _d.minute / 60.0, _h.hour + _h.minute / 60.0)
-                    try:
-                        _zona = sesmod.SESIONES_LOCAL[_nom][0]
-                        _l1, _l2 = (sesmod.art_a_local(x, _zona, _hoy) for x in _rangos[_nom])
-                        st.caption(f"= {_l1 // 1:02.0f}:{round((_l1 % 1) * 60):02d} a {_l2 // 1:02.0f}:{round((_l2 % 1) * 60):02d} hora local de "
-                                   f"{_nom}. " + ("Tokio no cambia de horario." if _nom == "Tokio" else "Se corre solo con el horario de verano."))
-                    except Exception:
-                        pass
-                else:
-                    st.caption(f"{_nom} completa: {_ini_a // 1:02.0f}:{round((_ini_a % 1) * 60):02d} a "
-                               f"{_fin_a // 1:02.0f}:{round((_fin_a % 1) * 60):02d} hora Argentina (hoy).")
-                _pa, _pb = sesmod.pausa_art(_nom, _hoy)
-                _hm = lambda x: f"{int(round(x * 60)) % 1440 // 60:02d}:{int(round(x * 60)) % 60:02d}"
-                if _W(st).checkbox(f"Excluir pausa de mediodía de {_nom}", key=f"excluir_pausa_de_{cio.slug(_nom)}", help=(
-                        "Opera la sesión salvo en su pausa de mediodía. Se excluyen las velas que abren desde el inicio de la pausa "
-                        "hasta antes del fin (en M5 con la pausa de 11:30 a 12:30, de la vela 11:30 a la 12:25). Solo bloquea "
-                        "entradas nuevas: lo que ya está abierto sigue. La pausa es fija y se guarda en hora de esa plaza, "
-                        "así que sigue el horario de verano sola.")):
-                    _sin_pausa.append(_nom)
-                    _z = sesmod.PAUSAS_LOCAL[_nom][0]
-                    st.caption(f"Sin pausa: {_hm(_pa)} a {_hm(_pb)} hora Argentina (hoy) = "
-                               f"{_hm(sesmod.PAUSAS_LOCAL[_nom][1])} a {_hm(sesmod.PAUSAS_LOCAL[_nom][2])} hora local de {_nom}. "
-                               + ("Tokio no cambia de horario." if _nom == "Tokio" else "Se corre sola con el horario de verano."))
+            for _nom in SESIONES:
+                _sep_filtro()
+                _id_ses = cio.slug(_nom)
+                if _W(st).checkbox(_nom, value=True, key=f"sesion_{_id_ses}", help=(
+                        f"Marcada, el bot toma cruces dentro de la sesión de {_nom}. Adentro podés limitar su horario, sacarle la pausa de "
+                        "mediodía o recortarle un tramo, siempre en hora Argentina.")):
+                    sesiones.append(_nom)
+                    _acc_activos.add(_id_ses)
+                    _acc_cab(_id_ses, _acc_lista, "ses")
+                    with st.container(key=f"acc_{_id_ses}"):
+                        _ini_a, _fin_a = sesmod.ventana_art(_nom, _hoy)
+                        _lim = _W(st).checkbox(f"Limitar horario de {_nom} (hora Argentina)", key=f"limitar_horario_de_{cio.slug(_nom)}", help=(
+                            "Por defecto la sesión se mide completa. Al marcarlo elegís el rango en hora Argentina; arranca cuando abre la "
+                            "bolsa de esa plaza. Se guarda como hora de esa plaza, así que sigue el horario de verano solo."))
+                        if _lim:
+                            _c1, _c2 = st.columns(2)
+                            _d = _W(_c1).time_input("Desde", _hora(int(_ini_a), int(round((_ini_a % 1) * 60))), step=900,
+                                                    key=cio.slug(f"{_nom}: desde (hora Argentina)"))
+                            _h = _W(_c2).time_input("Hasta", _hora(int(_fin_a), int(round((_fin_a % 1) * 60))), step=900,
+                                                    key=cio.slug(f"{_nom}: hasta (hora Argentina)"))
+                            _rangos[_nom] = (_d.hour + _d.minute / 60.0, _h.hour + _h.minute / 60.0)
+                            try:
+                                _zona = sesmod.SESIONES_LOCAL[_nom][0]
+                                _l1, _l2 = (sesmod.art_a_local(x, _zona, _hoy) for x in _rangos[_nom])
+                                st.caption(f"= {_l1 // 1:02.0f}:{round((_l1 % 1) * 60):02d} a {_l2 // 1:02.0f}:{round((_l2 % 1) * 60):02d} hora local de "
+                                           f"{_nom}. " + ("Tokio no cambia de horario." if _nom == "Tokio" else "Se corre solo con el horario de verano."))
+                            except Exception:
+                                pass
+                        else:
+                            st.caption(f"{_nom} completa: {_ini_a // 1:02.0f}:{round((_ini_a % 1) * 60):02d} a "
+                                       f"{_fin_a // 1:02.0f}:{round((_fin_a % 1) * 60):02d} hora Argentina (hoy).")
+                        _pa, _pb = sesmod.pausa_art(_nom, _hoy)
+                        _hm = lambda x: f"{int(round(x * 60)) % 1440 // 60:02d}:{int(round(x * 60)) % 60:02d}"
+                        if _W(st).checkbox(f"Excluir pausa de mediodía de {_nom}", key=f"excluir_pausa_de_{cio.slug(_nom)}", help=(
+                                "Opera la sesión salvo en su pausa de mediodía. Se excluyen las velas que abren desde el inicio de la pausa "
+                                "hasta antes del fin (en M5 con la pausa de 11:30 a 12:30, de la vela 11:30 a la 12:25). Solo bloquea "
+                                "entradas nuevas: lo que ya está abierto sigue. La pausa es fija y se guarda en hora de esa plaza, "
+                                "así que sigue el horario de verano sola.")):
+                            _sin_pausa.append(_nom)
+                            _z = sesmod.PAUSAS_LOCAL[_nom][0]
+                            st.caption(f"Sin pausa: {_hm(_pa)} a {_hm(_pb)} hora Argentina (hoy) = "
+                                       f"{_hm(sesmod.PAUSAS_LOCAL[_nom][1])} a {_hm(sesmod.PAUSAS_LOCAL[_nom][2])} hora local de {_nom}. "
+                                       + ("Tokio no cambia de horario." if _nom == "Tokio" else "Se corre sola con el horario de verano."))
+                        if _W(st).checkbox(f"Recortar un horario de {_nom} (hora Argentina)", key=f"recortar_un_horario_de_{cio.slug(_nom)}", help=(
+                                "Le descuenta a la sesión un tramo que elijas, en hora Argentina, además de la pausa de mediodía y del rango si "
+                                "los usás. Bloquea entradas nuevas en las velas que abren desde el inicio hasta antes del fin del tramo; lo "
+                                "que ya está abierto sigue. Si el inicio es mayor que el fin, el tramo cruza la medianoche. Se guarda como "
+                                "hora de esa plaza, así que sigue el horario de verano solo.")):
+                            _fx = lambda x: _hora(int(x % 24), int(round((x % 1) * 60)))
+                            _k1, _k2 = st.columns(2)
+                            _cd = _W(_k1).time_input("Desde", _fx(_fin_a - 1.0), step=900, key=cio.slug(f"{_nom}: recorte desde (hora Argentina)"))
+                            _ch = _W(_k2).time_input("Hasta", _fx(_fin_a), step=900, key=cio.slug(f"{_nom}: recorte hasta (hora Argentina)"))
+                            _cortes[_nom] = (_cd.hour + _cd.minute / 60.0, _ch.hour + _ch.minute / 60.0)
+                            try:
+                                _zc = sesmod.SESIONES_LOCAL[_nom][0]
+                                _c1, _c2 = (sesmod.art_a_local(x, _zc, _hoy) for x in _cortes[_nom])
+                                st.caption(f"= {_hm(_c1)} a {_hm(_c2)} hora local de {_nom}. "
+                                           + ("Tokio no cambia de horario." if _nom == "Tokio" else "Se corre solo con el horario de verano."))
+                                _hor_n = sesmod.horarios_con_rangos({_nom: _rangos[_nom]}, _hoy) if _nom in _rangos else None
+                                if not sesmod.corte_toca_sesion(_nom, (_c1, _c2), _hor_n):
+                                    st.warning(f"Ese tramo cae fuera de lo que opera {_nom} (con el rango elegido): no cambia nada.")
+                            except Exception:
+                                pass
+            _acc_css(_acc_lista, _acc_activos, "ses", tuple(cio.slug(n_) for n_ in SESIONES))
             try:
                 horarios_ses = sesmod.horarios_con_rangos(_rangos, _hoy) if _rangos else None
+            except ValueError as e:
+                st.error(str(e))
+            try:
+                cortes_ses = sesmod.cortes_con_rangos(_cortes, _hoy) if _cortes else None
             except ValueError as e:
                 st.error(str(e))
             offset = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)
@@ -762,6 +806,30 @@ with st.sidebar:
         offset_dia = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="offset_dia")
         st.caption("Sirve para cortar el día a medianoche de Europa Central (hora CE(S)T), como FTMO. Medilo con el "
                    "mercado abierto; es el mismo dato del filtro de sesión.")
+        st.divider()
+        finde_mant = _W(st).checkbox("Mantener posición el fin de semana", value=True, help=(
+            "Tildado: las operaciones abiertas el viernes siguen abiertas hasta el lunes, como hasta ahora. Destildado: toda operación "
+            "abierta se cierra el viernes un minuto antes del cierre del mercado de Nueva York (17:00 de Nueva York), en el estado "
+            "en que esté, y cuenta para las estadísticas como cualquier otro cierre (ganada o perdida según su resultado). Las "
+            "órdenes pendientes del pullback también se cancelan. En el backtest el cierre se hace en la última vela de la semana "
+            "(la que queda antes del hueco del fin de semana) y paga el spread."))
+        finde_vie_on, finde_vie_ny = False, None
+        if not finde_mant:
+            finde_vie_on = _W(st).checkbox("No abrir operaciones el viernes desde una hora (opcional)", value=True, help=(
+                "Con una operación que cierra el viernes por fin de semana, entrar muy tarde deja poco tiempo para que llegue al TP y "
+                "paga el spread para nada. Desde la hora elegida el viernes ya no se abren operaciones ni se dejan órdenes "
+                "pendientes. La hora se carga en hora Argentina y se guarda como hora de Nueva York, así que sigue el horario de "
+                "verano. Para medirlo, probá con y sin esta opción."))
+            _fvd = _W(st).time_input("No abrir operaciones el viernes desde (hora Argentina)", _hora(14, 0), step=900, disabled=not finde_vie_on)
+            _hoy_f = date.today()
+            _cierre_art = sesmod.local_a_art(17.0 - 1.0 / 60.0, "America/New_York", _hoy_f)
+            _fm = lambda x: f"{int(round(x * 60)) % 1440 // 60:02d}:{int(round(x * 60)) % 60:02d}"
+            if finde_vie_on:
+                finde_vie_ny = sesmod.art_a_local(_fvd.hour + _fvd.minute / 60.0, "America/New_York", _hoy_f)
+                st.caption(f"= {_fm(finde_vie_ny)} hora de Nueva York. Se corre sola con el horario de verano. El viernes se cierra todo "
+                           f"a las 16:59 de Nueva York ({_fm(_cierre_art)} hora Argentina hoy).")
+            else:
+                st.caption(f"El viernes se cierra todo a las 16:59 de Nueva York ({_fm(_cierre_art)} hora Argentina hoy).")
         limite_pct = perd_tot
 
     with st.expander("9. Gestión de riesgo", expanded=False):
@@ -867,8 +935,9 @@ def construir_config(simbolo: str = None) -> eng.Config:
         atr_activo=atr_on, atr_unidad="pct", atr_min=float(atr_min) or None, atr_max=float(atr_max) or None,
         atr_rel_n=int(rel_n), atr_rel_min=float(rel_min) or None, atr_rel_max=float(rel_max) or None,
         sesion_activo=ses_on, sesiones=tuple(sesiones), horarios=(horarios_ses if ses_on else None),
-        sin_pausa=(tuple(_sin_pausa) if ses_on else ()),
-        servidor_offset_horas=offset if ses_on else (offset_dia if (reglas_on or vp_on) else None), servidor_dst_eeuu=dst,
+        sin_pausa=(tuple(_sin_pausa) if ses_on else ()), cortes=(cortes_ses if ses_on else None),
+        servidor_offset_horas=offset if ses_on else (offset_dia if (reglas_on or vp_on or (finde_vie_on and not finde_mant)) else None), servidor_dst_eeuu=dst,
+        finde_mantener=bool(finde_mant), finde_no_abrir_desde=(finde_vie_ny if (not finde_mant and finde_vie_on) else None),
         reglas_activas=bool(reglas_on), capital=float(capital),
         usd_por_unidad=float(met.valor_por_unidad(p["tick_size"], p["tick_value"], lotes)),
         comision_op_usd=float(comision) * float(lotes),
@@ -1366,7 +1435,7 @@ if len(res):
         else:
             _pasos += [("Operaciones tomadas", tt["resueltas"] + tt["abiertas"])]
         cuerpo = vis.embudo(_pasos + [("Llegaron a TP", tt["TP"])])
-        _nombres = {"sma": "SMA", "adx": "ADX", "rango": "Rango", "atr": "ATR", "sesion": "Sesión", "tm1": "Tendencia mayor 1", "tm2": "Tendencia mayor 2", "vp": "Volume Profile"}
+        _nombres = {"sma": "SMA", "adx": "ADX", "rango": "Rango", "atr": "ATR", "sesion": "Sesión", "tm1": "Tendencia mayor 1", "tm2": "Tendencia mayor 2", "vp": "Volume Profile", "viernes": "Viernes tarde"}
         _txt = []
         if r["descartes"]:
             _txt.append("Descartadas por filtro: " + " · ".join(f"{_nombres.get(k, k)} {int(v_)}" for k, v_ in r["descartes"].items()) + ".")
@@ -1488,6 +1557,33 @@ if getattr(cfg_usada, "be_activo", False) and len(tr) and "be" in tr:
     _inval = int(getattr(tr, "attrs", {}).get("be_invalidas", 0) or 0)
     if _inval:
         st.warning(f"En {_inval} operaciones el nivel del breakeven no quedaba por debajo de la activación y no se aplicó.")
+
+# ------------------------------------------------------------- fin de semana
+if not getattr(cfg_usada, "finde_mantener", True) and len(tr):
+    _fin = tr[tr["motivo"] == "finde"]
+    _n_f, _n_ops_f = len(_fin), int(tr["res"].isin(["TP", "SL", "BE"]).sum())
+    _g_f, _R_f = int((_fin["res"] == "TP").sum()), float(_fin["R"].sum())
+    _blq = int((r.get("descartes") or {}).get("viernes", 0))
+    st.write("")
+    html(vis.titulo_seccion("Fin de semana", "Operaciones que se cerraron el viernes antes del cierre del mercado (tramo «Todo»)"))
+    w1, w2, w3 = st.columns(3)
+    with w1:
+        html(vis.kpi("Cerradas por fin de semana", vis.n(_n_f, 0),
+                     f"{vis.n(100 * _n_f / max(_n_ops_f, 1), 1)} % de las operaciones · {vis.n(_R_f, 2, True)} R en total", vis.ORQ, 165))
+    with w2:
+        html(vis.kpi("Cerraron en ganancia", vis.n(_g_f, 0),
+                     f"de las {vis.n(_n_f, 0)} cerradas ({vis.n(100 * _g_f / max(_n_f, 1), 1)} %)", vis.AZUL, 165))
+    with w3:
+        if cfg_usada.finde_no_abrir_desde is not None:
+            _hf = sesmod.local_a_art(cfg_usada.finde_no_abrir_desde, "America/New_York", date.today())
+            html(vis.kpi("Entradas del viernes bloqueadas", vis.n(_blq, 0),
+                         f"desde las {int(round(_hf * 60)) % 1440 // 60:02d}:{int(round(_hf * 60)) % 60:02d} hora Argentina (hoy)", vis.INDIGO, 165))
+        else:
+            html(vis.kpi("Cerraron en pérdida", vis.n(_n_f - _g_f, 0),
+                         f"de las {vis.n(_n_f, 0)} cerradas ({vis.n(100 * (_n_f - _g_f) / max(_n_f, 1), 1)} %)", vis.INDIGO, 165))
+    st.caption("El cierre se hace en la última vela de la semana, al precio de cierre, y paga el spread. Cuenta como ganada si ese "
+               "resultado es positivo y como perdida si no, y entra a las rachas, al dinero y a las pausas como cualquier otra "
+               "operación. Las órdenes pendientes del pullback que no se llenaron antes del cierre se cancelaron.")
 
 # ------------------------------------------------------------- retiros de la cuenta (simulados) u objetivo y retiros (teorico)
 _retiro_sim = bool(cfg_usada.reglas_activas and cfg_usada.retiro_activo and r.get("cuenta"))

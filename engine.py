@@ -99,9 +99,15 @@ class Config:
     sesion_activo: bool = False
     sesiones: tuple = ("Tokio", "Londres", "Nueva York")
     horarios: Optional[dict] = None
+    cortes: Optional[dict] = None   # {sesion: (desde, hasta)} en hora LOCAL de la plaza: horario que se le descuenta a esa sesion (solo entradas nuevas)
     sin_pausa: tuple = ()           # sesiones a las que se les excluye la pausa de mediodia (solo bloquea entradas nuevas)
     servidor_offset_horas: Optional[float] = None   # desfase del servidor en invierno (GMT+2 -> 2)
     servidor_dst_eeuu: bool = True
+    # fin de semana: con finde_mantener=False toda operacion abierta se cierra en la ultima vela de la semana (la que viene seguida
+    # de un hueco de mas de 30 h, ~cierre del viernes de Nueva York), las ordenes pendientes del pullback se cancelan y, si
+    # finde_no_abrir_desde no es None, el viernes no se abren operaciones desde esa hora (HORA LOCAL DE NUEVA YORK, [desde, ...))
+    finde_mantener: bool = True
+    finde_no_abrir_desde: Optional[float] = None
     # reglas de la cuenta (limites de perdida, protecciones y controles de operacion)
     reglas_activas: bool = False            # False: el backtest no simula la cuenta (como hasta ahora)
     capital: float = 0.0                    # capital inicial de la cuenta (US$)
@@ -249,6 +255,12 @@ class Config:
         if self.sesion_activo and self.servidor_offset_horas is None:
             raise ValueError("El filtro de sesion necesita el desfase horario del servidor "
                              "(servidor_offset_horas). Medilo con el mercado abierto.")
+        if not self.finde_mantener and self.finde_no_abrir_desde is not None:
+            if self.servidor_offset_horas is None:
+                raise ValueError("Para no abrir operaciones el viernes desde una hora hace falta el desfase horario del servidor "
+                                 "(servidor_offset_horas). Medilo con el mercado abierto.")
+            if not (0.0 <= float(self.finde_no_abrir_desde) < 24.0):
+                raise ValueError("La hora desde la que no se abren operaciones el viernes tiene que estar entre 00:00 y 23:59.")
 
 
 TF_MINUTOS = {"M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
@@ -306,6 +318,8 @@ class Preparado:
     sl_off: object = 0.0                    # distancia entre la media y el SL, en unidades de precio (un numero, o una por vela si va en %)
     tm_aviso: tuple = ()                    # avisos de los filtros de tendencia mayor y de Volume Profile (p. ej. historial corto)
     vp: Optional[tuple] = None              # (POC, VAH, VAL) de cada vela (NaN si todavia no hay perfil), solo con el filtro Volume Profile
+    fs: Optional[np.ndarray] = None         # ultima vela de la semana de cada vela (n si no hay otro fin de semana adelante); solo si no se mantiene el finde
+    bloq_vie: Optional[np.ndarray] = None   # True en las velas del viernes desde la hora en que ya no se abren operaciones (solo con ese campo)
 
 
 def _off(P, i: int) -> float:
@@ -497,7 +511,19 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     ok_ses = None
     if cfg.sesion_activo:
         utc = ses.servidor_a_utc(df.index, cfg.servidor_offset_horas, cfg.servidor_dst_eeuu)
-        ok_ses = ses.mascara_sesiones(utc, cfg.sesiones, cfg.horarios, cfg.sin_pausa)
+        ok_ses = ses.mascara_sesiones(utc, cfg.sesiones, cfg.horarios, cfg.sin_pausa, cfg.cortes)
+
+    fs = bloq_vie = None
+    if not cfg.finde_mantener:
+        hueco = np.diff(df.index.values).astype("timedelta64[m]").astype(np.int64) > 30 * 60      # hueco de mas de 30 h = fin de semana / feriado largo
+        pos = np.flatnonzero(hueco)                                                                # ultima vela antes de cada hueco
+        k_ = np.searchsorted(pos, np.arange(n))
+        fs = np.where(k_ < len(pos), pos[np.minimum(k_, max(len(pos) - 1, 0))] if len(pos) else n, n).astype(np.int64)
+        if cfg.finde_no_abrir_desde is not None:
+            utc_ = ses.servidor_a_utc(df.index, cfg.servidor_offset_horas, cfg.servidor_dst_eeuu)
+            ny = pd.DatetimeIndex(utc_).tz_localize("UTC").tz_convert("America/New_York")
+            hh = ny.hour.to_numpy() + ny.minute.to_numpy() / 60.0
+            bloq_vie = (ny.weekday.to_numpy() == 4) & (hh >= float(cfg.finde_no_abrir_desde))
 
     def entre(v, lo, hi):
         return not (np.isnan(v) or (lo is not None and v < lo) or (hi is not None and v > hi))
@@ -552,7 +578,9 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
         else:
             continue
         motivo = None
-        if cfg.sesion_activo and not cfg.pb_efectivo() and not ok_ses[i]:    # con pullback la sesion se mira al ejecutar
+        if not cfg.pb_efectivo() and ((bloq_vie is not None and bloq_vie[i]) or (fs is not None and fs[i] == i)):
+            motivo = "viernes"                                        # (con pullback se mira al ejecutar: se cancela la orden) / la ultima vela de la semana no abre
+        elif cfg.sesion_activo and not cfg.pb_efectivo() and not ok_ses[i]:    # con pullback la sesion se mira al ejecutar
             motivo = "sesion"
         elif cfg.sma_activo and not ok_sma(i, lado):
             motivo = "sma"
@@ -577,7 +605,7 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     return Preparado(h, l, c, sp, atr, dist, df.index, cruces, 100 * float((raw == 0).mean()),
                      ema_c, ema_l, sube, baja, ok_ses if (cfg.pb_efectivo() and cfg.sesion_activo) else None,
                      claves_dia(df.index, cfg) if cfg.reglas_activas else None, diff,
-                     sl_ref, sl_off, tuple(tm_aviso), vp)
+                     sl_ref, sl_off, tuple(tm_aviso), vp, fs, bloq_vie)
 
 
 def pb_de(cfg: Config):
@@ -751,12 +779,13 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                                   "piso": float(pt_) if np.isfinite(pt_) else None})
             cs["retirado"] += float(w)
 
-    def recorrer(desde, lado, sl, tp, entrada=None, lim=None, bepar=None):
-        """Devuelve (resultado, ambigua, vela de salida, breakeven activado). bepar = (distancia de activacion, distancia del nivel)."""
+    def recorrer(desde, lado, sl, tp, entrada=None, lim=None, bepar=None, tope=None):
+        """Devuelve (resultado, ambigua, vela de salida, breakeven activado). bepar = (distancia de activacion, distancia del nivel).
+        tope: ultima vela de la semana (sin mantener el fin de semana): si hasta ahi no salio, se cierra ahi (resultado "FIN")."""
         armada, sl_cur = False, sl
         if bepar is not None:
             act_px, be_px = entrada + lado * bepar[0], entrada + lado * bepar[1]
-        for j in range(desde, n):
+        for j in range(desde, (n if tope is None else tope + 1)):
             if lim is not None and not armada:           # el equity toca un limite de cuenta antes que el SL
                 adverso = (entrada - l[j]) if lado == 1 else (h[j] + sp[j] - entrada)
                 if adverso >= lim:
@@ -783,7 +812,15 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 return "TP", False, j, armada
             if por_senal and ((P.diff[j] < 0) if lado == 1 else (P.diff[j] > 0)):
                 return "SEN", False, j, armada
+        if tope is not None:
+            return "FIN", False, tope, armada
         return "ABIERTA", False, n - 1, armada
+
+    def tope_de(k):
+        """Ultima vela de la semana de la vela k, o None si se mantienen las posiciones el fin de semana (o no hay otro fin de semana)."""
+        if P.fs is None or P.fs[k] >= n:
+            return None
+        return int(P.fs[k])
 
     def bepar_de(d):
         """(distancia de activacion, distancia del nivel) en precio para una operacion con SL a distancia d, o None sin breakeven."""
@@ -841,7 +878,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                     continue
             sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
             bepar = bepar_de(d)
-            res, amb, j_out, armada = recorrer(i + 1, lado, sl, tp, entrada, lim, bepar)
+            res, amb, j_out, armada = recorrer(i + 1, lado, sl, tp, entrada, lim, bepar, tope_de(i))
         else:
             st["ordenes"] += 1
             ema = P.ema_c if pb["ema"] == "corta" else P.ema_l
@@ -849,8 +886,13 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             ext = h[i] if lado == 1 else l[i]           # extremo desde el cruce, hasta la vela anterior
             contra = P.baja if lado == 1 else P.sube
             fin = min(i + pb["velas"], n - 1)
+            if P.fs is not None and P.fs[i] < n:        # sin mantener el fin de semana: la orden se cancela al cierre de la semana
+                fin = min(fin, int(P.fs[i]) - 1)            # y no se llena en la ultima vela de la semana (ahi ya no se abre)
             k, px, fin_esp, motivo = None, None, fin, "caducadas"
             for j in range(i + 1, fin + 1):
+                if P.bloq_vie is not None and P.bloq_vie[j]:     # viernes desde la hora limite: ya no se abren operaciones, se cancela la orden
+                    fin_esp = j - 1
+                    break
                 e = ema[j - 1]                          # EMA conocida al dejar la orden
                 if lado == 1:
                     nivel = ext - frac * max(ext - e, 0.0)
@@ -902,9 +944,9 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             elif toca_sl:
                 res, amb, j_out = "SL", True, k
             else:
-                res, amb, j_out, armada = recorrer(k + 1, lado, sl, tp, entrada, lim, bepar)
-        motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal", "LIM": "limite", "BE": "be"}.get(res, "")
-        if res == "SEN":                                # sale al cierre: el largo vende al bid, el corto compra al ask
+                res, amb, j_out, armada = recorrer(k + 1, lado, sl, tp, entrada, lim, bepar, tope_de(k))
+        motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal", "LIM": "limite", "BE": "be", "FIN": "finde"}.get(res, "")
+        if res in ("SEN", "FIN"):                       # sale al cierre: el largo vende al bid, el corto compra al ask
             salida_px = c[j_out] if lado == 1 else c[j_out] + sp[j_out]
             r = lado * (salida_px - entrada) / d
             res = "TP" if r > 0 else "SL"

@@ -51,11 +51,13 @@ def servidor_a_utc(indice: pd.DatetimeIndex, offset_horas: float, dst_eeuu: bool
     return indice - pd.to_timedelta(off, unit="h")
 
 
-def mascara_sesiones(indice_utc: pd.DatetimeIndex, nombres, horarios=None, sin_pausa=()) -> np.ndarray:
+def mascara_sesiones(indice_utc: pd.DatetimeIndex, nombres, horarios=None, sin_pausa=(), cortes=None) -> np.ndarray:
     """True si la vela cae en AL MENOS UNA de las sesiones elegidas (solapamientos
     validos). Ventana [inicio, fin) en hora local; admite ventanas que cruzan medianoche.
     `sin_pausa`: sesiones a las que se les saca su pausa de mediodia (PAUSAS_LOCAL, tambien [inicio, fin) por hora de APERTURA
-    de la vela); la pausa se saca solo de su propia sesion."""
+    de la vela); la pausa se saca solo de su propia sesion.
+    `cortes`: {sesion: (desde_local, hasta_local)} un horario cualquiera que se le descuenta a esa sesion (hora LOCAL de la plaza,
+    [desde, hasta) por hora de apertura de la vela; si desde > hasta cruza la medianoche). Convive con la pausa y con el rango."""
     horarios = horarios or SESIONES_LOCAL
     ok = np.zeros(len(indice_utc), dtype=bool)
     base = indice_utc.tz_localize("UTC")
@@ -72,6 +74,9 @@ def mascara_sesiones(indice_utc: pd.DatetimeIndex, nombres, horarios=None, sin_p
         if nombre in (sin_pausa or ()):
             _z, p_ini, p_fin = PAUSAS_LOCAL[nombre]
             en &= ~((h >= p_ini) & (h < p_fin))
+        if cortes and nombre in cortes:
+            c_ini, c_fin = cortes[nombre]
+            en &= ~(((h >= c_ini) & (h < c_fin)) if c_ini < c_fin else ((h >= c_ini) | (h < c_fin)))
         ok |= en
     return ok
 
@@ -124,6 +129,67 @@ def horarios_con_rangos(rangos_art: dict, fecha: date) -> dict:
         zona = SESIONES_LOCAL[nombre][0]
         out[nombre] = (zona, art_a_local(desde, zona, fecha), art_a_local(hasta, zona, fecha))
     return out
+
+
+def cortes_con_rangos(cortes_art: dict, fecha: date) -> dict:
+    """Recortes de horario por sesion, de hora Argentina a la hora local de su plaza: {sesion: (desde_local, hasta_local)}.
+    Con desde > hasta el recorte cruza la medianoche; con desde == hasta es un error (no tiene duracion)."""
+    out = {}
+    for nombre, (desde, hasta) in (cortes_art or {}).items():
+        if nombre not in SESIONES_LOCAL:
+            raise ValueError(f"Sesion desconocida: {nombre}")
+        if abs(float(desde) - float(hasta)) < 1e-9:
+            raise ValueError(f"{nombre}: el recorte tiene el mismo inicio y fin; elegi un tramo con duracion.")
+        zona = SESIONES_LOCAL[nombre][0]
+        out[nombre] = (art_a_local(desde, zona, fecha), art_a_local(hasta, zona, fecha))
+    return out
+
+
+def corte_toca_sesion(nombre: str, corte_local: tuple, horarios=None) -> bool:
+    """True si el recorte (hora local) pisa algun minuto de la ventana de la sesion; si no, no cambia nada."""
+    _z, ini, fin = (horarios or SESIONES_LOCAL)[nombre]
+    c_ini, c_fin = corte_local
+    for m in range(1440):
+        h = m / 60.0
+        en_ses = (ini <= h < fin) if ini < fin else (h >= ini or h < fin)
+        en_cor = (c_ini <= h < c_fin) if c_ini < c_fin else (h >= c_ini or h < c_fin)
+        if en_ses and en_cor:
+            return True
+    return False
+
+
+def _domingo_n(anio: int, mes: int, n: int) -> date:
+    """n-esimo domingo del mes (n=1 primero, 2 segundo...)."""
+    d = date(anio, mes, 1)
+    return date(anio, mes, 1 + (6 - d.weekday()) % 7 + 7 * (n - 1))
+
+
+def _ultimo_domingo(anio: int, mes: int) -> date:
+    d = date(anio, mes + 1, 1) if mes < 12 else date(anio + 1, 1, 1)
+    d = d.fromordinal(d.toordinal() - 1)
+    return d.fromordinal(d.toordinal() - (d.weekday() + 1) % 7)
+
+
+def aviso_cambio_horario(hoy: date):
+    """Aviso de la portada por los cambios de horario de Londres y Nueva York, todos los años:
+    marzo completo -> Londres / NY; del 20 al 31 de octubre -> Londres; del 1 al 7 de noviembre -> NY.
+    Devuelve (titulo, detalle) o None fuera de esas fechas. Las fechas de cambio: EE.UU. 2.o domingo de marzo y 1.er domingo de
+    noviembre; Reino Unido, ultimo domingo de marzo y de octubre."""
+    def seg(nombre, d):
+        if d == hoy:
+            return f"{nombre} cambia hoy"
+        return f"{nombre} {'cambió' if d < hoy else 'cambia'} el domingo {d:%d/%m}"
+    y = hoy.year
+    if hoy.month == 3:
+        return ("Verificar filtro de sesión por cambio de horario LONDRES / NY",
+                f"{seg('EE.UU.', _domingo_n(y, 3, 2))} y {seg('Londres', _ultimo_domingo(y, 3))}. Revisá el menú 6 antes de seguir probando.")
+    if hoy.month == 10 and hoy.day >= 20:
+        return ("Verificar filtro de sesión por cambio de horario LONDRES",
+                f"{seg('Londres', _ultimo_domingo(y, 10))}. Revisá el menú 6 antes de seguir probando.")
+    if hoy.month == 11 and hoy.day <= 7:
+        return ("Verificar filtro de sesión de NY",
+                f"{seg('EE.UU.', _domingo_n(y, 11, 1))}. Revisá el menú 6 antes de seguir probando.")
+    return None
 
 
 def pausa_art(nombre: str, fecha: date) -> tuple:
