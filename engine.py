@@ -144,6 +144,20 @@ class Config:
     be_nivel_modo: str = "r"
     be_nivel_valor: float = 0.0
     be_pausa_perdida: bool = False          # True: una salida en breakeven tambien dispara la pausa tras una perdida
+    # cierre parcial (opcional): una sola vez por operacion, cuando el precio a favor llega al NIVEL (modo "r": multiplos de R;
+    # "pct_tp": % del camino al TP) se cierra el parcial_pct % de la posicion. Con parcial_mover_sl el SL del resto pasa a la
+    # entrada + parcial_sl_nivel (en R). Convive con el breakeven (el SL efectivo es el mas favorable). El resto termina en TP/SL/BE
+    # (o por señal) y, si ya se cobro el parcial y sale por SL o BE, el resultado es "PARC_SL". El resultado en R es la suma ponderada.
+    # lotes > 0: la parte cerrada se redondea al paso de volumen (lote_paso); si lo que queda es menor que lote_min se cierra todo.
+    parcial_activo: bool = False
+    parcial_nivel_modo: str = "r"
+    parcial_nivel_valor: float = 1.5
+    parcial_pct: float = 50.0
+    parcial_mover_sl: bool = True
+    parcial_sl_nivel: float = 0.05
+    lotes: float = 0.0
+    lote_paso: float = 0.01
+    lote_min: float = 0.01
 
     def pb_efectivo(self) -> bool:
         """El pullback solo actua si esta activo y el porcentaje es mayor que 0 (0 % = entrada al cierre, como sin pullback)."""
@@ -207,7 +221,30 @@ class Config:
         if act is not None and self.salida_modo == "rr" and not act < self.rr:
             raise ValueError("Breakeven: la activacion tiene que ser menor que el TP (si el TP llega antes, el breakeven nunca actua).")
 
+    def _validar_parcial(self) -> None:
+        if not self.parcial_activo:
+            return
+        if self.parcial_nivel_modo not in ("r", "pct_tp"):
+            raise ValueError("Cierre parcial: el nivel debe ser 'r' (multiplos de R) o 'pct_tp' (% del camino al TP).")
+        if not self.parcial_nivel_valor > 0:
+            raise ValueError("Cierre parcial: el nivel debe ser mayor que 0.")
+        if not 0 < self.parcial_pct < 100:
+            raise ValueError("Cierre parcial: el porcentaje que se cierra debe ser mayor que 0 y menor que 100.")
+        if self.parcial_mover_sl and self.parcial_sl_nivel < 0:
+            raise ValueError("Cierre parcial: el nivel del SL del resto no puede ser menor que 0.")
+        if self.parcial_nivel_modo == "pct_tp":
+            if self.salida_modo == "senal":
+                raise ValueError("Cierre parcial: el nivel en % del camino al TP necesita un TP fijo; con salida por señal elegi multiplos de R.")
+            if not self.parcial_nivel_valor < 100:
+                raise ValueError("Cierre parcial: el nivel debe ser menor que 100 % del camino al TP.")
+        niv = self.parcial_nivel_valor if self.parcial_nivel_modo == "r" else self.parcial_nivel_valor / 100.0 * self.rr
+        if self.salida_modo == "rr" and not niv < self.rr:
+            raise ValueError("Cierre parcial: el nivel tiene que ser menor que el TP (si el TP llega antes, el parcial nunca actua).")
+        if self.parcial_mover_sl and not self.parcial_sl_nivel < niv:
+            raise ValueError("Cierre parcial: el SL del resto tiene que quedar por debajo del nivel del parcial.")
+
     def validar(self) -> None:
+        self._validar_parcial()
         if self.vwap_dist_min_atr < 0 or self.vwap_min_minutos < 0:
             raise ValueError("Los parametros del VWAP no pueden ser negativos.")
         if not 0 <= self.pullback_pct <= 100:
@@ -292,7 +329,7 @@ VP_MODOS = ("poc", "fuera", "dentro")
 VP_AREA = 0.70                  # el area de valor reune el 70 % del volumen del perfil
 VP_MIN_MINUTOS = 360            # un dia solo cuenta para el perfil si tiene al menos 6 horas de velas (descarta domingos y feriados casi vacios)
 
-FILTROS_APAGADOS = dict(vp_activo=False, tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False, be_activo=False)
+FILTROS_APAGADOS = dict(vp_activo=False, tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False, be_activo=False, parcial_activo=False)
 
 
 @dataclass
@@ -653,7 +690,33 @@ def be_de(cfg: Config):
             "nivel_valor": float(cfg.be_nivel_valor), "vu": float(cfg.usd_por_unidad)}
 
 
-def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None, be=None):
+def fraccion_parcial(cfg: Config) -> float:
+    """Fraccion REAL de la posicion que cierra el parcial. Con lotes conocidos se redondea al paso de volumen (al mas cercano);
+    si no se llega a un lote minimo no hay parcial (0) y si lo que queda es menor que el minimo se cierra todo (1)."""
+    f = cfg.parcial_pct / 100.0
+    if not cfg.lotes > 0:
+        return f
+    paso = cfg.lote_paso if cfg.lote_paso > 0 else 0.01
+    cerrado = int(np.floor(cfg.lotes * f / paso + 0.5 + 1e-9)) * paso
+    if cerrado < max(cfg.lote_min, paso) - 1e-9:
+        return 0.0
+    if cfg.lotes - cerrado < cfg.lote_min - 1e-9:
+        return 1.0
+    return float(cerrado / cfg.lotes)
+
+
+def parcial_de(cfg: Config):
+    """Parametros del cierre parcial para simular(), o None si no se usa (o si el lote no alcanza para partirlo)."""
+    if not cfg.parcial_activo:
+        return None
+    f = fraccion_parcial(cfg)
+    if not f > 0:
+        return None
+    return {"modo": cfg.parcial_nivel_modo, "valor": float(cfg.parcial_nivel_valor), "f": float(f),
+            "sl_nivel": float(cfg.parcial_sl_nivel) if cfg.parcial_mover_sl else None}
+
+
+def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None, be=None, parcial=None):
     """señales: lista de (indice, lado). Devuelve (DataFrame de operaciones, ignoradas).
 
     pb=None: entrada al cierre de la vela de la señal. pb={"pct","ema","velas"}: la señal deja una orden pendiente.
@@ -668,6 +731,10 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
     entrada mas el nivel. Si en esa misma vela toca el SL original, cuenta SL; si toca la activacion y vuelve al nivel nuevo
     (o el nivel nuevo y el TP en una misma vela), cuenta breakeven (peor caso, vela ambigua). Una salida por ese SL es res "BE";
     la columna "be" marca las operaciones que llegaron a activarlo.
+    parcial (ver parcial_de): cierre parcial. Una sola vez por operacion, cuando el precio a favor llega al nivel (mismo criterio de
+    spread que el TP). Si en esa misma vela toca el SL, primero el SL (peor caso); si toca el nivel y el TP, se ejecutan los dos. Si
+    mueve el SL del resto y en esa vela el precio vuelve a ese nivel, el resto sale ahi (peor caso). Columnas: parcial (0/1),
+    R_parcial y R_resto (R = R_parcial + R_resto); res "PARC_SL" = parcial cobrado y el resto salio por SL o breakeven.
     En la tabla, "i" es la vela de ENTRADA real y "señal" la vela del cruce (iguales sin pullback)."""
     h, l, c, sp, dist = P.h, P.l, P.c, P.sp, P.dist
     n = len(c)
@@ -779,14 +846,25 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                                   "piso": float(pt_) if np.isfinite(pt_) else None})
             cs["retirado"] += float(w)
 
-    def recorrer(desde, lado, sl, tp, entrada=None, lim=None, bepar=None, tope=None):
+    ex = {"parc": False, "sl_sal": None}               # datos extra de la ultima corrida de recorrer(): parcial cobrado y precio del SL de salida
+
+    def recorrer(desde, lado, sl, tp, entrada=None, lim=None, bepar=None, tope=None, parpar=None):
         """Devuelve (resultado, ambigua, vela de salida, breakeven activado). bepar = (distancia de activacion, distancia del nivel).
+        parpar = (distancia del parcial, fraccion que se cierra, distancia del SL del resto o None). Resultado "PARC_SL": parcial cobrado
+        y el resto salio por SL o breakeven; "PARC_TOT": el parcial cerro toda la posicion. ex["parc"] dice si se cobro el parcial y
+        ex["sl_sal"] a que precio salio el SL.
         tope: ultima vela de la semana (sin mantener el fin de semana): si hasta ahi no salio, se cierra ahi (resultado "FIN")."""
-        armada, sl_cur = False, sl
+        armada, sl_cur, parc = False, sl, False
+        ex["parc"], ex["sl_sal"] = False, sl
         if bepar is not None:
             act_px, be_px = entrada + lado * bepar[0], entrada + lado * bepar[1]
+        ps_px = None
+        if parpar is not None:
+            par_px = entrada + lado * parpar[0]
+            if parpar[2] is not None:
+                ps_px = entrada + lado * parpar[2]
         for j in range(desde, (n if tope is None else tope + 1)):
-            if lim is not None and not armada:           # el equity toca un limite de cuenta antes que el SL
+            if lim is not None and not (armada or (parc and ps_px is not None)):   # el equity toca un limite de cuenta antes que el SL
                 adverso = (entrada - l[j]) if lado == 1 else (h[j] + sp[j] - entrada)
                 if adverso >= lim:
                     return "LIM", False, j, False
@@ -794,20 +872,33 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 hit_sl = l[j] <= sl_cur
                 hit_tp = (not por_senal) and h[j] >= tp
                 trig = bepar is not None and not armada and h[j] >= act_px
+                trigp = parpar is not None and not parc and h[j] >= par_px
             else:
                 hit_sl = h[j] + sp[j] >= sl_cur
                 hit_tp = (not por_senal) and l[j] + sp[j] <= tp
                 trig = bepar is not None and not armada and l[j] + sp[j] <= act_px
-            if not armada:
-                if hit_sl:                               # SL original (si en la misma vela toca la activacion, se asume el peor caso)
-                    return "SL", bool(hit_tp), j, False
-                if trig:                                 # activacion dentro de la vela: no se espera al cierre
-                    armada, sl_cur = True, be_px
-                    vuelve = (l[j] <= be_px) if lado == 1 else (h[j] + sp[j] >= be_px)
-                    if vuelve:                           # no se sabe el orden dentro de la vela: peor caso
-                        return "BE", True, j, True
-            elif hit_sl:                                 # ya con el SL en el nivel de breakeven
-                return "BE", bool(hit_tp), j, True
+                trigp = parpar is not None and not parc and l[j] + sp[j] <= par_px
+            if hit_sl:                                   # SL vigente (si en la misma vela toca la activacion o el parcial, se asume el peor caso)
+                ex["sl_sal"] = sl_cur
+                if parc:
+                    return "PARC_SL", bool(hit_tp), j, armada
+                return ("BE" if armada else "SL"), bool(hit_tp), j, armada
+            nuevo = sl_cur
+            if trig:                                     # activacion dentro de la vela: no se espera al cierre
+                armada = True
+                nuevo = be_px
+            if trigp:                                    # parcial dentro de la vela
+                parc, ex["parc"] = True, True
+                if parpar[1] >= 1.0:
+                    return "PARC_TOT", False, j, armada
+                if ps_px is not None:                    # el SL efectivo es el mas favorable de los dos
+                    nuevo = max(nuevo, ps_px) if lado == 1 else min(nuevo, ps_px)
+            if nuevo != sl_cur:
+                sl_cur = nuevo
+                vuelve = (l[j] <= sl_cur) if lado == 1 else (h[j] + sp[j] >= sl_cur)
+                if vuelve:                               # no se sabe el orden dentro de la vela: peor caso
+                    ex["sl_sal"] = sl_cur
+                    return ("PARC_SL" if parc else "BE"), True, j, armada
             if hit_tp:
                 return "TP", False, j, armada
             if por_senal and ((P.diff[j] < 0) if lado == 1 else (P.diff[j] > 0)):
@@ -833,6 +924,16 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             be_invalidas += 1
             return None
         return (a, b)
+
+    def parpar_de(d):
+        """(distancia del parcial, fraccion cerrada, distancia del SL del resto o None) para un SL a distancia d, o None sin parcial."""
+        if parcial is None:
+            return None
+        a = be_distancia(parcial["modo"], parcial["valor"], d, rr, 1.0)
+        b = None if parcial["sl_nivel"] is None else parcial["sl_nivel"] * d
+        if not a > 0 or (b is not None and not b < a):
+            return None
+        return (a, parcial["f"], b)
 
     for i, lado in señales:
         if i < libre:                                   # operacion en curso (o orden pendiente): se ignora
@@ -878,7 +979,8 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                     continue
             sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
             bepar = bepar_de(d)
-            res, amb, j_out, armada = recorrer(i + 1, lado, sl, tp, entrada, lim, bepar, tope_de(i))
+            parpar = parpar_de(d)
+            res, amb, j_out, armada = recorrer(i + 1, lado, sl, tp, entrada, lim, bepar, tope_de(i), parpar)
         else:
             st["ordenes"] += 1
             ema = P.ema_c if pb["ema"] == "corta" else P.ema_l
@@ -938,14 +1040,18 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             # en la vela de entrada no se sabe que paso primero: si toca el SL, cuenta como SL; el TP recien desde la siguiente
             toca_sl = l[k] <= sl if lado == 1 else h[k] + sp[k] >= sl
             bepar = bepar_de(d)
+            parpar = parpar_de(d)
             armada = False
+            ex["parc"] = False
             if lim is not None and ((entrada - l[k]) if lado == 1 else (h[k] + sp[k] - entrada)) >= lim:
                 res, amb, j_out = "LIM", True, k
             elif toca_sl:
                 res, amb, j_out = "SL", True, k
             else:
-                res, amb, j_out, armada = recorrer(k + 1, lado, sl, tp, entrada, lim, bepar, tope_de(k))
-        motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal", "LIM": "limite", "BE": "be", "FIN": "finde"}.get(res, "")
+                res, amb, j_out, armada = recorrer(k + 1, lado, sl, tp, entrada, lim, bepar, tope_de(k), parpar)
+        parc = parpar is not None and ex["parc"]
+        motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal", "LIM": "limite", "BE": "be", "FIN": "finde",
+                      "PARC_SL": "parc_sl", "PARC_TOT": "parcial"}.get(res, "")
         if res in ("SEN", "FIN"):                       # sale al cierre: el largo vende al bid, el corto compra al ask
             salida_px = c[j_out] if lado == 1 else c[j_out] + sp[j_out]
             r = lado * (salida_px - entrada) / d
@@ -956,20 +1062,35 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             cs["forzadas"] += 1
         elif res == "BE":                               # sale en el nivel de breakeven: gana (o pierde, con costo extra) ese nivel
             r = bepar[1] / d
+        elif res == "PARC_SL":                          # el resto sale en su SL (el de la entrada + nivel, o el original)
+            r = lado * (ex["sl_sal"] - entrada) / d
+        elif res == "PARC_TOT":                         # el parcial cerro toda la posicion
+            r, res = 0.0, "TP"
         else:
             r = rr if res == "TP" else (-1.0 if res == "SL" else 0.0)
+        r_par = 0.0
+        if parc:                                        # suma ponderada: parte cerrada en el nivel + resto
+            f = parpar[1]
+            r_par = f * parpar[0] / d
+            r_res = (1.0 - f) * r if f < 1.0 else 0.0
+            r = r_par + r_res
+        else:
+            r_res = r
         if res != "ABIERTA" and costo_extra:
             r -= costo_extra / d
+            r_res -= costo_extra / d
         if ct:
             cs["prot_desde"], cs["prot_n"] = None, 0          # se abrio una operacion: la cuenta tiene margen
         filas.append({"i": k, "señal": i, "lado": lado, "entrada": entrada, "sl": sl, "tp": tp, "dist": d,
-                      "res": res, "amb": amb, "salida": j_out, "R": r, "motivo": motivo_sal, "be": int(armada)})
+                      "res": res, "amb": amb, "salida": j_out, "R": r, "motivo": motivo_sal, "be": int(armada),
+                      "parcial": int(parc), "R_parcial": r_par, "R_resto": r_res})
         if res == "ABIERTA":
             break
         libre = j_out + 1
         if ct:
             cerrar(r, d, j_out, lado, entrada, res == "BE")
-    cols = ["i", "señal", "lado", "entrada", "sl", "tp", "dist", "res", "amb", "salida", "R", "motivo", "be"]
+    cols = ["i", "señal", "lado", "entrada", "sl", "tp", "dist", "res", "amb", "salida", "R", "motivo", "be",
+            "parcial", "R_parcial", "R_resto"]
     out = pd.DataFrame(filas, columns=cols)
     out.attrs["pb"] = st
     out.attrs["sl_invalido"] = sl_invalido            # señales sin operar porque el SL anclado a la media quedaba al reves
@@ -1000,6 +1121,6 @@ def ejecutar(P: Preparado, cfg: Config, lo: int = 0, hi: Optional[int] = None) -
             descartes[m] = descartes.get(m, 0) + 1
     señales = [(i, lado) for i, lado, m in en_rango if m is None]
     pb = pb_de(cfg)
-    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo, cuenta_de(P, cfg), be_de(cfg))
+    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo, cuenta_de(P, cfg), be_de(cfg), parcial_de(cfg))
     return Resultado(tr, descartes, len(en_rango), len(señales), ign, dict(tr.attrs.get("pb", {})) if pb else {},
                      dict(tr.attrs.get("cuenta", {})))

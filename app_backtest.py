@@ -473,11 +473,51 @@ with st.sidebar:
                 if sl_modo != SL_USD:
                     st.caption("El TP en US$ por operación está disponible con el SL en dólares fijos.")
         _sep_filtro()
-        be_on = _W(st).checkbox("Breakeven (opcional)", key=cio.slug("Mover el SL a breakeven (opcional)"),
-                                help="Apenas el precio llega al nivel de activación (sin esperar al cierre de la vela) el SL se mueve a la "
-                                     "entrada más el nivel que elijas (0 = justo en la entrada; nunca menos que 0). Si el precio vuelve, "
-                                     "la operación cierra ahí. Ese cierre no cuenta como ganada ni perdida, no corta rachas ni dispara las "
-                                     "pausas, pero su resultado en R y en dinero sí entra a la expectativa y al balance.")
+        st.markdown("**Cierre parcial (opcional)**",
+                    help="Una sola vez por operación, cuando el precio a favor llega al nivel que elijas, se cierra una parte "
+                         "de la posición y el resto sigue hasta el TP o el SL. Opcionalmente, al cobrar el parcial el SL del "
+                         "resto sube a la entrada más un nivel. Convive con el breakeven (queda el SL más favorable). "
+                         "Si en la misma vela el precio toca el SL y el nivel del parcial, cuenta primero el SL.")
+        parcial_on = _W(st).checkbox("Activar el cierre parcial", key="cierre_parcial")
+        _PAR_NIV = {"Múltiplos de R": "r", "% del camino al TP": "pct_tp"}
+        parcial_modo, parcial_valor, parcial_pct, parcial_mover, parcial_sl = "r", 1.5, 50.0, True, 0.05
+        if parcial_on:
+            _acc_activos.add("parcial")
+            _acc_cab("parcial", _acc_lista, "sg")
+            with st.container(key="acc_parcial"):
+                _ops_par = [k_ for k_, v_ in _PAR_NIV.items() if v_ != "pct_tp" or salida_modo == "rr"]     # sin TP no hay % del camino al TP
+                if st.session_state.get(_wk("parcial_nivel_modo")) not in _ops_par:
+                    st.session_state.pop(_wk("parcial_nivel_modo"), None)
+                parcial_modo = _PAR_NIV[_W(st).radio("Se cierra la parte cuando la operación gana", _ops_par, key="parcial_nivel_modo",
+                                                     help="Múltiplos de R: 1 R es la distancia del SL. % del camino al TP: solo con TP fijo.")]
+                if parcial_modo == "r":
+                    parcial_valor = _W(st).number_input("Nivel del parcial (múltiplos de R)", 0.1, 50.0, 1.5, 0.1, key="parcial_nivel_valor_r")
+                else:
+                    parcial_valor = _W(st).number_input("Nivel del parcial (% del camino al TP)", 1.0, 99.0, 50.0, 5.0, key="parcial_nivel_valor_pct")
+                if salida_modo == "senal":
+                    st.caption("Con salida por señal no hay TP, así que no se puede usar el % del camino al TP.")
+                parcial_pct = _W(st).number_input("Porcentaje de la posición que se cierra (%)", 1.0, 99.0, 50.0, 5.0, key="parcial_pct",
+                                                  help="Se redondea al paso de volumen del símbolo (0,01 lotes). Si no se puede partir el lote, "
+                                                       "no hay parcial; si lo que queda es menos que el lote mínimo, se cierra todo.")
+                _lt = float(_sv("lotes") or 0.10)
+                _fr = eng.fraccion_parcial(eng.Config(parcial_activo=True, parcial_pct=float(parcial_pct), lotes=_lt))
+                if _fr <= 0:
+                    st.caption(f"Con {_lt:.2f} lotes no se puede cerrar esa parte (el paso es 0,01): el parcial no se aplica.")
+                elif _fr >= 1:
+                    st.caption(f"Con {_lt:.2f} lotes lo que queda sería menos que el lote mínimo: el parcial cierra toda la posición.")
+                else:
+                    _cer = round(_lt * _fr, 2)
+                    st.caption(f"Con {_lt:.2f} lotes se cierran {_cer:.2f} y quedan {_lt - _cer:.2f} ({_fr * 100:.1f} % de la posición).")
+                parcial_mover = _W(st).checkbox("Al cobrar el parcial, mover el SL del resto", key="parcial_mover_sl", value=True)
+                parcial_sl = _W(st).number_input("Nivel del SL del resto (R sobre la entrada)", 0.0, 50.0, 0.05, 0.05, key="parcial_sl_nivel",
+                                                 disabled=not parcial_mover)
+        _sep_filtro()
+        st.markdown("**Breakeven (opcional)**",
+                    help="Apenas el precio llega al nivel de activación (sin esperar al cierre de la vela) el SL se mueve a la "
+                         "entrada más el nivel que elijas (0 = justo en la entrada; nunca menos que 0). Si el precio vuelve, "
+                         "la operación cierra ahí. Ese cierre no cuenta como ganada ni perdida, no corta rachas ni dispara las "
+                         "pausas, pero su resultado en R y en dinero sí entra a la expectativa y al balance.")
+        be_on = _W(st).checkbox("Activar el breakeven", key=cio.slug("Mover el SL a breakeven (opcional)"))
         _BE_ACT = {"Múltiplos de R": "r", "US$ fijos": "usd", "% del camino al TP": "pct_tp"}
         _BE_NIV = {"Múltiplos de R sobre la entrada": "r", "US$ fijos sobre la entrada": "usd"}
         be_act_modo, be_act_valor, be_niv_modo, be_niv_valor = "r", 1.0, "r", 0.0
@@ -509,7 +549,7 @@ with st.sidebar:
                            "0 = el SL queda justo en el precio de entrada.")
         if be_on and be_act_modo == "r" and be_niv_modo == "r" and be_niv_valor >= be_act_valor:
             st.error("El nivel del SL tiene que ser menor que la activación.")
-        _acc_css(_acc_lista, _acc_activos, "sg", ("pb", "be"))
+        _acc_css(_acc_lista, _acc_activos, "sg", ("pb", "parcial", "be"))
         _sep_filtro()
         # El ATR solo interviene si el SL va en múltiplos de ATR o si algún filtro lo usa (los filtros se definen más abajo:
         # sus valores ya están en session_state al comienzo de cada ejecución).
@@ -949,7 +989,10 @@ def construir_config(simbolo: str = None) -> eng.Config:
         pausa_gan_retroceso_activo=bool(retro_on), pausa_gan_retroceso_pct=float(pausa_gan_retro), pausa_gan_vence=pausa_gan_vence, pausa_gan_vence_h=float(pausa_gan_vence_h),
         retiro_activo=bool(retiro_on), retiro_pct=float(retiro_pct),
         be_activo=bool(be_on), be_act_modo=be_act_modo, be_act_valor=float(be_act_valor),
-        be_nivel_modo=be_niv_modo, be_nivel_valor=float(be_niv_valor), be_pausa_perdida=bool(be_pausa_perd and pausa_on))
+        be_nivel_modo=be_niv_modo, be_nivel_valor=float(be_niv_valor), be_pausa_perdida=bool(be_pausa_perd and pausa_on),
+        parcial_activo=bool(parcial_on), parcial_nivel_modo=parcial_modo, parcial_nivel_valor=float(parcial_valor),
+        parcial_pct=float(parcial_pct), parcial_mover_sl=bool(parcial_mover), parcial_sl_nivel=float(parcial_sl),
+        lotes=float(lotes), lote_paso=float(p["vol"][2]), lote_min=float(p["vol"][0]))
 
 
 # ------------------------------------------------------------------ cuerpo
@@ -1263,7 +1306,7 @@ if cfg_usada.salida_modo == "senal":
     st.caption("Salida por " + ("cruce contrario" if cfg_usada.modo_senal == "cruce" else "cambio de lado") + ": aquí «TP» son las operaciones que cerraron con ganancia y «SL» las que cerraron con "
                "pérdida (ya sea por el SL o por la señal de salida). La columna «motivo» de la tabla dice cómo cerró cada una; "
                "el R de cada operación es el real, no uno fijo.")
-res = tr[tr["res"].isin(["TP", "SL", "BE"])] if len(tr) else tr      # el breakeven no cuenta como ganada ni perdida, pero su dinero sí
+res = tr[tr["res"].isin(["TP", "SL", "BE", "PARC_SL"])] if len(tr) else tr      # el breakeven no cuenta como ganada ni perdida, pero su dinero sí
 dinero = None
 
 st.write("")
@@ -1534,7 +1577,7 @@ if len(res):
 if getattr(cfg_usada, "be_activo", False) and len(tr) and "be" in tr:
     _n_be = int((tr["res"] == "BE").sum())
     _n_act = int(tr["be"].sum())
-    _n_ops = int(tr["res"].isin(["TP", "SL", "BE"]).sum())
+    _n_ops = int(tr["res"].isin(["TP", "SL", "BE", "PARC_SL"]).sum())
     _n_sig = int(((tr["be"] == 1) & (tr["res"] == "TP")).sum())
     _R_be = float(tr.loc[tr["res"] == "BE", "R"].sum())
     st.write("")
@@ -1558,10 +1601,39 @@ if getattr(cfg_usada, "be_activo", False) and len(tr) and "be" in tr:
     if _inval:
         st.warning(f"En {_inval} operaciones el nivel del breakeven no quedaba por debajo de la activación y no se aplicó.")
 
+# ------------------------------------------------------------- cierre parcial
+if getattr(cfg_usada, "parcial_activo", False) and len(tr) and "parcial" in tr:
+    _cer = tr[tr["res"].isin(["TP", "SL", "BE", "PARC_SL"])]
+    _n_cer = len(_cer)
+    _n_par = int(_cer["parcial"].sum())
+    _n_psl = int((tr["res"] == "PARC_SL").sum())
+    _R_par = float(_cer["R_parcial"].sum())
+    _wr_cl = 100 * int((tr["res"] == "TP").sum()) / max(int(tr["res"].isin(["TP", "SL"]).sum()), 1)
+    _wr_res = 100 * float((_cer["R"] > 0).mean()) if _n_cer else float("nan")
+    _be_pos = int(((tr["res"] == "BE") & (tr["R"] > 0)).sum())
+    _fr_real = eng.fraccion_parcial(cfg_usada)
+    st.write("")
+    html(vis.titulo_seccion("Cierre parcial", "Cuántas operaciones cobraron el parcial y cómo terminó el resto (tramo «Todo»)"))
+    p1, p2, p3, p4 = st.columns(4)
+    with p1:
+        html(vis.kpi("Cobraron el parcial", vis.n(_n_par, 0),
+                     f"de {vis.n(_n_cer, 0)} operaciones ({vis.n(100 * _n_par / max(_n_cer, 1), 1)} %) · {vis.n(_R_par, 2, True)} R cobrados", vis.AZUL, 165))
+    with p2:
+        html(vis.kpi("Resto cerrado en SL / BE", vis.n(_n_psl, 0),
+                     f"{vis.n(100 * _n_psl / max(_n_par, 1), 1)} % de las que cobraron el parcial", vis.ORQ, 165))
+    with p3:
+        html(vis.kpi("Win rate clásico", f"{vis.n(_wr_cl, 1)}%", "TP contra SL; los parciales con SL del resto no cuentan", vis.INDIGO, 165))
+    with p4:
+        html(vis.kpi("Win rate por resultado", f"{vis.n(_wr_res, 1)}%", "operaciones con R total mayor que 0", vis.AZUL, 165))
+    st.caption(f"Se cierra el {vis.n(100 * _fr_real, 1)} % de la posición (el porcentaje pedido, redondeado al paso de volumen). "
+               "El resultado de cada operación en R es la suma ponderada: parte cerrada × nivel + resto × su resultado. "
+               "En operaciones.csv están las columnas parcial, R_parcial y R_resto."
+               + (f" El win rate por resultado cuenta como ganadas {vis.n(_be_pos, 0)} operaciones de breakeven con nivel mayor que 0." if _be_pos else ""))
+
 # ------------------------------------------------------------- fin de semana
 if not getattr(cfg_usada, "finde_mantener", True) and len(tr):
     _fin = tr[tr["motivo"] == "finde"]
-    _n_f, _n_ops_f = len(_fin), int(tr["res"].isin(["TP", "SL", "BE"]).sum())
+    _n_f, _n_ops_f = len(_fin), int(tr["res"].isin(["TP", "SL", "BE", "PARC_SL"]).sum())
     _g_f, _R_f = int((_fin["res"] == "TP").sum()), float(_fin["R"].sum())
     _blq = int((r.get("descartes") or {}).get("viernes", 0))
     st.write("")

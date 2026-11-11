@@ -47,6 +47,19 @@ En "3. Señal y gestión", el campo **Salida (Take Profit)** permite elegir:
 - En los resultados, «TP» son las operaciones que cerraron con ganancia y «SL» las que cerraron con pérdida (por SL o por la señal). La tabla de operaciones trae la columna «motivo» (tp / sl / senal) y el R de cada una es el real, no uno fijo; el % de equilibrio se calcula con el pago medio observado.
 - El **bot de MT5** respeta esta salida: abre sin TP y cierra a mercado cuando una vela cerrada queda del otro lado de la media (también lo detecta si el PC estuvo apagado), y avisa «SALIDA POR SENAL» al celular.
 
+### Cierre parcial (opcional)
+
+Está en el menú 3, entre el Take Profit y el Breakeven. Cuando el precio a favor llega al nivel que elijas, se cierra una parte de la posición y el resto sigue hasta el TP o el SL.
+
+- **Cuándo se cobra.** Nivel en múltiplos de R, o en % del camino al TP (solo con TP fijo). Una sola vez por operación. Largo con el máximo de la vela, corto con el mínimo más el spread (el mismo criterio que el TP).
+- **Cuánto se cierra.** Un porcentaje de la posición, **redondeado al paso de volumen** (0,01). Con 0,17 lotes, el 50 % es 0,085: se cierran 0,09 (53 %). La pantalla muestra el número real. Si el lote no se puede partir, no hay parcial; si lo que queda es menor que el lote mínimo, se cierra todo.
+- **SL del resto (opcional).** Al cobrar el parcial, el SL del resto pasa a la entrada más un nivel en R (0,05 por defecto). Convive con el breakeven: queda el SL más favorable de los dos.
+- **Orden dentro de la vela.** Si una misma vela toca el SL y el nivel del parcial, cuenta primero el SL. Si toca el parcial y el TP, se ejecutan los dos. Si cobra el parcial y vuelve al nivel del SL del resto, el resto sale ahí (peor caso).
+- **Resultado.** El resultado en R es la suma ponderada: parte cerrada × nivel + resto × su resultado. Si cobró el parcial y el resto salió por SL o breakeven, el resultado es «PARC_SL». Para las pausas y el retroceso cuenta como ganada si el total es positivo.
+- **Win rate.** El clásico (TP contra SL) no cuenta los PARC_SL. El «win rate por resultado» cuenta como ganada toda operación con R total mayor que 0 (incluye los breakeven con nivel mayor que 0).
+- **Bot.** Cierra con una orden de cierre parcial por ticket, lo revisa en cada tick, guarda en variables globales (con el prefijo del magic) si ya lo cobró y avisa al celular. El push solo funciona con el MetaQuotes ID configurado en MT5.
+- **Límites.** El límite de pérdida de la cuenta se calcula como si la parte ya cobrada no existiera (aproximación conservadora). No se agregó un paso a la ablación.
+
 ### Breakeven (opcional)
 En "3. Señal y gestión", debajo de la salida (Take Profit). Apagado por defecto. Cuando el precio llega al nivel de **activación**, el SL se mueve a la entrada más un **nivel** que elegís. Si después el precio vuelve a ese nivel, la operación cierra ahí.
 - **Se activa cuando la operación gana:** en **múltiplos de R** (1 R es la distancia del SL), en **US$ fijos** (ganancia flotante en dólares con los lotes elegidos; se convierte a precio por símbolo, igual que el SL en US$) o en **% del camino al TP** (solo con TP fijo; con salida por señal no hay TP y esa opción no está).

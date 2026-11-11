@@ -24,7 +24,7 @@ def resumen(tr: pd.DataFrame, rr: float) -> dict:
     n = tp + sl
     # el breakeven (res "BE") es neutro para la tasa de acierto y las rachas, pero su resultado en R es plata real:
     # entra a la expectativa, al R total y a la caida maxima
-    con_be = tr[tr["res"].isin(["TP", "SL", "BE"])] if len(tr) else tr
+    con_be = tr[tr["res"].isin(["TP", "SL", "BE", "PARC_SL"])] if len(tr) else tr
     n_be = int((tr["res"] == "BE").sum()) if len(tr) else 0
     eq = con_be["R"].cumsum().to_numpy() if len(con_be) else np.array([0.0])
     racha = mejor = 0
@@ -44,7 +44,14 @@ def resumen(tr: pd.DataFrame, rr: float) -> dict:
             "maxDD_R": float((np.maximum.accumulate(np.r_[0.0, eq]) - np.r_[0.0, eq]).max()),
             "racha_SL": mejor,
             "BE": n_be, "be_activadas": int(tr["be"].sum()) if len(tr) and "be" in tr else 0,
-            "be_R": float(tr.loc[tr["res"] == "BE", "R"].sum()) if n_be else 0.0}
+            "be_R": float(tr.loc[tr["res"] == "BE", "R"].sum()) if n_be else 0.0,
+            # WR por resultado: % de operaciones cerradas con R total > 0 (el clasico, %TP, cuenta solo TP contra SL).
+            # Los breakeven con nivel > 0 cuentan aca como ganadas: be_positivas dice cuantas son.
+            "WR_resultado": float(100 * (con_be["R"] > 0).mean()) if len(con_be) else np.nan,
+            "be_positivas": int(((tr["res"] == "BE") & (tr["R"] > 0)).sum()) if n_be else 0,
+            "parciales": int(tr["parcial"].sum()) if len(tr) and "parcial" in tr else 0,
+            "parc_sl": int((tr["res"] == "PARC_SL").sum()) if len(tr) else 0,
+            "R_parcial": float(tr["R_parcial"].sum()) if len(tr) and "R_parcial" in tr else 0.0}
 
 
 def azar(P, cfg, lo, hi, n_sig, veces, rng) -> np.ndarray:
@@ -58,7 +65,7 @@ def azar(P, cfg, lo, hi, n_sig, veces, rng) -> np.ndarray:
         idx = np.sort(rng.choice(np.arange(lo, hi), size=n_sig, replace=False))
         sig = list(zip(idx, rng.choice(lados, size=n_sig)))
         tr, _ = eng.simular(P, sig, cfg.rr, cfg.costo_extra, eng.pb_de(cfg), cfg.salida_modo,
-                              eng.cuenta_de(P, cfg), eng.be_de(cfg))
+                              eng.cuenta_de(P, cfg), eng.be_de(cfg), eng.parcial_de(cfg))
         out.append(resumen(tr, cfg.rr)["exp_R"])
     return np.array([x for x in out if not np.isnan(x)])
 
@@ -183,7 +190,7 @@ def valor_por_unidad(tick_size, tick_value, lotes) -> float:
 
 def resumen_dinero(tr: pd.DataFrame, tick_size, tick_value, lotes, comision_por_lote=0.0) -> dict:
     """Resultados en moneda de la cuenta. Teoricos: slippage y gaps pueden empeorarlos."""
-    res = tr[tr["res"].isin(["TP", "SL", "BE"])]               # el breakeven es neutro para las tasas, pero su dinero cuenta
+    res = tr[tr["res"].isin(["TP", "SL", "BE", "PARC_SL"])]               # el breakeven es neutro para las tasas, pero su dinero cuenta
     if not len(res):
         return {"operaciones": 0}
     vu = valor_por_unidad(tick_size, tick_value, lotes)
@@ -360,7 +367,7 @@ def ciclos_objetivo(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comi
     Devuelve {"objetivo_usd", "objetivo_pct", "ciclos": [{"n","desde","hasta","min","ops","ganado"}], "en_curso": {...} o None}."""
     objetivo = float(capital) * float(objetivo_pct) / 100.0
     out = {"objetivo_usd": objetivo, "objetivo_pct": float(objetivo_pct), "ciclos": [], "en_curso": None}
-    res = tr[tr["res"].isin(["TP", "SL", "BE"])] if len(tr) else tr          # el dinero del breakeven cuenta para llegar al objetivo
+    res = tr[tr["res"].isin(["TP", "SL", "BE", "PARC_SL"])] if len(tr) else tr          # el dinero del breakeven cuenta para llegar al objetivo
     if objetivo <= 0 or len(indice) < 2:
         return out
     inicio, fin = pd.Timestamp(indice[0]), pd.Timestamp(indice[-1])
@@ -390,7 +397,7 @@ def ciclos_objetivo(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comi
 def extremos_diarios(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comision_por_lote=0.0) -> dict:
     """Peor y mejor día en dinero y en R. Cada operación cuenta en el día en que se cerró (salida).
     Es sobre operaciones cerradas: no ve el flotante intradía."""
-    res = tr[tr["res"].isin(["TP", "SL", "BE"])]
+    res = tr[tr["res"].isin(["TP", "SL", "BE", "PARC_SL"])]
     if not len(res):
         return {}
     vu = valor_por_unidad(tick_size, tick_value, lotes)

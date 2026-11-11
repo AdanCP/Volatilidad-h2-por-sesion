@@ -13,6 +13,8 @@
 4. ~~**Volume profile.**~~ **HECHO** (cerrado por el usuario). Perfil de N días CE(S)T, volumen de ticks, escalón editable, reglas A/B/C, también en el bot. Queda probar la compilación del bot en MetaEditor.
    *Ideas sueltas, sin fecha (no son pendientes):* toma de liquidez (barrida de máximos o mínimos con cierre de vuelta en 1 a 3 velas), nodos de bajo volumen como filtro y niveles del perfil como SL o TP.
 
+5. ~~**Cierre parcial.**~~ **HECHO (primera versión).** Menú 3 (entre TP y Breakeven), motor, resultados («Cierre parcial», win rate por resultado) y bot MQL5 (por tick, variables globales, push). Queda probarlo en la app y compilar el bot en MetaEditor. No se hizo MFE / MAE (se descartó a pedido).
+
 ## Decisiones abiertas
 - **Piso trailing después de un retiro.** Hoy se mantiene en el máximo anterior y, con retiros, la cuenta puede quedar sin margen para operar (ahora hay un aviso). Decidir si se recalcula el piso o se deja como está.
 
@@ -25,6 +27,7 @@
 - Selector de perfiles de broker (Instant Funding, Goat, etc.). No se quiere por ahora.
 
 ## Para probar de tu lado (no se pudo en el entorno de desarrollo)
+- Streamlit (parcial): casilla «Cierre parcial (opcional)» y su «⚙ Parámetros» en el menú 3, el texto con los lotes reales y la sección «Cierre parcial» de los resultados. MetaEditor: que compile el bot con `ManageParcial` y los inputs `InpPar…`; probar en el Probador que cobra el parcial una sola vez.
 - Streamlit: menús 4 a 7 reordenados, acordeón de filtros (botón «⚙ Parámetros»), líneas divisorias en Gestión de riesgo, sección «Retiros de la cuenta» (monto ideal, retiro sugerido, aviso «sin margen»), gráfico de equity con la zona de out-of-sample, portada.
 - MetaEditor: que el bot compile con la pausa tras ganancia/pérdida, el sentido, el retroceso y el vencimiento, el Volume Profile y el breakeven (modificar el SL de la posición abierta, distancia mínima del broker, cierre inmediato si el precio ya volvió al nivel).
 - Streamlit (breakeven): el control en el menú 3, la casilla en el menú 9 y la sección «Breakeven» de los resultados.

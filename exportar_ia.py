@@ -138,7 +138,7 @@ def informe(r: dict, cfg, simbolo: str, pdin: dict, meta: dict, veredicto: dict 
         L += [_clave_valor(cu2), ""]
 
     # ---- dinero y métricas derivadas
-    res = tr[tr["res"].isin(["TP", "SL", "BE"])] if len(tr) else tr
+    res = tr[tr["res"].isin(["TP", "SL", "BE", "PARC_SL"])] if len(tr) else tr
     L += ["## 5. Dinero, frecuencia y rachas", ""]
     if len(res):
         a = (pdin["tick_size"], pdin["tick_value"], pdin["lotes"], pdin["comision"])

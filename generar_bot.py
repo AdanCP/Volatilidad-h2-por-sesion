@@ -139,7 +139,7 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
     if limpiar_nombre(nombre):
         cab.append(f"// Nombre del bot: {limpiar_nombre(nombre)}")
     act = [n for n, on in (("SMA", cfg.sma_activo), ("VWAP", cfg.vwap_activo), ("ADX", cfg.adx_activo),
-                           ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("tendencia mayor 1", cfg.tm1_activo), ("tendencia mayor 2", cfg.tm2_activo), ("Volume Profile", cfg.vp_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo()), ("breakeven", cfg.be_activo), ("cierre de fin de semana", not cfg.finde_mantener)) if on]
+                           ("Rango", cfg.rango_activo), ("ATR", cfg.atr_activo), ("tendencia mayor 1", cfg.tm1_activo), ("tendencia mayor 2", cfg.tm2_activo), ("Volume Profile", cfg.vp_activo), ("sesion", cfg.sesion_activo), ("pullback", cfg.pb_efectivo()), ("breakeven", cfg.be_activo), ("cierre parcial", cfg.parcial_activo), ("cierre de fin de semana", not cfg.finde_mantener)) if on]
     cab.append("// Filtros/opciones activos: " + (", ".join(act) if act else "ninguno"))
     if cfg.vp_activo:
         cab.append(f"// Volume Profile: {cfg.vp_dias} dia(s) de perfil, escalon {_f(cfg.vp_escalon, 4)}, regla "
@@ -153,6 +153,14 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         cab.append(f"// Breakeven: al llegar a {_ma} el SL pasa a {_mn}. Se activa por TICK (apenas el precio llega al nivel, sin esperar al cierre "
                    "de la vela). Un cierre en breakeven no cuenta como ganada ni perdida para las pausas"
                    + (" (salvo que se haya pedido que dispare la pausa tras perdida)." if cfg.be_pausa_perdida else "."))
+    if cfg.parcial_activo:
+        _mp = (f"{_f(cfg.parcial_nivel_valor, 2)} R de ganancia" if cfg.parcial_nivel_modo == "r"
+               else f"{_f(cfg.parcial_nivel_valor, 1)} % del camino al TP")
+        cab.append(f"// Cierre parcial: al llegar a {_mp} se cierra el {_f(cfg.parcial_pct, 1)} % de la posicion (redondeado al paso de volumen del broker; si no se puede "
+                   "partir el lote no hay parcial). Una sola vez por operacion, por TICK"
+                   + (f"; el SL del resto pasa a {_f(cfg.parcial_sl_nivel, 2)} R sobre la entrada (nunca se baja un SL mas favorable, como el del breakeven)." if cfg.parcial_mover_sl
+                      else "; el SL del resto no se mueve.")
+                   + " Si despues el resto sale por SL, la operacion se evalua por su resultado total para las pausas.")
     if not cfg.finde_mantener:
         cab.append("// Fin de semana: NO se mantienen posiciones. El viernes a las 16:59 de Nueva York se cierra todo (posiciones y ordenes pendientes) y a partir de "
                    "ahi no se abren operaciones nuevas"
@@ -243,6 +251,8 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "BE_ON": _b(cfg.be_activo), "BE_ACT_MODO": str(eng.BE_ACT_MODOS.index(cfg.be_act_modo)), "BE_ACT_VAL": _f(cfg.be_act_valor, 4),
         "BE_NIV_MODO": str(eng.BE_NIVEL_MODOS.index(cfg.be_nivel_modo)), "BE_NIV_VAL": _f(cfg.be_nivel_valor, 4),
         "BE_PAUSA_PERD": _b(cfg.be_activo and cfg.be_pausa_perdida and cfg.pausa_activa),
+        "PAR_ON": _b(cfg.parcial_activo), "PAR_MODO": str(("r", "pct_tp").index(cfg.parcial_nivel_modo)), "PAR_VAL": _f(cfg.parcial_nivel_valor, 4),
+        "PAR_PCT": _f(cfg.parcial_pct, 2), "PAR_MOVER": _b(cfg.parcial_mover_sl), "PAR_SL": _f(cfg.parcial_sl_nivel, 4),
     }
     txt = _PLANTILLA
     for k, v in valores.items():
@@ -398,6 +408,12 @@ const bool            InpFindeMantener  = @@FINDE_MANT@@;   // Mantener posicion
 const bool            InpFindeBloq      = @@FINDE_BLOQ@@;   // Sin mantener el fin de semana: el viernes no se abren operaciones desde una hora
 const double          InpFindeBloqH     = @@FINDE_BLOQ_H@@; // ... hora (local de Nueva York) desde la que no se abren operaciones el viernes
 const bool            InpBePauseLoss    = @@BE_PAUSA_PERD@@;      // Un cierre en breakeven tambien dispara la pausa tras una operacion perdedora (por defecto no dispara ninguna pausa)
+const bool            InpParOn          = @@PAR_ON@@;              // Cierre parcial: una vez por operacion, al llegar la ganancia al nivel se cierra una parte de la posicion
+const int             InpParMode        = @@PAR_MODO@@;        // ... nivel: 0 = multiplos de R, 1 = % del camino al TP
+const double          InpParVal         = @@PAR_VAL@@;         // ... valor del nivel (en la unidad de arriba)
+const double          InpParPct         = @@PAR_PCT@@;         // ... % de la posicion que se cierra (se redondea al paso de volumen del broker)
+const bool            InpParMoveSl      = @@PAR_MOVER@@;       // ... al cobrar el parcial, el SL del resto pasa a la entrada mas el nivel de abajo
+const double          InpParSlLvl       = @@PAR_SL@@;          // ... nivel del SL del resto, en R sobre la entrada
 
 // ============================ estado ==========================================
 const double SENT = -1.0e300;          // "sin dato" (equivale a NaN en el backtester)
@@ -1478,6 +1494,170 @@ bool GuardsOK()
    return true;
 }
 
+// ============================ cierre parcial ==================================
+// Igual que el backtester (engine.py): una sola vez por operacion, apenas el precio a favor llega al NIVEL (se mira en CADA TICK; el
+// largo con el bid, el corto con el ask) se cierra una parte de la posicion. Si se pidio, el SL del resto pasa a la entrada mas un nivel
+// (nunca se baja un SL que ya este mas favorable, por ejemplo el del breakeven). Si el precio ya volvio a ese nivel antes de poder
+// mover el SL, se cierra el resto. El estado se guarda en variables globales con el prefijo del magic: tras reiniciar el bot no se repite.
+ulong  g_parId       = 0;        // posicion (identificador) que se esta gestionando
+double g_parD        = 0.0;      // distancia del SL ORIGINAL de esa posicion (el breakeven y el parcial se miden con ella)
+bool   g_parDone     = false;    // el parcial de esa posicion ya se cobro (o no hace falta)
+bool   g_parSlDone   = false;    // el SL del resto ya se movio (o no hay que moverlo)
+double g_parProfit   = 0.0;      // resultado en dinero de la parte cerrada
+bool   g_parCerrando = false;    // el cierre en curso es el parcial (no es el cierre de la operacion)
+
+// distancia de precio del nivel del parcial (misma regla que engine.be_distancia)
+double ParDist(const double d)
+{
+   return (InpParMode == 1) ? InpParVal / 100.0 * InpRR * d : InpParVal * d;
+}
+
+// volumen que se cierra: el % pedido redondeado al paso (al mas cercano). 0 = no se puede partir; igual al volumen = se cierra todo
+double ParVolume(const double vol, const double pct, const double step, const double vmin)
+{
+   const double paso = (step > 0.0) ? step : 0.01;
+   const double cerrar = MathFloor(vol * pct / 100.0 / paso + 0.5 + 1.0e-9) * paso;
+   if(cerrar < MathMax(vmin, paso) - 1.0e-9) return 0.0;
+   if(vol - cerrar < vmin - 1.0e-9) return vol;
+   return cerrar;
+}
+
+// los dos niveles de una posicion con SL original a distancia d: distancia del parcial y del SL del resto (-1 = no se mueve); false si no son validos
+bool ParLevels(const double d, double &lvl, double &slDist)
+{
+   lvl = ParDist(d);
+   slDist = InpParMoveSl ? InpParSlLvl * d : -1.0;
+   return lvl > 0.0 && (slDist < 0.0 || slDist < lvl);
+}
+
+void ManageParcial()
+{
+   if(!InpParOn) return;
+   for(int k = PositionsTotal() - 1; k >= 0; k--)
+   {
+      if(PositionGetSymbol(k) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+      const ulong id     = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      const int   side   = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+      const double open  = PositionGetDouble(POSITION_PRICE_OPEN);
+      const double slNow = PositionGetDouble(POSITION_SL);
+      const double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      const double px    = (side == 1) ? bid : ask;
+      const double pt    = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+      if(g_parId != id)                                 // posicion nueva: su SL todavia es el original
+      {
+         if(slNow <= 0.0) return;
+         const double d0 = side * (open - slNow);
+         if(d0 <= 0.0) return;
+         g_parId = id;
+         g_parD = d0;
+         g_parDone = false;
+         g_parSlDone = false;
+         g_parProfit = 0.0;
+         GlobalVariableSet(g_gv + "PARID", (double)id);
+         GlobalVariableSet(g_gv + "PARD", d0);
+         GlobalVariableSet(g_gv + "PARDONE", 0.0);
+         GlobalVariableSet(g_gv + "PARSLDONE", 0.0);
+         GlobalVariableSet(g_gv + "PARPROFIT", 0.0);
+      }
+      double lvl = 0.0, slDist = 0.0;
+      if(!ParLevels(g_parD, lvl, slDist)) return;
+      const int dig = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+      if(!g_parDone)
+      {
+         if(side * (px - open) < lvl) return;            // todavia no llego al nivel del parcial
+         const double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+         const double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+         const double vol  = PositionGetDouble(POSITION_VOLUME);
+         const double cerrar = ParVolume(InpLots, InpParPct, step, vmin);
+         if(cerrar <= 0.0)                               // el lote no se puede partir: no hay parcial para esta operacion
+         {
+            g_parDone = true; g_parSlDone = true;
+            GlobalVariableSet(g_gv + "PARDONE", 1.0);
+            GlobalVariableSet(g_gv + "PARSLDONE", 1.0);
+            Print("Cierre parcial: con ", DoubleToString(InpLots, 2), " lotes no se puede cerrar esa parte. No se aplica.");
+            return;
+         }
+         g_parDone = true;
+         GlobalVariableSet(g_gv + "PARDONE", 1.0);
+         if(cerrar >= vol - 1.0e-9)                      // lo que quedaria es menos que el lote minimo: se cierra todo
+         {
+            g_parSlDone = true;
+            GlobalVariableSet(g_gv + "PARSLDONE", 1.0);
+            Print("Cierre parcial: lo que quedaria es menos que el lote minimo. Se cierra toda la posicion.");
+            CloseAll();
+            return;
+         }
+         MqlTradeRequest rq;
+         MqlTradeResult  rs;
+         ZeroMemory(rq);
+         ZeroMemory(rs);
+         rq.action    = TRADE_ACTION_DEAL;
+         rq.position  = (ulong)PositionGetInteger(POSITION_TICKET);
+         rq.symbol    = _Symbol;
+         rq.volume    = cerrar;
+         rq.type      = (side == 1) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+         rq.price     = px;
+         rq.deviation = InpDeviation;
+         rq.magic     = InpMagic;
+         rq.type_filling = FillingMarket();
+         g_parCerrando = true;
+         if(!(OrderSend(rq, rs) && (rs.retcode == TRADE_RETCODE_DONE || rs.retcode == TRADE_RETCODE_PLACED)))
+         {
+            g_parCerrando = false;
+            g_parDone = false;                           // no se pudo: se reintenta en el proximo tick
+            GlobalVariableSet(g_gv + "PARDONE", 0.0);
+            Print("Cierre parcial: no se pudo cerrar la parte (", rs.retcode, "). Se reintenta en el proximo tick.");
+            return;
+         }
+         if(!InpParMoveSl)
+         {
+            g_parSlDone = true;
+            GlobalVariableSet(g_gv + "PARSLDONE", 1.0);
+            return;
+         }
+         return;                                         // el SL del resto se mueve en el proximo tick, con la posicion ya actualizada
+      }
+      if(g_parSlDone) return;
+      const double nuevo = open + side * slDist;
+      if(side * (slNow - nuevo) >= -0.5 * pt)           // el SL ya esta en ese nivel (o mejor, por ejemplo el del breakeven)
+      {
+         g_parSlDone = true;
+         GlobalVariableSet(g_gv + "PARSLDONE", 1.0);
+         return;
+      }
+      const double minDist = (double)MathMax(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL), SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL)) * pt;
+      if(side * (px - nuevo) <= 0.0)                    // el precio ya volvio al nivel del resto: no se puede poner el SL ahi, se cierra
+      {
+         Print("Cierre parcial: el precio volvio al nivel del SL del resto antes de moverlo. Se cierra el resto.");
+         g_parSlDone = true;
+         GlobalVariableSet(g_gv + "PARSLDONE", 1.0);
+         CloseAll();
+         return;
+      }
+      if(side * (px - nuevo) < minDist) return;         // muy cerca para que el broker acepte el SL: se reintenta en el proximo tick
+      MqlTradeRequest rq2;
+      MqlTradeResult  rs2;
+      ZeroMemory(rq2);
+      ZeroMemory(rs2);
+      rq2.action   = TRADE_ACTION_SLTP;
+      rq2.position = (ulong)PositionGetInteger(POSITION_TICKET);
+      rq2.symbol   = _Symbol;
+      rq2.sl       = Px(nuevo);
+      rq2.tp       = PositionGetDouble(POSITION_TP);
+      rq2.magic    = InpMagic;
+      if(OrderSend(rq2, rs2) && (rs2.retcode == TRADE_RETCODE_DONE || rs2.retcode == TRADE_RETCODE_PLACED))
+      {
+         g_parSlDone = true;
+         GlobalVariableSet(g_gv + "PARSLDONE", 1.0);
+         Avisar("PARCIAL: SL del resto movido a " + DoubleToString(Px(nuevo), dig));
+      }
+      else
+         Print("Cierre parcial: no se pudo mover el SL del resto (", rs2.retcode, "). Se reintenta en el proximo tick.");
+      return;
+   }
+}
+
 // ============================ breakeven =======================================
 // Igual que el backtester (engine.py): apenas el precio llega a la ACTIVACION (se mira en CADA TICK: no se espera al cierre de la
 // vela) el SL pasa a la entrada mas un nivel (0 = justo en la entrada; nunca menos). Largo: se activa con el bid y el SL se toca con
@@ -1529,7 +1709,8 @@ void ManageBreakeven()
       if(g_beId != id)                                  // todavia no se activo
       {
          if(slNow <= 0.0) return;
-         const double d = side * (open - slNow);        // distancia del SL original (la posicion lo trae desde la entrada)
+         double d = side * (open - slNow);              // distancia del SL original (la posicion lo trae desde la entrada)
+         if(InpParOn && g_parId == id && g_parD > 0.0) d = g_parD;     // con el cierre parcial el SL pudo haberse movido: se usa la distancia original
          if(d <= 0.0) return;
          double act = 0.0, nuevo = 0.0;
          if(!BeLevels(side, open, d, act, nuevo)) return;
@@ -1730,6 +1911,14 @@ int OnInit()
       g_beSl   = GlobalVariableCheck(g_gv + "BESL") ? GlobalVariableGet(g_gv + "BESL") : 0.0;
       g_beDone = (GlobalVariableCheck(g_gv + "BEDONE") && GlobalVariableGet(g_gv + "BEDONE") > 0.5);
    }
+   if(GlobalVariableCheck(g_gv + "PARID"))              // cierre parcial de una operacion abierta antes de reiniciar el bot
+   {
+      g_parId     = (ulong)GlobalVariableGet(g_gv + "PARID");
+      g_parD      = GlobalVariableCheck(g_gv + "PARD") ? GlobalVariableGet(g_gv + "PARD") : 0.0;
+      g_parDone   = (GlobalVariableCheck(g_gv + "PARDONE") && GlobalVariableGet(g_gv + "PARDONE") > 0.5);
+      g_parSlDone = (GlobalVariableCheck(g_gv + "PARSLDONE") && GlobalVariableGet(g_gv + "PARSLDONE") > 0.5);
+      g_parProfit = GlobalVariableCheck(g_gv + "PARPROFIT") ? GlobalVariableGet(g_gv + "PARPROFIT") : 0.0;
+   }
    const string sfx[2] = {"_B", "_S"};
    for(int q = 0; q < 2; q++)
    {
@@ -1912,11 +2101,24 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       else if(motivo == DEAL_REASON_SO) que = "CIERRE FORZADO POR EL BROKER (stop out)";
       else if(motivo == DEAL_REASON_EXPERT) que = g_salidaSenal ? "SALIDA POR SENAL (el precio cambio de lado de la media)" : "CIERRE POR EL BOT (freno de perdida)";
       else if(motivo == DEAL_REASON_CLIENT || motivo == DEAL_REASON_MOBILE || motivo == DEAL_REASON_WEB) que = "CIERRE MANUAL";
-      const double res = HistoryDealGetDouble(trans.deal, DEAL_PROFIT) + HistoryDealGetDouble(trans.deal, DEAL_SWAP)
-                         + HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
-      // cierre por el SL movido a breakeven (o por el cierre inmediato cuando el precio volvio antes de moverlo): no es ganada ni perdida
+      double res = HistoryDealGetDouble(trans.deal, DEAL_PROFIT) + HistoryDealGetDouble(trans.deal, DEAL_SWAP)
+                   + HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
       const ulong posId = (ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
-      const bool esBe = InpBeOn && posId == g_beId && ((g_beDone && motivo == DEAL_REASON_SL) || (g_beCerrar && motivo == DEAL_REASON_EXPERT));
+      if(InpParOn && g_parCerrando && posId == g_parId)      // es el cierre PARCIAL: la operacion sigue abierta (no cuenta como ganada ni perdida todavia)
+      {
+         g_parCerrando = false;
+         g_parProfit = res;
+         GlobalVariableSet(g_gv + "PARPROFIT", res);
+         Avisar("PARCIAL: " + DoubleToString(HistoryDealGetDouble(trans.deal, DEAL_VOLUME), 2) + " lotes cerrados a " + DoubleToString(precio, dig)
+                + " | resultado " + (res >= 0.0 ? "+" : "") + DoubleToString(res, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY)
+                + (InpParMoveSl ? " | el SL del resto pasa a la entrada mas " + DoubleToString(InpParSlLvl, 2) + " R" : ""));
+         return;
+      }
+      // con parcial cobrado, la operacion se evalua por el resultado TOTAL (parte cerrada + resto), como el backtester
+      const bool conParcial = InpParOn && posId == g_parId && g_parDone && g_parProfit != 0.0;
+      if(conParcial) res += g_parProfit;
+      // cierre por el SL movido a breakeven (o por el cierre inmediato cuando el precio volvio antes de moverlo): no es ganada ni perdida
+      const bool esBe = InpBeOn && posId == g_beId && !conParcial && ((g_beDone && motivo == DEAL_REASON_SL) || (g_beCerrar && motivo == DEAL_REASON_EXPERT));
       if(esBe) que = "BREAKEVEN";
       if(esBe || res != 0.0)                         // operacion perdedora o ganadora: arranca el tiempo minimo que corresponda (si esta activo)
       {
@@ -1944,6 +2146,16 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
             GlobalVariableSet(g_gv + "LASTWIN" + suf, (double)b);
             g_winRef[ladoPos]  = precio;                // cierre y recorrido de la ganadora (para el retroceso)
             g_winDist[ladoPos] = MathAbs(precio - g_entryPx[ladoPos]);
+            if(conParcial)                              // con parcial, el recorrido es el del resultado total (en precio), como el backtester
+            {
+               const double tsz = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE), tvl = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+               const double vu = (tsz > 0.0 && tvl > 0.0) ? tvl / tsz * InpLots : 0.0;
+               if(vu > 0.0)
+               {
+                  g_winDist[ladoPos] = MathAbs(res) / vu;
+                  g_winRef[ladoPos]  = g_entryPx[ladoPos] + ((ladoPos == 0) ? 1.0 : -1.0) * g_winDist[ladoPos];
+               }
+            }
             GlobalVariableSet(g_gv + "WINREF" + suf, g_winRef[ladoPos]);
             GlobalVariableSet(g_gv + "WINDIST" + suf, g_winDist[ladoPos]);
          }
@@ -1958,6 +2170,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
 void OnTick()
 {
    ManageFinde();                                  // sin mantener el fin de semana: viernes 16:59 de Nueva York se cierra todo
+   ManageParcial();                                // el cierre parcial se revisa en cada tick
    ManageBreakeven();                              // el breakeven se revisa en cada tick (no espera al cierre de la vela)
    if(!GuardsOK()) return;
    const datetime t0 = iTime(_Symbol, _Period, 0);
