@@ -65,7 +65,7 @@ def azar(P, cfg, lo, hi, n_sig, veces, rng) -> np.ndarray:
         idx = np.sort(rng.choice(np.arange(lo, hi), size=n_sig, replace=False))
         sig = list(zip(idx, rng.choice(lados, size=n_sig)))
         tr, _ = eng.simular(P, sig, cfg.rr, cfg.costo_extra, eng.pb_de(cfg), cfg.salida_modo,
-                              eng.cuenta_de(P, cfg), eng.be_de(cfg), eng.parcial_de(cfg))
+                              eng.cuenta_de(P, cfg), eng.be_de(cfg), eng.parcial_de(cfg), eng.reent_de(cfg))
         out.append(resumen(tr, cfg.rr)["exp_R"])
     return np.array([x for x in out if not np.isnan(x)])
 
@@ -394,15 +394,20 @@ def ciclos_objetivo(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comi
     return out
 
 
-def extremos_diarios(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comision_por_lote=0.0) -> dict:
+def extremos_diarios(tr: pd.DataFrame, indice, tick_size, tick_value, lotes, comision_por_lote=0.0, claves=None) -> dict:
     """Peor y mejor día en dinero y en R. Cada operación cuenta en el día en que se cerró (salida).
+    `claves`: día de cada vela (eng.claves_dia, medianoche de Europa Central cuando se conoce el desfase del servidor): así el mejor y el peor día
+    son los mismos que usan los límites de la cuenta y la consistencia. Sin ellas, el día es el de los datos.
     Es sobre operaciones cerradas: no ve el flotante intradía."""
     res = tr[tr["res"].isin(["TP", "SL", "BE", "PARC_SL"])]
     if not len(res):
         return {}
     vu = valor_por_unidad(tick_size, tick_value, lotes)
     pnl = res["R"].to_numpy() * res["dist"].to_numpy() * vu - comision_por_lote * lotes
-    dias = pd.DatetimeIndex([indice[int(j)] for j in res["salida"]]).normalize()
+    if claves is not None:
+        dias = pd.DatetimeIndex(pd.to_datetime(np.asarray(claves)[res["salida"].to_numpy(dtype=int)], unit="D"))
+    else:
+        dias = pd.DatetimeIndex([indice[int(j)] for j in res["salida"]]).normalize()
     usd = pd.Series(pnl, index=dias).groupby(level=0).sum()
     r_ = pd.Series(res["R"].to_numpy(), index=dias).groupby(level=0).sum()
     n_ = pd.Series(1, index=dias).groupby(level=0).sum()

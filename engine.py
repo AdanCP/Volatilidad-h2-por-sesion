@@ -134,6 +134,9 @@ class Config:
     pausa_gan_vence_h: float = 24.0
     retiro_activo: bool = False             # retirar toda la ganancia del ciclo al llegar al objetivo (solo con reglas de cuenta)
     retiro_pct: float = 5.0                 # objetivo por retiro (% del capital inicial)
+    consistencia_pct: float = 0.0           # regla de consistencia (solo con retiro): el mejor dia del ciclo no puede pasar de este % de la
+                                            # ganancia que se retira. 0 = sin regla. El retiro espera a que la ganancia del ciclo sea
+                                            # >= max(objetivo, mejor dia / consistencia). El dia en curso cuenta (se evalua al cierre de cada operacion).
     # breakeven (opcional): apenas el precio llega a la ACTIVACION (sin esperar al cierre de la vela) el SL se mueve a la entrada
     # mas un NIVEL (0 = justo en la entrada; nunca menor que 0). Activacion: "r" (multiplos de R), "usd" (US$ fijos) o "pct_tp"
     # (% del camino al TP). Nivel: "r" o "usd". Una salida por ese SL es un resultado propio ("BE"): neutro para la tasa de acierto,
@@ -158,6 +161,20 @@ class Config:
     lotes: float = 0.0
     lote_paso: float = 0.01
     lote_min: float = 0.01
+    # reentrada (opcional): con una tendencia vigente (desde un cruce hasta el cruce contrario) y SOLO despues de una operacion de esa
+    # tendencia que cerro positiva (R > 0), se vuelve a entrar cuando el precio retrocede a la EMA (corta o larga). Misma entrada: mismo
+    # SL, TP, breakeven, parcial y filtros. Una sola posicion a la vez. Modo "confirmacion": la vela toca la media y cierra del lado de la
+    # tendencia, se entra al cierre. Modo "limite": orden en la media (conocida al cierre de la vela anterior). reentrada_max: 1 o 2 por
+    # tendencia (la 2da solo si la 1ra tambien cerro positiva). Caduca reentrada_velas velas despues del cruce. Confirmacion de ADX propia.
+    reentrada_activa: bool = False
+    reentrada_nivel: str = "larga"          # "larga" | "corta" (en modo precio hay una sola media)
+    reentrada_modo: str = "confirmacion"    # "confirmacion" | "limite"
+    reentrada_max: int = 1                  # 1 | 2
+    reentrada_velas: int = 60
+    re_adx_min: Optional[float] = 25.0      # ADX minimo al reentrar (None = sin condicion)
+    re_di_favor: bool = True                # el DI del lado de la operacion debe superar al contrario
+    re_adx_creciente_n: int = 0             # 0 = sin condicion; >0: ADX mayor que el de hace N velas
+    re_adx_periodo: int = 14
 
     def pb_efectivo(self) -> bool:
         """El pullback solo actua si esta activo y el porcentaje es mayor que 0 (0 % = entrada al cierre, como sin pullback)."""
@@ -178,6 +195,8 @@ class Config:
             raise ValueError("El colchon no puede ser negativo.")
         if self.retiro_activo and not (0 < self.retiro_pct <= 100):
             raise ValueError("El objetivo por retiro debe ser mayor que 0 y no pasar de 100 %.")
+        if not (0 <= self.consistencia_pct <= 100):
+            raise ValueError("La consistencia debe estar entre 0 (sin regla) y 100 %.")
         for nombre, p in (("diario", self.perd_dia_pct), ("total", self.perd_tot_pct)):
             if 0 < p <= self.colchon_pct:
                 raise ValueError(f"El colchon ({self.colchon_pct:g} %) debe ser menor que el limite {nombre} ({p:g} %).")
@@ -243,8 +262,25 @@ class Config:
         if self.parcial_mover_sl and not self.parcial_sl_nivel < niv:
             raise ValueError("Cierre parcial: el SL del resto tiene que quedar por debajo del nivel del parcial.")
 
+    def _validar_reentrada(self) -> None:
+        if not self.reentrada_activa:
+            return
+        if self.reentrada_nivel not in ("corta", "larga"):
+            raise ValueError("El nivel de la reentrada debe ser 'corta' o 'larga'.")
+        if self.reentrada_modo not in ("confirmacion", "limite"):
+            raise ValueError("El modo de la reentrada debe ser 'confirmacion' o 'limite'.")
+        if self.reentrada_max not in (1, 2):
+            raise ValueError("Las reentradas por tendencia deben ser 1 o 2.")
+        if self.reentrada_velas < 1:
+            raise ValueError("La caducidad de la reentrada debe ser de al menos 1 vela.")
+        if self.re_adx_periodo < 2 or self.re_adx_creciente_n < 0 or (self.re_adx_min is not None and self.re_adx_min < 0):
+            raise ValueError("Los parametros del ADX de la reentrada no son validos.")
+        if self.sesion_activo and self.servidor_offset_horas is None:
+            raise ValueError("El filtro de sesion necesita el desfase horario del servidor.")
+
     def validar(self) -> None:
         self._validar_parcial()
+        self._validar_reentrada()
         if self.vwap_dist_min_atr < 0 or self.vwap_min_minutos < 0:
             raise ValueError("Los parametros del VWAP no pueden ser negativos.")
         if not 0 <= self.pullback_pct <= 100:
@@ -329,7 +365,7 @@ VP_MODOS = ("poc", "fuera", "dentro")
 VP_AREA = 0.70                  # el area de valor reune el 70 % del volumen del perfil
 VP_MIN_MINUTOS = 360            # un dia solo cuenta para el perfil si tiene al menos 6 horas de velas (descarta domingos y feriados casi vacios)
 
-FILTROS_APAGADOS = dict(vp_activo=False, tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False, be_activo=False, parcial_activo=False)
+FILTROS_APAGADOS = dict(vp_activo=False, tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False, be_activo=False, parcial_activo=False, reentrada_activa=False)
 
 
 @dataclass
@@ -357,6 +393,7 @@ class Preparado:
     vp: Optional[tuple] = None              # (POC, VAH, VAL) de cada vela (NaN si todavia no hay perfil), solo con el filtro Volume Profile
     fs: Optional[np.ndarray] = None         # ultima vela de la semana de cada vela (n si no hay otro fin de semana adelante); solo si no se mantiene el finde
     bloq_vie: Optional[np.ndarray] = None   # True en las velas del viernes desde la hora en que ya no se abren operaciones (solo con ese campo)
+    re: Optional[dict] = None               # datos de la reentrada (solo con reentrada_activa): ok de filtros por lado, sesion, ADX y DI
 
 
 def _off(P, i: int) -> float:
@@ -606,6 +643,26 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
             return entre(atr[i] / atr_med[i], cfg.atr_rel_min, cfg.atr_rel_max)
         return True
 
+    def motivo_filtros(i, lado):
+        """Primer filtro (sin sesion ni viernes) que rechaza el lado en la vela i, o None si pasa todos. Mismo orden de siempre."""
+        if cfg.sma_activo and not ok_sma(i, lado):
+            return "sma"
+        if cfg.vwap_activo and not ok_vwap(i, lado):
+            return "vwap"
+        if cfg.adx_activo and not ok_adx(i):
+            return "adx"
+        if cfg.rango_activo and not ok_rango(i):
+            return "rango"
+        if cfg.atr_activo and not ok_atr(i):
+            return "atr"
+        if "tm1" in tm and not (tm["tm1"][0][i] if lado == 1 else tm["tm1"][1][i]):
+            return "tm1"
+        if "tm2" in tm and not (tm["tm2"][0][i] if lado == 1 else tm["tm2"][1][i]):
+            return "tm2"
+        if cfg.vp_activo and not ok_vp(i, lado):
+            return "vp"
+        return None
+
     cruces = []
     for i in range(warm, n):
         if sube[i] and cfg.direccion in ("ambas", "largos"):
@@ -619,30 +676,29 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
             motivo = "viernes"                                        # (con pullback se mira al ejecutar: se cancela la orden) / la ultima vela de la semana no abre
         elif cfg.sesion_activo and not cfg.pb_efectivo() and not ok_ses[i]:    # con pullback la sesion se mira al ejecutar
             motivo = "sesion"
-        elif cfg.sma_activo and not ok_sma(i, lado):
-            motivo = "sma"
-        elif cfg.vwap_activo and not ok_vwap(i, lado):
-            motivo = "vwap"
-        elif cfg.adx_activo and not ok_adx(i):
-            motivo = "adx"
-        elif cfg.rango_activo and not ok_rango(i):
-            motivo = "rango"
-        elif cfg.atr_activo and not ok_atr(i):
-            motivo = "atr"
-        elif "tm1" in tm and not (tm["tm1"][0][i] if lado == 1 else tm["tm1"][1][i]):
-            motivo = "tm1"
-        elif "tm2" in tm and not (tm["tm2"][0][i] if lado == 1 else tm["tm2"][1][i]):
-            motivo = "tm2"
-        elif cfg.vp_activo and not ok_vp(i, lado):
-            motivo = "vp"
+        else:
+            motivo = motivo_filtros(i, lado)
         cruces.append((i, lado, motivo))
 
+    re = None
+    if cfg.reentrada_activa:
+        a_, p_, m_ = ind.adx_wilder(h, l, c, cfg.re_adx_periodo)
+        # ok de los filtros comunes (todos menos sesion y viernes, que se miran al ejecutar) para compras y ventas en cada vela
+        base = np.zeros((2, n), dtype=bool)
+        for i in range(warm, n):
+            base[0, i] = motivo_filtros(i, 1) is None
+            base[1, i] = motivo_filtros(i, -1) is None
+        ses_re = ok_ses
+        if cfg.sesion_activo and ses_re is None:
+            ses_re = ses.mascara_sesiones(ses.servidor_a_utc(df.index, cfg.servidor_offset_horas, cfg.servidor_dst_eeuu),
+                                          cfg.sesiones, cfg.horarios, cfg.sin_pausa, cfg.cortes)
+        re = {"base": base, "ses": ses_re, "adx": a_, "pdi": p_, "mdi": m_}
     sp = _spread(df, cfg)
     raw = df["Spread"].to_numpy(float) if "Spread" in df else np.zeros(n)
     return Preparado(h, l, c, sp, atr, dist, df.index, cruces, 100 * float((raw == 0).mean()),
                      ema_c, ema_l, sube, baja, ok_ses if (cfg.pb_efectivo() and cfg.sesion_activo) else None,
                      claves_dia(df.index, cfg) if cfg.reglas_activas else None, diff,
-                     sl_ref, sl_off, tuple(tm_aviso), vp, fs, bloq_vie)
+                     sl_ref, sl_off, tuple(tm_aviso), vp, fs, bloq_vie, re)
 
 
 def pb_de(cfg: Config):
@@ -650,6 +706,15 @@ def pb_de(cfg: Config):
     if not cfg.pb_efectivo():
         return None
     return {"pct": float(cfg.pullback_pct), "ema": cfg.pullback_ema, "velas": int(cfg.pullback_velas)}
+
+
+def reent_de(cfg: Config):
+    """Parametros de la reentrada para simular(), o None si no se usa."""
+    if not cfg.reentrada_activa:
+        return None
+    return {"nivel": cfg.reentrada_nivel, "modo": cfg.reentrada_modo, "max": int(cfg.reentrada_max), "velas": int(cfg.reentrada_velas),
+            "adx_min": None if cfg.re_adx_min is None else float(cfg.re_adx_min), "di": bool(cfg.re_di_favor),
+            "adx_cre": int(cfg.re_adx_creciente_n), "adx_per": int(cfg.re_adx_periodo)}
 
 
 def claves_dia(indice: pd.DatetimeIndex, cfg: Config) -> np.ndarray:
@@ -679,7 +744,8 @@ def cuenta_de(P: Preparado, cfg: Config):
             "gan_retro_pct": float(cfg.pausa_gan_retroceso_pct) if (cfg.pausa_gan_retroceso_activo and cfg.pausa_gan_retroceso_pct > 0) else None,
             "gan_vence": cfg.pausa_gan_vence, "gan_vence_h": float(cfg.pausa_gan_vence_h),
             "be_pausa_perdida": bool(cfg.be_activo and cfg.be_pausa_perdida),
-            "retiro_usd": float(cfg.capital) * float(cfg.retiro_pct) / 100.0 if (cfg.retiro_activo and cfg.retiro_pct > 0) else None}
+            "retiro_usd": float(cfg.capital) * float(cfg.retiro_pct) / 100.0 if (cfg.retiro_activo and cfg.retiro_pct > 0) else None,
+            "consist": float(cfg.consistencia_pct) / 100.0 if (cfg.retiro_activo and cfg.retiro_pct > 0 and cfg.consistencia_pct > 0) else None}
 
 
 def be_de(cfg: Config):
@@ -716,7 +782,7 @@ def parcial_de(cfg: Config):
             "sl_nivel": float(cfg.parcial_sl_nivel) if cfg.parcial_mover_sl else None}
 
 
-def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None, be=None, parcial=None):
+def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None, be=None, parcial=None, reent=None):
     """señales: lista de (indice, lado). Devuelve (DataFrame de operaciones, ignoradas).
 
     pb=None: entrada al cierre de la vela de la señal. pb={"pct","ema","velas"}: la señal deja una orden pendiente.
@@ -735,6 +801,9 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
     spread que el TP). Si en esa misma vela toca el SL, primero el SL (peor caso); si toca el nivel y el TP, se ejecutan los dos. Si
     mueve el SL del resto y en esa vela el precio vuelve a ese nivel, el resto sale ahi (peor caso). Columnas: parcial (0/1),
     R_parcial y R_resto (R = R_parcial + R_resto); res "PARC_SL" = parcial cobrado y el resto salio por SL o breakeven.
+    reent (ver reent_de): reentrada. Despues de una operacion de la tendencia que cerro con R > 0 se busca un retroceso a la media dentro de
+    la ventana (hasta el cruce contrario, la caducidad o el fin de semana) y se vuelve a entrar con la misma gestion. Una posicion a la vez.
+    La columna "reentrada" vale 0 en las entradas por cruce y 1 o 2 en las reentradas ("señal" es el cruce que origino la tendencia).
     En la tabla, "i" es la vela de ENTRADA real y "señal" la vela del cruce (iguales sin pullback)."""
     h, l, c, sp, dist = P.h, P.l, P.c, P.sp, P.dist
     n = len(c)
@@ -753,7 +822,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         cs = {"saltadas_dia": 0, "saltadas_pausa": 0, "saltadas_pausa_gan": 0, "saltadas_retroceso": 0, "saltadas_riesgo": 0, "saltadas_proteccion": 0, "forzadas": 0,
               "dias_bloqueados": 0, "quemada": False, "quemada_en": None, "peor_dia_usd": 0.0,
               "balance_final": cap, "balance_min": cap, "balance_max": cap, "retiros": [], "retirado": 0.0, "prot_desde": None, "prot_n": 0}
-        S = {"bal": cap, "pico": cap, "dia": None, "bal_dia": cap, "bloq": None, "perd_j": {1: None, -1: None}, "gan_j": {1: None, -1: None}, "gan_ref": {1: None, -1: None}}
+        S = {"bal": cap, "pico": cap, "dia": None, "bal_dia": cap, "cd_key": None, "cd": 0.0, "cd_best": 0.0, "bloq": None, "perd_j": {1: None, -1: None}, "gan_j": {1: None, -1: None}, "gan_ref": {1: None, -1: None}}
 
     def frena(minutos, ultimos, sentido, lado, i):
         """True si la señal `lado` de la vela i cae dentro del tiempo minimo. `ultimos` = ultima operacion cerrada de ese tipo
@@ -770,7 +839,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             j = max(vistos) if vistos else None
         return j is not None and ts_min[i] - ts_min[j] < minutos
 
-    def sin_retroceso(lado, i):
+    def sin_retroceso(lado, i, px=None):
         """True si la señal `lado` de la vela i NO cumple el retroceso exigido tras la ultima ganadora del MISMO sentido."""
         pct = ct.get("gan_retro_pct")
         if pct is None or S["gan_j"][lado] is None:
@@ -782,7 +851,8 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         if venc == "dia" and dia[i] != dia[j]:
             return False
         ref, recorrido = S["gan_ref"][lado]
-        px = c[i] + sp[i] if lado == 1 else c[i]                 # precio al que entraria la señal
+        if px is None:
+            px = c[i] + sp[i] if lado == 1 else c[i]             # precio al que entraria la señal
         nivel = ref - lado * pct / 100.0 * recorrido             # compra: por debajo del cierre; venta: por encima
         return px > nivel if lado == 1 else px < nivel
 
@@ -817,6 +887,10 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         pnl = r * d * vu - comm
         rodar_dia(j_out)                 # si cruzo la medianoche, el dia nuevo parte del balance previo a este cierre
         S["bal"] += pnl
+        if ct.get("consist"):            # ganancia de cada dia DENTRO del ciclo en curso (para la regla de consistencia)
+            if S["cd_key"] != S["dia"]:
+                S["cd_best"], S["cd_key"], S["cd"] = max(S["cd_best"], S["cd"]), S["dia"], 0.0
+            S["cd"] += pnl
         S["pico"] = max(S["pico"], S["bal"])
         cs["peor_dia_usd"] = min(cs["peor_dia_usd"], S["bal"] - S["bal_dia"])
         cs["balance_min"] = min(cs["balance_min"], S["bal"])
@@ -835,7 +909,11 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         elif S["bal"] <= pd_ + 1e-9 and S["bloq"] != dia[j_out]:
             S["bloq"] = dia[j_out]
             cs["dias_bloqueados"] += 1
-        if not cs["quemada"] and ct.get("retiro_usd") and S["bal"] - cap >= ct["retiro_usd"] - 1e-9:
+        umbral, mejor_dia = ct.get("retiro_usd"), 0.0
+        if umbral and ct.get("consist"):   # el retiro espera a que el mejor dia pese como mucho la consistencia sobre la ganancia retirada
+            mejor_dia = max(S["cd_best"], S["cd"], 0.0)
+            umbral = max(umbral, mejor_dia / ct["consist"])
+        if not cs["quemada"] and umbral and S["bal"] - cap >= umbral - 1e-9:
             # retiro: se saca TODA la ganancia del ciclo y el balance vuelve al capital inicial. El piso trailing se mantiene
             # (S["pico"] no baja) y el retiro no cuenta como perdida del dia: se resta tambien del balance de inicio del dia.
             w = S["bal"] - cap
@@ -843,7 +921,10 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             S["bal"] = cap
             S["bal_dia"] -= w
             cs["retiros"].append({"j": int(j_out), "monto": float(w), "bal_antes": bal_antes,
-                                  "piso": float(pt_) if np.isfinite(pt_) else None})
+                                  "piso": float(pt_) if np.isfinite(pt_) else None,
+                                  "umbral": float(umbral), "mejor_dia": float(mejor_dia),
+                                  "estirado": bool(umbral > ct["retiro_usd"] + 1e-6)})
+            S["cd_best"], S["cd"] = 0.0, 0.0                 # el ciclo siguiente arranca de cero
             cs["retirado"] += float(w)
 
     ex = {"parc": False, "sl_sal": None}               # datos extra de la ultima corrida de recorrer(): parcial cobrado y precio del SL de salida
@@ -935,6 +1016,142 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             return None
         return (a, parcial["f"], b)
 
+    def registrar(i, k, lado, entrada, sl, tp, d, res, amb, j_out, armada, bepar, parpar, lim, n_re=0):
+        """Convierte el resultado de recorrer() en una fila (R, parcial, costo extra), la anota y la aplica a la cuenta. Devuelve (res final, R)."""
+        parc = parpar is not None and ex["parc"]
+        motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal", "LIM": "limite", "BE": "be", "FIN": "finde",
+                      "PARC_SL": "parc_sl", "PARC_TOT": "parcial"}.get(res, "")
+        if res in ("SEN", "FIN"):                       # sale al cierre: el largo vende al bid, el corto compra al ask
+            salida_px = c[j_out] if lado == 1 else c[j_out] + sp[j_out]
+            r = lado * (salida_px - entrada) / d
+            res = "TP" if r > 0 else "SL"
+        elif res == "LIM":                              # el bot cierra todo cuando el equity toca el limite
+            r = -lim / d
+            res = "SL"
+            cs["forzadas"] += 1
+        elif res == "BE":                               # sale en el nivel de breakeven: gana (o pierde, con costo extra) ese nivel
+            r = bepar[1] / d
+        elif res == "PARC_SL":                          # el resto sale en su SL (el de la entrada + nivel, o el original)
+            r = lado * (ex["sl_sal"] - entrada) / d
+        elif res == "PARC_TOT":                         # el parcial cerro toda la posicion
+            r, res = 0.0, "TP"
+        else:
+            r = rr if res == "TP" else (-1.0 if res == "SL" else 0.0)
+        r_par = 0.0
+        if parc:                                        # suma ponderada: parte cerrada en el nivel + resto
+            f = parpar[1]
+            r_par = f * parpar[0] / d
+            r_res = (1.0 - f) * r if f < 1.0 else 0.0
+            r = r_par + r_res
+        else:
+            r_res = r
+        if res != "ABIERTA" and costo_extra:
+            r -= costo_extra / d
+            r_res -= costo_extra / d
+        if ct:
+            cs["prot_desde"], cs["prot_n"] = None, 0          # se abrio una operacion: la cuenta tiene margen
+        filas.append({"i": k, "señal": i, "lado": lado, "entrada": entrada, "sl": sl, "tp": tp, "dist": d,
+                      "res": res, "amb": amb, "salida": j_out, "R": r, "motivo": motivo_sal, "be": int(armada),
+                      "parcial": int(parc), "R_parcial": r_par, "R_resto": r_res, "reentrada": n_re})
+        if res != "ABIERTA" and ct:
+            cerrar(r, d, j_out, lado, entrada, res == "BE")
+        return res, r
+
+    def buscar_re(i_cruce, lado, desde):
+        """Primera vela desde `desde` en que se cumple la reentrada: (vela de entrada k, precio del limite o None, vela de decision jd)."""
+        R = P.re
+        ema = P.ema_c if reent["nivel"] == "corta" else P.ema_l
+        contra = P.baja if lado == 1 else P.sube
+        fin = min(i_cruce + reent["velas"], n - 1)
+        pos = np.flatnonzero(contra[i_cruce + 1:fin + 1])
+        if len(pos):                                  # cruce contrario en la vela jc: la tendencia termino
+            jc = i_cruce + 1 + int(pos[0])
+            fin = min(fin, jc if reent["modo"] == "limite" else jc - 1)   # confirmacion: decide al cierre de jc y ya lo sabe; limite: la orden pudo llenarse dentro de jc
+        if P.fs is not None and desde < n and P.fs[desde] < n:
+            fin = min(fin, int(P.fs[desde]) - 1)      # sin mantener el fin de semana: no se reentra en la ultima vela de la semana
+        base = R["base"][0 if lado == 1 else 1]
+        a_, pdi, mdi = R["adx"], R["pdi"], R["mdi"]
+        lim_modo = reent["modo"] == "limite"
+        min_jd = 2 * reent["adx_per"] + reent["adx_cre"] + 1
+        for j in range(max(desde, 1), fin + 1):
+            if P.bloq_vie is not None and P.bloq_vie[j]:
+                break
+            if R["ses"] is not None and not R["ses"][j]:
+                continue
+            if lim_modo:
+                jd = j - 1                              # el limite se deja con lo conocido al cierre de la vela anterior
+                e = ema[jd]
+                toca = (l[j] <= e) if lado == 1 else (h[j] >= e)
+            else:
+                jd = j                                  # confirmacion: toca la media y cierra del lado de la tendencia
+                e = ema[jd]
+                toca = (l[j] <= e and c[j] > e) if lado == 1 else (h[j] >= e and c[j] < e)
+            if not toca or jd < min_jd or np.isnan(e) or not base[jd]:
+                continue
+            if reent["adx_min"] is not None and not a_[jd] >= reent["adx_min"]:
+                continue
+            if reent["di"] and not ((pdi[jd] > mdi[jd]) if lado == 1 else (mdi[jd] > pdi[jd])):
+                continue
+            if reent["adx_cre"] > 0 and not a_[jd] > a_[jd - reent["adx_cre"]]:
+                continue
+            return j, ((min(e, h[j]) if lado == 1 else max(e, l[j])) if lim_modo else None), jd
+        return None
+
+    def abrir_re(i_cruce, lado, desde, n_re):
+        """Intenta una reentrada. None si no hay (o si las reglas de cuenta / el SL la descartan); si no, (res, R, vela de salida)."""
+        nonlocal sl_invalido
+        hit = buscar_re(i_cruce, lado, desde)
+        if hit is None:
+            return None
+        k, px, jd = hit
+        entrada = (px + sp[k] if lado == 1 else px) if px is not None else (c[k] + sp[k] if lado == 1 else c[k])
+        if P.sl_ref is not None:
+            d = lado * (entrada - (P.sl_ref[jd] - lado * _off(P, jd)))
+            if not d > 0:
+                sl_invalido += 1
+                return None
+        else:
+            d = dist[jd]
+        if not d > 0:
+            return None
+        lim = None
+        if ct:
+            if cs["quemada"]:
+                return None
+            rodar_dia(k)
+            if S["bloq"] == dia[k]:
+                cs["saltadas_dia"] += 1
+                return None
+            if frena(ct["pausa_min"], S["perd_j"], ct.get("pausa_sentido", "ambos"), lado, k):
+                cs["saltadas_pausa"] += 1
+                return None
+            if frena(ct.get("pausa_gan_min"), S["gan_j"], ct.get("pausa_gan_sentido", "ambos"), lado, k):
+                cs["saltadas_pausa_gan"] += 1
+                return None
+            if sin_retroceso(lado, k, entrada):
+                cs["saltadas_retroceso"] += 1
+                return None
+            motivo_p, lim = puerta(d)
+            if motivo_p != "ok":
+                cs[motivo_p] += 1
+                return None
+        sl, tp = entrada - lado * d, (np.nan if por_senal else entrada + lado * d * rr)
+        bepar, parpar = bepar_de(d), parpar_de(d)
+        armada = False
+        ex["parc"] = False
+        if px is not None:                              # limite: la vela de entrada ya puede tocar el SL (peor caso), el TP recien desde la siguiente
+            toca_sl = l[k] <= sl if lado == 1 else h[k] + sp[k] >= sl
+            if lim is not None and ((entrada - l[k]) if lado == 1 else (h[k] + sp[k] - entrada)) >= lim:
+                res, amb, j_out = "LIM", True, k
+            elif toca_sl:
+                res, amb, j_out = "SL", True, k
+            else:
+                res, amb, j_out, armada = recorrer(k + 1, lado, sl, tp, entrada, lim, bepar, tope_de(k), parpar)
+        else:                                           # confirmacion: se entra al cierre de la vela k
+            res, amb, j_out, armada = recorrer(k + 1, lado, sl, tp, entrada, lim, bepar, tope_de(k), parpar)
+        res, r = registrar(i_cruce, k, lado, entrada, sl, tp, d, res, amb, j_out, armada, bepar, parpar, lim, n_re)
+        return res, r, j_out
+
     for i, lado in señales:
         if i < libre:                                   # operacion en curso (o orden pendiente): se ignora
             ignoradas += 1
@@ -1022,10 +1239,15 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                     libre = k + 1
                     continue
             else:
-                d = dist[k]
+                d = dist[k - 1]                         # la orden se dejo al cierre de la vela anterior: el ATR / % que conoce es el de esa vela, no el del llenado
             if not d > 0:
                 continue
             if ct:
+                rodar_dia(k)                            # el llenado puede caer en otro dia que la señal: los limites diarios son los del dia del llenado
+                if S["bloq"] == dia[k]:
+                    cs["saltadas_dia"] += 1
+                    libre = k + 1
+                    continue
                 motivo_p, lim = puerta(d)
                 if motivo_p != "ok":
                     cs[motivo_p] += 1
@@ -1049,48 +1271,26 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 res, amb, j_out = "SL", True, k
             else:
                 res, amb, j_out, armada = recorrer(k + 1, lado, sl, tp, entrada, lim, bepar, tope_de(k), parpar)
-        parc = parpar is not None and ex["parc"]
-        motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal", "LIM": "limite", "BE": "be", "FIN": "finde",
-                      "PARC_SL": "parc_sl", "PARC_TOT": "parcial"}.get(res, "")
-        if res in ("SEN", "FIN"):                       # sale al cierre: el largo vende al bid, el corto compra al ask
-            salida_px = c[j_out] if lado == 1 else c[j_out] + sp[j_out]
-            r = lado * (salida_px - entrada) / d
-            res = "TP" if r > 0 else "SL"
-        elif res == "LIM":                              # el bot cierra todo cuando el equity toca el limite
-            r = -lim / d
-            res = "SL"
-            cs["forzadas"] += 1
-        elif res == "BE":                               # sale en el nivel de breakeven: gana (o pierde, con costo extra) ese nivel
-            r = bepar[1] / d
-        elif res == "PARC_SL":                          # el resto sale en su SL (el de la entrada + nivel, o el original)
-            r = lado * (ex["sl_sal"] - entrada) / d
-        elif res == "PARC_TOT":                         # el parcial cerro toda la posicion
-            r, res = 0.0, "TP"
-        else:
-            r = rr if res == "TP" else (-1.0 if res == "SL" else 0.0)
-        r_par = 0.0
-        if parc:                                        # suma ponderada: parte cerrada en el nivel + resto
-            f = parpar[1]
-            r_par = f * parpar[0] / d
-            r_res = (1.0 - f) * r if f < 1.0 else 0.0
-            r = r_par + r_res
-        else:
-            r_res = r
-        if res != "ABIERTA" and costo_extra:
-            r -= costo_extra / d
-            r_res -= costo_extra / d
-        if ct:
-            cs["prot_desde"], cs["prot_n"] = None, 0          # se abrio una operacion: la cuenta tiene margen
-        filas.append({"i": k, "señal": i, "lado": lado, "entrada": entrada, "sl": sl, "tp": tp, "dist": d,
-                      "res": res, "amb": amb, "salida": j_out, "R": r, "motivo": motivo_sal, "be": int(armada),
-                      "parcial": int(parc), "R_parcial": r_par, "R_resto": r_res})
+        res, r = registrar(i, k, lado, entrada, sl, tp, d, res, amb, j_out, armada, bepar, parpar, lim)
         if res == "ABIERTA":
             break
         libre = j_out + 1
-        if ct:
-            cerrar(r, d, j_out, lado, entrada, res == "BE")
+        if reent is not None:                           # reentradas de esta tendencia: solo tras una operacion cerrada con R > 0
+            ult_r, ult_j, n_re, abierta = r, j_out, 0, False
+            while ult_r > 0 and n_re < reent["max"] and not (ct and cs["quemada"]):
+                op = abrir_re(i, lado, ult_j + 1, n_re + 1)
+                if op is None:
+                    break
+                n_re += 1
+                res_re, ult_r, ult_j = op
+                libre = ult_j + 1
+                if res_re == "ABIERTA":
+                    abierta = True
+                    break
+            if abierta:
+                break
     cols = ["i", "señal", "lado", "entrada", "sl", "tp", "dist", "res", "amb", "salida", "R", "motivo", "be",
-            "parcial", "R_parcial", "R_resto"]
+            "parcial", "R_parcial", "R_resto", "reentrada"]
     out = pd.DataFrame(filas, columns=cols)
     out.attrs["pb"] = st
     out.attrs["sl_invalido"] = sl_invalido            # señales sin operar porque el SL anclado a la media quedaba al reves
@@ -1121,6 +1321,6 @@ def ejecutar(P: Preparado, cfg: Config, lo: int = 0, hi: Optional[int] = None) -
             descartes[m] = descartes.get(m, 0) + 1
     señales = [(i, lado) for i, lado, m in en_rango if m is None]
     pb = pb_de(cfg)
-    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo, cuenta_de(P, cfg), be_de(cfg), parcial_de(cfg))
+    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo, cuenta_de(P, cfg), be_de(cfg), parcial_de(cfg), reent_de(cfg))
     return Resultado(tr, descartes, len(en_rango), len(señales), ign, dict(tr.attrs.get("pb", {})) if pb else {},
                      dict(tr.attrs.get("cuenta", {})))

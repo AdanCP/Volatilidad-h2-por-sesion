@@ -12,6 +12,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+import engine as eng
 import metrics as met
 import veredicto as vd
 
@@ -146,7 +147,7 @@ def informe(r: dict, cfg, simbolo: str, pdin: dict, meta: dict, veredicto: dict 
         L += ["### Resultado en dinero (con los lotes de la corrida)", "", _clave_valor(din), ""]
         if "max_drawdown" in din and pdin.get("capital"):
             L += [f"Máx. drawdown ≈ {_v(din['max_drawdown'], 2)} US$ = {_v(100 * din['max_drawdown'] / pdin['capital'], 2)} % del capital.", ""]
-        ex = _intentar(met.extremos_diarios, tr, idx, *a)
+        ex = _intentar(lambda t_, i_, *aa: met.extremos_diarios(t_, i_, *aa, claves=eng.claves_dia(i_, cfg)), tr, idx, *a)     # mismo dia que usa la cuenta
         if ex:
             L += ["### Peor y mejor día", "", _clave_valor(ex), ""]
         L += ["### Frecuencia de operaciones", "", _clave_valor(_intentar(met.frecuencia, tr, idx)), ""]

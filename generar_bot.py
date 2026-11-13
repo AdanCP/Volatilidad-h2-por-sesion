@@ -161,6 +161,14 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
                    + (f"; el SL del resto pasa a {_f(cfg.parcial_sl_nivel, 2)} R sobre la entrada (nunca se baja un SL mas favorable, como el del breakeven)." if cfg.parcial_mover_sl
                       else "; el SL del resto no se mueve.")
                    + " Si despues el resto sale por SL, la operacion se evalua por su resultado total para las pausas.")
+    if cfg.reentrada_activa:
+        cab.append(f"// Reentrada: con una tendencia vigente (desde el cruce hasta el cruce contrario, o {int(cfg.reentrada_velas)} velas) y SOLO despues de una operacion de esa "
+                   f"tendencia que cerro con ganancia, se vuelve a entrar en el retroceso a la {cfg.media_tipo.upper()} {'corta' if cfg.reentrada_nivel == 'corta' else 'larga'} "
+                   + ("(la vela toca la media y cierra a favor: entrada a mercado)" if cfg.reentrada_modo == "confirmacion" else "(orden limite en la media, con el valor del cierre de la vela anterior)")
+                   + f". Hasta {int(cfg.reentrada_max)} por tendencia, misma gestion y filtros, una posicion a la vez"
+                   + (f". Confirmacion de ADX: minimo {_f(cfg.re_adx_min, 1)}" if cfg.re_adx_min is not None else ". Sin ADX minimo")
+                   + (", DI a favor" if cfg.re_di_favor else "")
+                   + (f", ADX creciente en {int(cfg.re_adx_creciente_n)} velas" if cfg.re_adx_creciente_n > 0 else "") + ".")
     if not cfg.finde_mantener:
         cab.append("// Fin de semana: NO se mantienen posiciones. El viernes a las 16:59 de Nueva York se cierra todo (posiciones y ordenes pendientes) y a partir de "
                    "ahi no se abren operaciones nuevas"
@@ -253,6 +261,11 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "BE_PAUSA_PERD": _b(cfg.be_activo and cfg.be_pausa_perdida and cfg.pausa_activa),
         "PAR_ON": _b(cfg.parcial_activo), "PAR_MODO": str(("r", "pct_tp").index(cfg.parcial_nivel_modo)), "PAR_VAL": _f(cfg.parcial_nivel_valor, 4),
         "PAR_PCT": _f(cfg.parcial_pct, 2), "PAR_MOVER": _b(cfg.parcial_mover_sl), "PAR_SL": _f(cfg.parcial_sl_nivel, 4),
+        "RE_ON": _b(cfg.reentrada_activa), "RE_NIVEL": str(("larga", "corta").index(cfg.reentrada_nivel)),
+        "RE_MODO": str(("confirmacion", "limite").index(cfg.reentrada_modo)), "RE_MAX": str(int(cfg.reentrada_max)),
+        "RE_VELAS": str(int(cfg.reentrada_velas)), "RE_ADX_ON": _b(cfg.re_adx_min is not None),
+        "RE_ADX_MIN": _f(cfg.re_adx_min if cfg.re_adx_min is not None else 0.0, 4), "RE_DI": _b(cfg.re_di_favor),
+        "RE_ADX_CRE": str(int(cfg.re_adx_creciente_n)), "RE_ADX_PER": str(int(cfg.re_adx_periodo)),
     }
     txt = _PLANTILLA
     for k, v in valores.items():
@@ -414,6 +427,16 @@ const double          InpParVal         = @@PAR_VAL@@;         // ... valor del 
 const double          InpParPct         = @@PAR_PCT@@;         // ... % de la posicion que se cierra (se redondea al paso de volumen del broker)
 const bool            InpParMoveSl      = @@PAR_MOVER@@;       // ... al cobrar el parcial, el SL del resto pasa a la entrada mas el nivel de abajo
 const double          InpParSlLvl       = @@PAR_SL@@;          // ... nivel del SL del resto, en R sobre la entrada
+const bool            InpReOn           = @@RE_ON@@;           // Reentrada: tras una operacion ganadora de la tendencia, se vuelve a entrar en el retroceso a la media
+const int             InpReLevel        = @@RE_NIVEL@@;        // ... media del retroceso: 0 = larga, 1 = corta
+const int             InpReMode         = @@RE_MODO@@;         // ... entrada: 0 = confirmacion (toca la media y cierra a favor), 1 = orden limite en la media
+const int             InpReMax          = @@RE_MAX@@;          // ... reentradas por tendencia (1 o 2)
+const int             InpReBars         = @@RE_VELAS@@;        // ... caducidad, en velas desde el cruce
+const bool            InpReAdxOn        = @@RE_ADX_ON@@;       // ... confirmacion: ADX minimo
+const double          InpReAdxMin       = @@RE_ADX_MIN@@;      // ... valor del ADX minimo
+const bool            InpReDi           = @@RE_DI@@;           // ... confirmacion: el DI del lado de la operacion supera al contrario
+const int             InpReAdxRise      = @@RE_ADX_CRE@@;      // ... confirmacion: ADX mayor que el de hace N velas (0 = sin condicion)
+const int             InpReAdxPer       = @@RE_ADX_PER@@;      // ... periodo del ADX de la reentrada
 
 // ============================ estado ==========================================
 const double SENT = -1.0e300;          // "sin dato" (equivale a NaN en el backtester)
@@ -429,6 +452,12 @@ double   g_ef[], g_es[], g_atr[], g_sma[], g_adx[], g_er[], g_vwap[], g_vmin[], 
 int      g_m = 0;                      // velas CERRADAS disponibles (la ultima es la senal)
 datetime g_lastBar = 0;
 
+int      g_reSide   = 0;               // reentrada: lado de la tendencia vigente (0 = ninguna)
+datetime g_reCrossT = 0;               // ... vela (hora servidor) del cruce que la origino
+int      g_reN      = 0;               // ... reentradas hechas en esa tendencia
+bool     g_reElig   = false;           // ... la ultima operacion de la tendencia cerro con ganancia: se puede reentrar
+bool     g_rePend   = false;           // ... hay una reentrada pedida (orden o entrada a mercado) que todavia no se confirmo como abierta
+double   g_rAdx[], g_rPdi[], g_rNdi[];  // ADX y DI con el periodo de la reentrada
 bool     g_pbActive = false;           // hay una orden de pullback en espera
 int      g_pbSide   = 0;
 int      g_pbBars   = 0;
@@ -553,6 +582,37 @@ void CalcADX(const int p, double &adx[])
       const double ndi = (trS[t] > 0.0) ? 100.0 * menosS[t] / trS[t] : 0.0;
       const double s = pdi + ndi;
       dx[t] = (s > 0.0) ? 100.0 * MathAbs(pdi - ndi) / s : 0.0;
+   }
+   CalcWilder(dx, g_m, p, adx);
+}
+
+void CalcAdxDi(const int p, double &adx[], double &pdiOut[], double &ndiOut[])
+{
+   double tr[], mas[], menos[], trS[], masS[], menosS[], dx[];
+   CalcTR(tr);
+   ArrayResize(mas, g_m);
+   ArrayResize(menos, g_m);
+   mas[0] = 0.0;
+   menos[0] = 0.0;
+   for(int t = 1; t < g_m; t++)
+   {
+      const double arriba = g_h[t] - g_h[t - 1];
+      const double abajo  = g_l[t - 1] - g_l[t];
+      mas[t]   = (arriba > abajo && arriba > 0.0) ? arriba : 0.0;
+      menos[t] = (abajo > arriba && abajo > 0.0) ? abajo : 0.0;
+   }
+   CalcWilder(tr, g_m, p, trS);
+   CalcWilder(mas, g_m, p, masS);
+   CalcWilder(menos, g_m, p, menosS);
+   ArrayResize(dx, g_m);
+   ArrayResize(pdiOut, g_m);
+   ArrayResize(ndiOut, g_m);
+   for(int t = 0; t < g_m; t++)
+   {
+      pdiOut[t] = (trS[t] > 0.0) ? 100.0 * masS[t] / trS[t] : 0.0;
+      ndiOut[t] = (trS[t] > 0.0) ? 100.0 * menosS[t] / trS[t] : 0.0;
+      const double s = pdiOut[t] + ndiOut[t];
+      dx[t] = (s > 0.0) ? 100.0 * MathAbs(pdiOut[t] - ndiOut[t]) / s : 0.0;
    }
    CalcWilder(dx, g_m, p, adx);
 }
@@ -927,6 +987,7 @@ bool LoadData()
    CalcWilder(tr, g_m, InpAtrPeriod, g_atr);
    if(InpSmaOn) CalcSMA(g_c, g_m, InpSmaPeriod, g_sma);
    if(InpAdxOn) CalcADX(InpAdxPeriod, g_adx);
+   if(InpReOn) CalcAdxDi(InpReAdxPer, g_rAdx, g_rPdi, g_rNdi);
    if(InpRangeOn) CalcEfficiency(InpRangeWindow, g_er);
    if(InpVwapOn) CalcVWAP(PeriodSeconds());
    if(InpAtrOn && InpAtrRelN > 0) CalcRollingMean(g_atr, g_m, InpAtrRelN, g_atrm);
@@ -1457,6 +1518,154 @@ void PlacePullback(const int i)
             " (vela ", g_pbBars, " de ", InpPBBars, ").");
 }
 
+// ============================ reentrada =======================================
+// Igual que el backtester (engine.py): la tendencia empieza con un cruce que se opera y dura hasta el cruce contrario (o hasta InpReBars
+// velas desde el cruce). SOLO despues de una operacion de esa tendencia que cerro con ganancia se busca el retroceso a la media
+// (confirmacion: la vela cerrada toca la media y cierra a favor, se entra a mercado; limite: se deja una orden en la media, con el
+// valor que tenia al cierre de la ultima vela). La entrada es la de siempre (mismo SL, TP, breakeven, parcial, filtros y reglas de cuenta).
+void RePersist()
+{
+   GlobalVariableSet(g_gv + "RESIDE", (double)g_reSide);
+   GlobalVariableSet(g_gv + "RECROSS", (double)g_reCrossT);
+   GlobalVariableSet(g_gv + "REN", (double)g_reN);
+   GlobalVariableSet(g_gv + "REELIG", g_reElig ? 1.0 : 0.0);
+}
+
+void ReEnd(const string motivo)
+{
+   if(g_reSide == 0) return;
+   Print("Reentrada: termino la tendencia (", motivo, ").");
+   g_reSide = 0;
+   g_reN = 0;
+   g_reElig = false;
+   if(g_rePend) { DeletePending(); g_rePend = false; }
+   RePersist();
+}
+
+void ReStart(const int i, const int side)
+{
+   if(!InpReOn) return;
+   g_reSide = side;
+   g_reCrossT = g_time[i];
+   g_reN = 0;
+   g_reElig = false;
+   g_rePend = false;
+   RePersist();
+}
+
+// velas cerradas desde el cruce de la tendencia hasta la vela i (9999 si ya quedo fuera del historial / caduco)
+int ReBarsSince(const int i)
+{
+   for(int k = i; k >= 0 && i - k <= InpReBars + 1; k--)
+      if(g_time[k] == g_reCrossT) return i - k;
+   return 9999;
+}
+
+// al cerrar una vela: el cruce contrario o la caducidad terminan la tendencia (aunque haya una operacion abierta)
+void ReTrack(const int i)
+{
+   if(!InpReOn || g_reSide == 0) return;
+   if(CrossAt(i) == -g_reSide) { ReEnd("cruce contrario"); return; }
+   if(ReBarsSince(i) > InpReBars) ReEnd("caduco: " + IntegerToString(InpReBars) + " velas desde el cruce");
+}
+
+// mismos filtros del cruce menos la sesion y el viernes (que se miran al ejecutar)
+bool ReBase(const int i, const int side)
+{
+   if(InpSmaOn && !OkSma(i, side)) return false;
+   if(InpVwapOn && !OkVwap(i, side)) return false;
+   if(InpAdxOn && !OkAdx(i)) return false;
+   if(InpRangeOn && !OkRange(i)) return false;
+   if(InpAtrOn && !OkAtr(i)) return false;
+   if(InpTm1On && !OkTm(g_tm1[i], side)) return false;
+   if(InpTm2On && !OkTm(g_tm2[i], side)) return false;
+   if(InpVpOn && !OkVp(i, side)) return false;
+   return true;
+}
+
+// confirmacion de ADX con lo conocido al cierre de la vela i
+bool ReAdxOk(const int i, const int side)
+{
+   if(i < 2 * InpReAdxPer + InpReAdxRise + 1) return false;
+   if(InpReAdxOn && !(g_rAdx[i] >= InpReAdxMin)) return false;
+   if(InpReDi && !((side == 1) ? g_rPdi[i] > g_rNdi[i] : g_rNdi[i] > g_rPdi[i])) return false;
+   if(InpReAdxRise > 0 && !(g_rAdx[i] > g_rAdx[i - InpReAdxRise])) return false;
+   return true;
+}
+
+// Intenta una reentrada con la vela cerrada i. true si se hizo algo que ocupa esta vela (entro o dejo la orden).
+bool ReAttempt(const int i)
+{
+   if(!InpReOn || g_reSide == 0 || !g_reElig || g_reN >= InpReMax) return false;
+   const int side = g_reSide;
+   const bool lim = (InpReMode == 1);
+   if(g_rePend) { DeletePending(); g_rePend = false; }          // la orden de la vela anterior ya no sirve: se rehace con los datos nuevos
+   const int bars = ReBarsSince(i);
+   if(lim ? (bars + 1 > InpReBars) : (bars > InpReBars)) return false;
+   const double e = (InpReLevel == 1) ? g_ef[i] : g_es[i];
+   if(!V(e)) return false;
+   if(!lim)
+   {
+      const bool toca = (side == 1) ? (g_l[i] <= e && g_c[i] > e) : (g_h[i] >= e && g_c[i] < e);
+      if(!toca) return false;
+      if(!PassFilters(i, side, true)) return false;             // sesion y viernes de la vela de la decision, mas todos los filtros
+   }
+   else
+   {
+      const datetime tNext = iTime(_Symbol, _Period, 0);         // la orden vive en la vela que esta por abrir
+      if(FindeBloqueaEntrada(tNext)) return false;
+      if(InpSesOn && !InSession(tNext)) return false;
+      if(!ReBase(i, side)) return false;
+   }
+   if(!ReAdxOk(i, side)) return false;
+   if(PauseBlocks(i, side) || PauseWinBlocks(i, side)) return false;
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double price = (side == 1) ? ask : bid;
+   bool aMercado = !lim;
+   if(lim)
+   {
+      price = (side == 1) ? e + (ask - bid) : e;                // el nivel esta medido en BID; el largo paga el ask
+      aMercado = (side == 1) ? (price >= ask) : (price <= bid);
+      if(aMercado) price = (side == 1) ? ask : bid;
+   }
+   if(WinRetraceBlocks(i, side, price)) return false;
+   double d = SlDistance(i, side, price);
+   const double lvl = SlLevel(i, side);
+   if(d <= 0.0) { if(InpSLMode == BOT_SL_EMA) Print("Reentrada descartada: la media quedo del lado equivocado del precio (SL al reves)."); return false; }
+   if(!AccountRulesOK(d)) return false;
+   if(aMercado)
+   {
+      Print("Reentrada ", g_reN + 1, " de ", InpReMax, ": entrada a mercado (", (side == 1 ? "compra" : "venta"), ").");
+      g_rePend = true;
+      if(!MarketEntry(side, d, lvl)) g_rePend = false;
+      return true;
+   }
+   MqlTradeRequest rq;
+   MqlTradeResult  rs;
+   ZeroMemory(rq);
+   ZeroMemory(rs);
+   rq.action = TRADE_ACTION_PENDING;
+   rq.symbol = _Symbol;
+   rq.volume = InpLots;
+   rq.type   = (side == 1) ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
+   rq.price  = Px(price);
+   rq.sl     = (lvl > 0.0) ? Px(lvl) : Px(price - side * d);
+   rq.tp     = (InpExitSignal == 1) ? 0.0 : Px(price + side * d * InpRR);
+   rq.magic  = InpMagic;
+   rq.comment = "@@COMENTARIO@@ pullback reentrada";
+   rq.type_filling = ORDER_FILLING_RETURN;
+   rq.type_time = ORDER_TIME_GTC;
+   if(!OrderSend(rq, rs) || (rs.retcode != TRADE_RETCODE_DONE && rs.retcode != TRADE_RETCODE_PLACED))
+   {
+      Print("Orden de reentrada rechazada (", rs.retcode, ")");
+      return false;
+   }
+   g_rePend = true;
+   Print("Reentrada ", g_reN + 1, " de ", InpReMax, ": orden limite en ", DoubleToString(Px(price), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)), ".");
+   return true;
+}
+
 // ============================ proteccion de la cuenta =========================
 bool GuardsOK()
 {
@@ -1768,6 +1977,7 @@ void OnNewBar()
 {
    if(!LoadData()) return;
    const int i = g_m - 1;                      // ultima vela cerrada = vela de la senal
+   ReTrack(i);                                 // reentrada: el cruce contrario o la caducidad terminan la tendencia
 
    if(HasPosition())                           // una operacion a la vez: SL y TP ya estan puestos
    {
@@ -1809,6 +2019,8 @@ void OnNewBar()
       }
    }
 
+   if(ReAttempt(i)) return;                     // reentrada: tendencia vigente, la ultima operacion cerro con ganancia
+
    if(cr == 0 || !DirectionAllows(cr)) return;
    if(!PassFilters(i, cr, !conPullback))        // con pullback la sesion se mira al ejecutar
    {
@@ -1843,6 +2055,7 @@ void OnNewBar()
       if(!AccountRulesOK(dE)) return;
       Print("Senal valida: entrada a mercado.");
       MarketEntry(cr, dE, SlLevel(i, cr));
+      ReStart(i, cr);                          // empieza la tendencia de las reentradas
       return;
    }
    Print("Senal valida: se arma el pullback del ", DoubleToString(InpPBPct, 0), " % (caduca en ", InpPBBars, " velas).");
@@ -1850,6 +2063,7 @@ void OnNewBar()
    g_pbSide = cr;
    g_pbBars = 0;
    g_pbExt = (cr == 1) ? g_h[i] : g_l[i];
+   ReStart(i, cr);                              // empieza la tendencia de las reentradas
    PlacePullback(i);
 }
 
@@ -1905,6 +2119,13 @@ int OnInit()
    g_lastLoss[1] = GlobalVariableCheck(g_gv + "LASTLOSS_S") ? (datetime)GlobalVariableGet(g_gv + "LASTLOSS_S") : 0;
    g_lastWin[0]  = GlobalVariableCheck(g_gv + "LASTWIN_B")  ? (datetime)GlobalVariableGet(g_gv + "LASTWIN_B")  : 0;
    g_lastWin[1]  = GlobalVariableCheck(g_gv + "LASTWIN_S")  ? (datetime)GlobalVariableGet(g_gv + "LASTWIN_S")  : 0;
+   if(InpReOn && GlobalVariableCheck(g_gv + "RESIDE"))   // tendencia de las reentradas en curso antes de reiniciar el bot
+   {
+      g_reSide   = (int)GlobalVariableGet(g_gv + "RESIDE");
+      g_reCrossT = GlobalVariableCheck(g_gv + "RECROSS") ? (datetime)GlobalVariableGet(g_gv + "RECROSS") : 0;
+      g_reN      = GlobalVariableCheck(g_gv + "REN") ? (int)GlobalVariableGet(g_gv + "REN") : 0;
+      g_reElig   = (GlobalVariableCheck(g_gv + "REELIG") && GlobalVariableGet(g_gv + "REELIG") > 0.5);
+   }
    if(GlobalVariableCheck(g_gv + "BEID"))               // breakeven de una operacion abierta antes de reiniciar el bot
    {
       g_beId   = (ulong)GlobalVariableGet(g_gv + "BEID");
@@ -2079,6 +2300,13 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    if(entrada == DEAL_ENTRY_IN)
    {
       const int kIn = (tipo == DEAL_TYPE_BUY) ? 0 : 1;
+      if(InpReOn && g_rePend)                          // se abrio la reentrada pedida: cuenta para el maximo y la proxima solo si esta tambien gana
+      {
+         g_rePend = false;
+         g_reN++;
+         g_reElig = false;
+         RePersist();
+      }
       g_entryPx[kIn] = precio;                        // para medir el recorrido de la ganadora cuando cierre
       GlobalVariableSet(g_gv + "ENTRYPX" + ((kIn == 0) ? "_B" : "_S"), precio);
       double sl = 0.0, tp = 0.0;
@@ -2117,6 +2345,11 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       // con parcial cobrado, la operacion se evalua por el resultado TOTAL (parte cerrada + resto), como el backtester
       const bool conParcial = InpParOn && posId == g_parId && g_parDone && g_parProfit != 0.0;
       if(conParcial) res += g_parProfit;
+      if(InpReOn && g_reSide != 0 && !g_rePend)       // reentrada: se puede volver a entrar solo si la operacion cerro con ganancia
+      {
+         g_reElig = (res > 0.0);
+         RePersist();
+      }
       // cierre por el SL movido a breakeven (o por el cierre inmediato cuando el precio volvio antes de moverlo): no es ganada ni perdida
       const bool esBe = InpBeOn && posId == g_beId && !conParcial && ((g_beDone && motivo == DEAL_REASON_SL) || (g_beCerrar && motivo == DEAL_REASON_EXPERT));
       if(esBe) que = "BREAKEVEN";

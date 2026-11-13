@@ -15,6 +15,8 @@
 
 5. ~~**Cierre parcial.**~~ **HECHO (primera versión).** Menú 3 (entre TP y Breakeven), motor, resultados («Cierre parcial», win rate por resultado) y bot MQL5 (por tick, variables globales, push). Queda probarlo en la app y compilar el bot en MetaEditor. No se hizo MFE / MAE (se descartó a pedido).
 
+6. ~~**Consistencia en los retiros + sugerencia de lotaje y RR.**~~ **HECHO (primera versión).** Campo «Consistencia» en «Lotaje y dinero» (junto al objetivo de retiro), umbral dinámico en el motor, columnas en «Ver cada retiro», sección «Lotaje y RR para la consistencia». Queda probarlo en la app con tus datos reales. Pendiente de diseño: no hay tope de ganancia diaria en el bot ni consistencia en la versión teórica «Objetivo y retiros» (la que se ve sin simular la cuenta).
+
 ## Decisiones abiertas
 - **Piso trailing después de un retiro.** Hoy se mantiene en el máximo anterior y, con retiros, la cuenta puede quedar sin margen para operar (ahora hay un aviso). Decidir si se recalcula el piso o se deja como está.
 
@@ -36,3 +38,15 @@
 - Streamlit (fin de semana): casilla «Mantener posición el fin de semana» al final del menú 8, la hora opcional del viernes (14:00 ART por defecto) y la sección «Fin de semana» de los resultados.
 - MetaEditor: que compile el bot con `ManageFinde`, `FindeBloqueaEntrada` y los inputs `InpFinde…` (el viernes 16:59 de Nueva York cierra posiciones y cancela pendientes).
 - MetaEditor: que compile el bot con los inputs de recorte por sesión (`Inp...Corte`, `...CIni`, `...CFin`).
+
+## Auditoria (chequeo exhaustivo) - cambios que alteran resultados
+- Pullback con SL en ATR o %: la distancia del SL usa la vela anterior al llenado (la que conocia la orden), no la vela del llenado (miraba el futuro).
+- Pullback con reglas de cuenta: el limite diario se evalua en el dia del llenado, no en el de la señal.
+- Mejor/peor dia (resumen y exportacion IA) usa el dia de Europa Central, igual que los limites de la cuenta.
+- Veredicto con cierre parcial: PARC_SL cuenta como operacion cerrada.
+- Limites conocidos sin corregir: semilla del ADX vs MT5, %equilibrio ignora BE/parcial, DST aproximado por dia, operacion abierta en medianoche no se reevalua contra el nuevo limite diario, ultima vela incompleta de MT5, duplicados en CSV, LIM ignora ganancia parcial cobrada.
+
+## Reentrada (nueva)
+- Hecha: motor, pantalla (menú 3), resultados, guía, bot MQL5 y tests (test_reentrada.py, test_reentrada_bot.py).
+- A probar por el usuario: con datos reales, comparar con y sin reentrada (también fuera de muestra); compilar el bot en MetaEditor y probarlo en el probador de estrategias (la lógica de ReAttempt no se pudo simular acá, solo el ADX/DI y la confirmación).
+- Ideas aparte (no hechas): RR propio para la reentrada, apilar posiciones, aviso en pantalla cuando se activan dos filtros que se solapan.

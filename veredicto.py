@@ -33,7 +33,13 @@ def parametros_binomiales(tr: pd.DataFrame, rr: float = 2.0) -> Optional[dict]:
     res = _resueltas(tr)
     if not len(res):
         return None
-    tp, sl = res[res["res"] == "TP"]["R"], res[res["res"] == "SL"]["R"]
+    if "parcial" in tr and int(tr["parcial"].sum()) > 0:
+        # con cierre parcial, una operacion puede terminar en SL y aun asi ganar (PARC_SL), y una ganadora vale menos que el TP entero:
+        # se clasifica por el resultado total en R (ganada si R > 0), con todas las operaciones cerradas
+        cer = tr[tr["res"].isin(["TP", "SL", "BE", "PARC_SL"])]
+        tp, sl = cer.loc[cer["R"] > 0, "R"], cer.loc[cer["R"] <= 0, "R"]
+    else:
+        tp, sl = res[res["res"] == "TP"]["R"], res[res["res"] == "SL"]["R"]
     gana = float(tp.mean()) if len(tp) else float(rr)
     pierde = float(sl.mean()) if len(sl) else -1.0
     if gana <= 0 or pierde >= 0:                      # costos tan altos que una ganadora no gana: sin ventaja posible
@@ -235,7 +241,7 @@ def evaluar_veredicto(r: dict, cfg, meses_datos: float, usd_por_R: Optional[floa
     # tramos de operaciones
     corte = r["corte"]
     res = _resueltas(tr)
-    tr_oos = res[res["i"] >= corte] if len(res) else res
+    tr_oos = tr[tr["i"] >= corte] if len(tr) else tr          # parametros_binomiales elige solo las operaciones que corresponden (con parcial, todas las cerradas)
     par_t, par_o = parametros_binomiales(tr, cfg.rr), (parametros_binomiales(tr_oos, cfg.rr) if len(tr_oos) else None)
     pv_t = prob_ventaja(par_t)
     pv_o = prob_ventaja(par_o) if (par_o and n_oos >= 15) else None

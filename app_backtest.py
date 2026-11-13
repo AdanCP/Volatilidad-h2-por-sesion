@@ -549,7 +549,47 @@ with st.sidebar:
                            "0 = el SL queda justo en el precio de entrada.")
         if be_on and be_act_modo == "r" and be_niv_modo == "r" and be_niv_valor >= be_act_valor:
             st.error("El nivel del SL tiene que ser menor que la activación.")
-        _acc_css(_acc_lista, _acc_activos, "sg", ("pb", "parcial", "be"))
+        _sep_filtro()
+        st.markdown("**Reentrada (opcional)**",
+                    help="En una tendencia fuerte el siguiente cruce tarda y se pierde gran parte del movimiento. Con la reentrada, "
+                         "después de una operación de esa tendencia que cerró en ganancia (R mayor que 0) se vuelve a entrar cuando "
+                         "el precio retrocede a la media. La tendencia dura hasta el cruce contrario. Se repite la misma entrada: "
+                         "mismo SL, TP, breakeven, cierre parcial y filtros. Una sola posición a la vez. La reentrada exige además "
+                         "una confirmación de ADX (más abajo).")
+        reent_on = _W(st).checkbox("Activar la reentrada", key="reentrada_on")
+        re_nivel, re_modo, re_max, re_velas = "larga", "confirmacion", 1, 60
+        re_adx_on, re_adx_min, re_di, re_cre_on, re_cre_n = True, 25.0, True, False, 3
+        if reent_on:
+            _acc_activos.add("re")
+            _acc_cab("re", _acc_lista, "sg")
+            with st.container(key="acc_re"):
+                if modo_senal == "cruce":
+                    re_nivel = {f"{MEDIA} larga": "larga", f"{MEDIA} corta": "corta"}[_W(st).radio(
+                        "Retroceso hasta la", [f"{MEDIA} larga", f"{MEDIA} corta"], key="re_nivel", horizontal=True)]
+                else:
+                    st.caption("Retroceso hasta la media del modo «precio» (hay una sola).")
+                _RE_MODOS = {"Confirmación: toca la media y cierra a favor": "confirmacion", "Orden límite en la media": "limite"}
+                re_modo = _RE_MODOS[_W(st).radio("Cómo entrar", list(_RE_MODOS), key="re_modo",
+                                                 help="Confirmación: la vela toca la media y cierra del lado de la tendencia; se entra al cierre. "
+                                                      "Orden límite: se entra en la media, con el valor que tenía al cierre de la vela anterior "
+                                                      "(más barato, pero entra también en retrocesos que siguen de largo).")]
+                re_max = int(_W(st).radio("Reentradas por tendencia", [1, 2], key="re_max", horizontal=True,
+                                          help="Con 2, la segunda se hace solo si la primera también cerró en ganancia."))
+                re_velas = _W(st).number_input("Caducidad (velas desde el cruce)", 1, 5000, 60, 10, key="re_velas",
+                                               help="Pasadas estas velas desde el cruce ya no se reentra, aunque la tendencia siga.")
+                st.markdown("**Confirmación de ADX**")
+                re_adx_on = _W(st).checkbox("ADX mínimo", value=True, key="re_adx_on")
+                re_adx_min = _W(st).number_input("ADX mínimo para reentrar", 1.0, 100.0, 25.0, 1.0, key="re_adx_min", disabled=not re_adx_on)
+                re_di = _W(st).checkbox("DI a favor de la operación", value=True, key="re_di",
+                                        help="Para una compra, +DI por encima de −DI; para una venta, al revés. El ADX solo mide la fuerza, "
+                                             "no la dirección.")
+                re_cre_on = _W(st).checkbox("ADX creciente", key="re_cre_on",
+                                            help="El ADX tiene que ser mayor que el de hace N velas. En un retroceso el ADX suele aflojar: "
+                                                 "exigirlo puede dejar afuera buenas reentradas.")
+                re_cre_n = _W(st).number_input("Velas para comparar el ADX", 1, 50, 3, 1, key="re_cre_n", disabled=not re_cre_on)
+                st.caption("Los filtros del cruce (sesión, SMA, ADX general, etc.) se vuelven a evaluar en cada reentrada. "
+                           "Solo se reentra después de una operación cerrada con R mayor que 0.")
+        _acc_css(_acc_lista, _acc_activos, "sg", ("pb", "parcial", "be", "re"))
         _sep_filtro()
         # El ATR solo interviene si el SL va en múltiplos de ATR o si algún filtro lo usa (los filtros se definen más abajo:
         # sus valores ya están en session_state al comienzo de cada ejecución).
@@ -843,6 +883,13 @@ with st.sidebar:
                                 help="Si el riesgo del SL de una operación supera este porcentaje, la operación se saltea. "
                                      "Los lotes siguen siendo fijos.")
         riesgo_pct = _W(st).number_input("Máximo por operación (%)", 0.05, 100.0, 1.0, 0.25, disabled=not riesgo_on)
+        consistencia = _W(st).number_input("Consistencia (% máximo del mejor día)", 0.0, 100.0, 0.0, 5.0, key="consistencia_pct", disabled=not retiro_on,
+                                           help="Regla de consistencia de muchas firmas: la ganancia del mejor día no puede pasar de este porcentaje de "
+                                                "lo que retirás. Con retiro de US$ 1.000 y 20 %, el mejor día no puede pasar de US$ 200. Si no se cumple al "
+                                                "llegar al objetivo, el retiro espera hasta que la ganancia sea al menos el mejor día ÷ consistencia. "
+                                                "0 = sin regla. Necesita «Retirar al llegar al objetivo» (menú 7). Solo en el backtest. Más abajo, en los resultados, hay un botón que sugiere lotaje y RR.")
+        if not retiro_on:
+            st.caption("La consistencia actúa sobre los retiros: tildá «Retirar al llegar al objetivo» en el menú 7 para usarla.")
         offset_dia = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="offset_dia")
         st.caption("Sirve para cortar el día a medianoche de Europa Central (hora CE(S)T), como FTMO. Medilo con el "
                    "mercado abierto; es el mismo dato del filtro de sesión.")
@@ -987,12 +1034,15 @@ def construir_config(simbolo: str = None) -> eng.Config:
         pausa_activa=bool(pausa_on), pausa_min=float(pausa_min), pausa_sentido=pausa_sent,
         pausa_gan_activa=bool(pausa_gan_on), pausa_gan_min=float(pausa_gan_min), pausa_gan_sentido=pausa_gan_sent,
         pausa_gan_retroceso_activo=bool(retro_on), pausa_gan_retroceso_pct=float(pausa_gan_retro), pausa_gan_vence=pausa_gan_vence, pausa_gan_vence_h=float(pausa_gan_vence_h),
-        retiro_activo=bool(retiro_on), retiro_pct=float(retiro_pct),
+        retiro_activo=bool(retiro_on), retiro_pct=float(retiro_pct), consistencia_pct=float(consistencia) if retiro_on else 0.0,
         be_activo=bool(be_on), be_act_modo=be_act_modo, be_act_valor=float(be_act_valor),
         be_nivel_modo=be_niv_modo, be_nivel_valor=float(be_niv_valor), be_pausa_perdida=bool(be_pausa_perd and pausa_on),
         parcial_activo=bool(parcial_on), parcial_nivel_modo=parcial_modo, parcial_nivel_valor=float(parcial_valor),
         parcial_pct=float(parcial_pct), parcial_mover_sl=bool(parcial_mover), parcial_sl_nivel=float(parcial_sl),
-        lotes=float(lotes), lote_paso=float(p["vol"][2]), lote_min=float(p["vol"][0]))
+        lotes=float(lotes), lote_paso=float(p["vol"][2]), lote_min=float(p["vol"][0]),
+        reentrada_activa=bool(reent_on), reentrada_nivel=re_nivel, reentrada_modo=re_modo, reentrada_max=int(re_max),
+        reentrada_velas=int(re_velas), re_adx_min=float(re_adx_min) if re_adx_on else None, re_di_favor=bool(re_di),
+        re_adx_creciente_n=int(re_cre_n) if re_cre_on else 0)
 
 
 # ------------------------------------------------------------------ cuerpo
@@ -1508,7 +1558,7 @@ if len(res):
             html(vis.kpi("Pérdida media (SL)", vis.n(dinero["perdida_media_SL"], 2, True), "por operación perdedora", vis.ROSA, 140))
         with m4:
             html(vis.kpi("Máx. drawdown", vis.n(dinero["max_drawdown"], 2), f"riesgo medio por operación: {vis.n(dinero['riesgo_medio_por_operacion'], 2)}", vis.ROSA, 140))
-        _ex = met.extremos_diarios(tr, r["P"].indice, tick_size, tick_value, lotes_u, comision_u)
+        _ex = met.extremos_diarios(tr, r["P"].indice, tick_size, tick_value, lotes_u, comision_u, claves=eng.claves_dia(r["P"].indice, cfg_usada))
         if _ex:
             d1, d2 = st.columns(2)
             with d1:
@@ -1630,6 +1680,33 @@ if getattr(cfg_usada, "parcial_activo", False) and len(tr) and "parcial" in tr:
                "En operaciones.csv están las columnas parcial, R_parcial y R_resto."
                + (f" El win rate por resultado cuenta como ganadas {vis.n(_be_pos, 0)} operaciones de breakeven con nivel mayor que 0." if _be_pos else ""))
 
+# ------------------------------------------------------------- reentrada
+if getattr(cfg_usada, "reentrada_activa", False) and len(tr) and "reentrada" in tr:
+    _cer_r = tr[tr["res"].isin(["TP", "SL", "BE", "PARC_SL"])]
+    _re = _cer_r[_cer_r["reentrada"] > 0]
+    _en = _cer_r[_cer_r["reentrada"] == 0]
+    st.write("")
+    html(vis.titulo_seccion("Reentrada", "Cómo rindieron las reentradas frente a las entradas por cruce (tramo «Todo»)"))
+    if not len(_re):
+        st.info("No hubo reentradas en el período: ninguna operación ganadora tuvo un retroceso que cumpliera las condiciones.")
+    else:
+        def _fila(x):
+            return (len(x), 100 * float((x["R"] > 0).mean()), float(x["R"].mean()), float(x["R"].sum()))
+        _nr, _wr_r, _ex_r, _sum_r = _fila(_re)
+        _ne, _wr_e, _ex_e, _sum_e = _fila(_en) if len(_en) else (0, float("nan"), float("nan"), 0.0)
+        q1, q2, q3, q4 = st.columns(4)
+        with q1:
+            html(vis.kpi("Reentradas", vis.n(_nr, 0), f"{vis.n(100 * _nr / max(len(_cer_r), 1), 1)} % de las operaciones · {int((_re['reentrada'] == 2).sum())} fueron la 2.ª de su tendencia", vis.AZUL, 165))
+        with q2:
+            html(vis.kpi("Acierto de las reentradas", f"{vis.n(_wr_r, 1)}%", f"entradas por cruce: {vis.n(_wr_e, 1)}%", vis.INDIGO, 165))
+        with q3:
+            html(vis.kpi("R medio por reentrada", vis.n(_ex_r, 2, True), f"entradas por cruce: {vis.n(_ex_e, 2, True)} R", vis.ORQ, 165))
+        with q4:
+            html(vis.kpi("R total de las reentradas", vis.n(_sum_r, 2, True), f"entradas por cruce: {vis.n(_sum_e, 2, True)} R", vis.AZUL, 165))
+        st.caption("Compará con la misma configuración sin reentrada (también en el tramo fuera de muestra): que sume R total no alcanza, "
+                   "importa que las reentradas rindan bien por operación y que no empeoren la caída máxima. "
+                   "En operaciones.csv la columna reentrada vale 0 (cruce), 1 o 2.")
+
 # ------------------------------------------------------------- fin de semana
 if not getattr(cfg_usada, "finde_mantener", True) and len(tr):
     _fin = tr[tr["motivo"] == "finde"]
@@ -1668,6 +1745,7 @@ if _retiro_sim:
     except Exception:
         _riesgo_ref = None
     _rt = ret.resumen(_cu_r, r["P"].indice, _cap_r, _riesgo_ref)
+    _cons_on = bool(cfg_usada.consistencia_pct > 0)
     _meta_r = f"+{vis.n(cfg_usada.retiro_pct, 1)}% (US$ {vis.n(_cap_r * cfg_usada.retiro_pct / 100, 0)})"
     t1, t2, t3, t4 = st.columns(4)
     with t1:
@@ -1694,6 +1772,12 @@ if _retiro_sim:
         html(vis.kpi("Ciclo en curso", f"{vis.n(100 * _rt['ciclo_avance'] / _cap_r, 1, True)}%",
                      f"US$ {vis.n(_rt['ciclo_avance'], 0, True)} sobre el capital inicial al cierre del período"
                      + (" (la cuenta se quemó)" if _rt["quemada"] else ""), vis.tono(_rt["ciclo_avance"]), 165))
+    if _cons_on and _rt["n"]:
+        _nes = _rt["n_estirados"]
+        st.info(f"**Consistencia {vis.n(cfg_usada.consistencia_pct, 0)} %:** el mejor día de cada ciclo no puede pasar de "
+                f"US$ {vis.n(_cap_r * cfg_usada.retiro_pct / 100 * cfg_usada.consistencia_pct / 100, 0)} si se retira el mínimo. "
+                + (f"{_nes} de {_rt['n']} retiros tuvieron que esperar a juntar más que el mínimo (retiraron US$ {vis.n(sum(m for m, e in zip(_rt['montos'], _rt['estirados']) if e), 0)} en total)."
+                   if _nes else "Todos los retiros se hicieron justo en el mínimo."))
     if _rt["sin_margen_ts"] is not None:
         st.warning(f"**La cuenta quedó sin margen para operar desde el {_rt['sin_margen_ts']:%d/%m/%Y}.** No se quemó, pero desde ahí se "
                    f"descartaron {_rt['sin_margen_n']} señales porque el SL arriesgaba más que lo que le queda hasta el límite, así que no "
@@ -1705,10 +1789,11 @@ if _retiro_sim:
                 _filas_r.append([str(_k), _prev.strftime("%d/%m/%Y %H:%M"), _f.strftime("%d/%m/%Y %H:%M"), met.fmt_duracion(_t),
                                  f"{vis.n(_m, 0, True)} ({vis.n(100 * _m / _cap_r, 1, True)}%)",
                                  "–" if _rt["margen_tras"][_k - 1] is None else vis.n(_rt["margen_tras"][_k - 1], 0),
-                                 "–" if _rt["margen_tras"][_k - 1] is None else vis.n(_rt["sugeridos"][_k - 1], 0)])
+                                 "–" if _rt["margen_tras"][_k - 1] is None else vis.n(_rt["sugeridos"][_k - 1], 0)]
+                                + ([vis.n(_rt["mejores_dias"][_k - 1], 0), "Esperó" if _rt["estirados"][_k - 1] else "En el mínimo"] if _cons_on else []))
                 _prev = _f
             html(vis.tabla_html(["#", "Desde", "Hasta", "Tiempo", "Retirado (US$)", "Margen al límite tras retirar (US$)",
-                                 "Retiro sugerido (US$)"], _filas_r))
+                                 "Retiro sugerido (US$)"] + (["Mejor día (US$)", "Consistencia"] if _cons_on else []), _filas_r))
             if _rt["colchon"]:
                 st.caption(f"Retiro sugerido: lo máximo que podés sacar dejando al menos US$ {vis.n(_rt['colchon'], 0)} de margen sobre el límite total "
                            f"({ret.COLCHON_OPS} veces la pérdida de un SL grande, el percentil 90 de este historial). Con límite total estático "
@@ -1717,6 +1802,46 @@ if _retiro_sim:
     st.caption("Es la misma simulación de la cuenta: al llegar al objetivo se retira TODA la ganancia del ciclo y el balance vuelve al "
                "capital inicial. El piso de pérdida total trailing se mantiene en el máximo anterior y el retiro no cuenta como "
                "pérdida del día. No incluye plazos ni reparto de ganancias de la firma. Tiempo calendario (incluye fines de semana).")
+
+    # ---- lotaje y RR sugeridos para retirar el minimo respetando la consistencia
+    if _cons_on:
+        st.write("")
+        html(vis.titulo_seccion("Lotaje y RR para la consistencia", "Con qué lotaje (y RR) se puede retirar justo el mínimo sin que el mejor día lo estire"))
+        _firma_s = (repr(cfg_usada), len(r["P"].indice), str(r["P"].indice[0]), str(r["P"].indice[-1]))
+        _con_rr = st.checkbox("Probar también otros RR", key="sug_con_rr",
+                              help="Cambiar el RR cambia la estrategia (el win rate y el R total), no solo los dólares. Tarda más porque simula cada combinación.")
+        if st.button("Sugerir lotaje y RR", key="btn_sugerir_cons"):
+            with st.spinner("Probando lotajes…" if not _con_rr else "Probando lotajes y RR…"):
+                estado.sugerencia = {"firma": _firma_s + (bool(_con_rr),), "datos": ret.sugerir(r["P"], cfg_usada, tr, bool(_con_rr))}
+        _sg = estado.get("sugerencia")
+        if _sg and _sg["firma"] == _firma_s + (bool(_con_rr),):
+            _d = _sg["datos"]
+            if _d["riesgo_max"] is not None:
+                st.markdown(f"**Cota segura:** tu mejor día del historial fue de **{vis.n(_d['mejor_dia_r'], 1)} R**. Para que ese día no pase de "
+                            f"US$ {vis.n(_d['tope_dia'], 0)}, el riesgo por operación tendría que ser de **US$ {vis.n(_d['riesgo_max'], 0)}** o menos "
+                            f"(ahora es de unos US$ {vis.n(_d['riesgo_base'], 0)})"
+                            + (f", es decir **{vis.n(_d['lotes_max'], 2)} lotes** en lugar de {vis.n(float(cfg_usada.lotes), 2)}." if _d["lotes_max"] else "."))
+            if _d["filas"]:
+                _mj = _d["mejor"]
+                _filas_s = [[("★ " if i == _mj else "") + vis.n(f["lotes"], 2), vis.n(f["rr"], 1), vis.n(f["riesgo"], 0), vis.n(f["tp_usd"], 0),
+                             str(f["n"]), f"{f['sin_estirar']} de {f['n']}", vis.n(f["total"], 0), "Sí" if f["quemada"] else "No",
+                             met.fmt_duracion(f["medio_min"]) if f["medio_min"] else "–"] for i, f in enumerate(_d["filas"])]
+                html(vis.tabla_html(["Lotes", "RR", "Riesgo por op. (US$)", "Ganadora (US$)", "Retiros", "En el mínimo", "Total retirado (US$)",
+                                     "¿Se quemó?", "Tiempo medio entre retiros"], _filas_s))
+                _f = _d["filas"][_mj]
+                if _d.get("cumple"):
+                    st.success(f"★ Sugerido: poné **{vis.n(_f['lotes'], 2)} lotes y SL de US$ {vis.n(_f['riesgo'], 0)}**" + (f" con RR {vis.n(_f['rr'], 1)}" if _con_rr else "")
+                               + f" (el mismo SL en precio que ahora, en la misma proporción: × {vis.n(_f['lotes'] / float(cfg_usada.lotes), 2)}). "
+                               f"Es la combinación que retira el mínimo en menos tiempo: {_f['sin_estirar']} de {_f['n']} retiros en el mínimo, uno cada "
+                               f"{met.fmt_duracion(_f['medio_min'])} en promedio, y US$ {vis.n(_f['total'], 0)} retirados en total.")
+                else:
+                    st.warning("Ninguna combinación probada hace casi todos los retiros en el mínimo sin quemar la cuenta. La más cercana es la marcada con ★. "
+                               "Probá un objetivo de retiro mayor o una consistencia más alta.")
+            st.caption("El lotaje solo escala los dólares: el SL en precio y el resultado en R no cambian. Los retiros «en el mínimo» son los que no tuvieron que "
+                       "esperar por el mejor día. Se sugiere la que retira el mínimo en menos tiempo entre las combinaciones que no queman la cuenta y hacen al menos el 90 % de los "
+                       "retiros en el mínimo. Es el resultado de ESTE historial: tomalo como orientación. Cambiar el RR modifica la estrategia, no solo los dólares.")
+        elif _sg:
+            st.info("Cambiaron las reglas o los datos desde el último cálculo: volvé a sugerir.")
 
     # ---- monto ideal: repite la simulacion con distintos objetivos
     st.write("")
