@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exporta el historial de MT5 (FTMO) a CSV, uno por simbolo y temporalidad.
+"""Exporta el historial de MT5 a CSV, uno por simbolo y temporalidad.
 
 Sirve para usar el backtester ONLINE (Render no puede conectarse a MT5): corres esto en tu PC con
 Windows y el terminal abierto, y despues subis los CSV a la app. Solo LEE datos.

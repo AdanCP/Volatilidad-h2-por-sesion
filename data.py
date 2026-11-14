@@ -57,6 +57,22 @@ def _importar_mt5():
         raise ErrorDatos("Falta la libreria: pip install MetaTrader5 (solo Windows).")
 
 
+MODOS_CALCULO_CFD = (0, 2, 3, 4, 5)      # forex, CFD, CFD indices, CFD con apalancamiento, forex sin apalancamiento (de ENUM_SYMBOL_CALC_MODE)
+
+
+def corregir_tick_value(spec: dict) -> dict:
+    """Algunos servidores informan mal el valor del tick (p. ej. 0,01 en vez de 1 en el oro). Para forex y CFD con beneficio en la
+    moneda de la cuenta, el dinero por cada 1.00 de precio y por lote es el tamano del contrato (el que usa el servidor para calcular el
+    resultado real): si el tick_value informado no cuadra (mas de 1 %), se reemplaza por contrato * tick_size y se deja anotado."""
+    ts, tv, cs = float(spec.get("tick_size") or 0), float(spec.get("tick_value") or 0), float(spec.get("contrato") or 0)
+    if (cs > 0 and ts > 0 and spec.get("modo_calculo") in MODOS_CALCULO_CFD and spec.get("moneda_beneficio")
+            and spec.get("moneda_beneficio") == spec.get("moneda_cuenta")):
+        esperado = cs * ts
+        if not tv > 0 or abs(tv - esperado) > 0.01 * esperado:
+            spec = dict(spec, tick_value_informado=tv, tick_value=esperado, tick_value_corregido=True)
+    return spec
+
+
 def cargar_mt5(simbolo: str, tf: str, desde, hasta=None, progreso=None):
     """Devuelve (df, spec_simbolo, tramos_sin_datos). Requiere MT5 abierto y con sesion iniciada."""
     mt5 = _importar_mt5()
@@ -68,10 +84,14 @@ def cargar_mt5(simbolo: str, tf: str, desde, hasta=None, progreso=None):
         if info is None:
             raise ErrorDatos(f"El simbolo {simbolo} no existe en este servidor.")
         mt5.symbol_select(simbolo, True)
+        cuenta = mt5.account_info()
         spec = {"simbolo": simbolo, "point": info.point, "digits": info.digits,
                 "contrato": info.trade_contract_size, "tick_size": info.trade_tick_size,
                 "tick_value": info.trade_tick_value, "vol_min": info.volume_min,
-                "vol_max": info.volume_max, "vol_step": info.volume_step}
+                "vol_max": info.volume_max, "vol_step": info.volume_step,
+                "moneda_beneficio": info.currency_profit, "modo_calculo": info.trade_calc_mode,
+                "moneda_cuenta": cuenta.currency if cuenta is not None else ""}
+        spec = corregir_tick_value(spec)
         tf_c = getattr(mt5, TF_MT5[tf])
         hasta_dt = pd.Timestamp(hasta).to_pydatetime() if hasta else datetime.now()
         rates, sin_datos = descargar_por_tramos(
@@ -130,6 +150,103 @@ def resamplear(df: pd.DataFrame, regla: str) -> pd.DataFrame:
     return df.resample(regla).agg(agg).dropna(subset=["Open"])
 
 
+def corregir_hora(df: pd.DataFrame, tramos) -> tuple:
+    """Corrige un historial cuya hora esta corrida. `tramos` es una lista de (antes_de, horas): a cada vela con hora
+    ANTERIOR a `antes_de` se le restan `horas` horas (varios tramos se acumulan). Las velas con la misma hora que quedan en
+    el empalme se reducen a una: la del tramo ya correcto (la posterior). Devuelve (df nuevo, info). No toca el original."""
+    tramos = [(pd.Timestamp(f), float(h)) for f, h in (tramos or []) if float(h) != 0.0]
+    if not tramos or not len(df):
+        return df, {"tramos": [], "velas_corridas": 0, "duplicadas_quitadas": 0}
+    idx = pd.DatetimeIndex(df.index)
+    horas = np.zeros(len(idx))
+    for antes_de, h in tramos:
+        horas += np.where(idx < antes_de, h, 0.0)
+    out = df.copy()
+    out.index = idx - pd.to_timedelta(horas, unit="h")
+    out = out.sort_index(kind="stable")
+    dup = out.index.duplicated(keep="last")
+    return out[~dup], {"tramos": [(str(f.date()), h) for f, h in tramos], "velas_corridas": int((horas != 0).sum()),
+                       "duplicadas_quitadas": int(dup.sum())}
+
+
+def detectar_salto_horario(df: pd.DataFrame, min_semanas: int = 8) -> list:
+    """Busca cambios de huso horario en el historial. En un servidor que sigue el horario de EE.UU. la apertura semanal del
+    mercado cae siempre a la misma hora; si esa hora cambia de golpe y se mantiene por `min_semanas` semanas o mas, el historial
+    cambio de huso. Los cambios cortos (las semanas en que Europa y EE.UU. cambian de horario en fechas distintas) se ignoran.
+    Devuelve una lista de {"fecha", "de", "a", "horas"} (vacia si no hay salto); no corrige nada."""
+    if len(df) < 2:
+        return []
+    idx = pd.DatetimeIndex(df.index)
+    inicios = np.flatnonzero(np.diff(idx.values).astype("timedelta64[s]").astype(float) > 30 * 3600) + 1
+    if len(inicios) < 2 * min_semanas:
+        return []
+    horas = idx[inicios].hour.to_numpy()
+    fechas = idx[inicios]
+    corridas, ini = [], 0                                   # tramos de semanas seguidas con la misma hora de apertura
+    for k in range(1, len(horas) + 1):
+        if k == len(horas) or horas[k] != horas[ini]:
+            corridas.append((int(horas[ini]), ini, k - ini))
+            ini = k
+    largas = [c for c in corridas if c[2] >= min_semanas]
+    cambios = []
+    for (h0, _, _), (h1, i1, _) in zip(largas, largas[1:]):
+        if h1 != h0:
+            cambios.append({"fecha": fechas[i1], "de": h0, "a": h1, "horas": h1 - h0})
+    return cambios
+
+
+def velas_sospechosas(df: pd.DataFrame, k_vol: float = 5.0, k_rango: float = 5.0) -> dict:
+    """Velas corruptas por exportaciones mal armadas: una vela que resume una hora o un dia entero (volumen y rango muy por encima de lo
+    normal para su hora del dia) y que se repite siempre en el mismo minuto. Un pico aislado por una noticia no se marca: tiene que haber
+    un patron de minuto (al menos 20 velas extremas en el anio y el 60 % o mas en el mismo minuto). Como el patron ya filtra las noticias,
+    el volumen exigido es de 5 veces la mediana de su hora (una vela que resume una hora trae ~12 velas de volumen, pero con ruido puede
+    quedar en 10 veces o menos) y el rango de 5 veces. Devuelve el aviso y la mascara."""
+    n = len(df)
+    vacio = {"mascara": np.zeros(n, dtype=bool), "extremas": 0, "sospechosas": 0, "anios": [], "spread0_minutos": []}
+    if n < 500 or "Volume" not in df:
+        return vacio
+    idx = pd.DatetimeIndex(df.index)
+    rango = (df["High"] - df["Low"]).to_numpy(float)
+    vol = df["Volume"].to_numpy(float)
+    hora = idx.hour.to_numpy()
+    med_r = pd.Series(rango).groupby(hora).transform("median").to_numpy()
+    med_v = pd.Series(vol).groupby(hora).transform("median").to_numpy()
+    extrema = (med_v > 0) & (med_r > 0) & (vol > k_vol * med_v) & (rango > k_rango * med_r)
+    minuto, anio = idx.minute.to_numpy(), idx.year.to_numpy()
+    mascara, anios = np.zeros(n, dtype=bool), []
+    for y in np.unique(anio[extrema]):
+        sel = extrema & (anio == y)
+        if sel.sum() < 20:
+            continue
+        m_tip = int(pd.Series(minuto[sel]).mode().iloc[0])
+        if (minuto[sel] == m_tip).mean() < 0.6:
+            continue
+        marca = sel & (minuto == m_tip)
+        mascara |= marca
+        anios.append({"anio": int(y), "velas": int(marca.sum()), "minuto": m_tip,
+                      "pct_del_anio": round(100 * float(marca.sum()) / float((anio == y).sum()), 2)})
+    spread0 = []
+    if "Spread" in df and 0.02 < float((df["Spread"] == 0).mean()) < 0.9:
+        z = (df["Spread"].to_numpy(float) == 0)
+        for y in np.unique(anio):
+            sy = anio == y
+            if sy.sum() < 2000:
+                continue
+            por_min = pd.Series(z[sy]).groupby(minuto[sy]).mean()
+            if len(por_min) < 3:
+                continue
+            for m, v in por_min.items():
+                if v >= 0.5 and v - float(por_min.drop(m).median()) >= 0.3:
+                    spread0.append({"anio": int(y), "minuto": int(m), "pct_spread_cero": round(100 * float(v), 0)})
+    return {"mascara": mascara, "extremas": int(extrema.sum()), "sospechosas": int(mascara.sum()), "anios": anios,
+            "spread0_minutos": spread0}
+
+
+def excluir_velas(df: pd.DataFrame, mascara) -> pd.DataFrame:
+    """Saca del historial las velas marcadas (el resto queda igual)."""
+    return df[~np.asarray(mascara, dtype=bool)]
+
+
 def calidad(df: pd.DataFrame) -> dict:
     """Resumen de calidad: huecos grandes, duplicadas, NaN y % de spreads en cero."""
     dif = np.diff(df.index.values).astype("timedelta64[s]").astype(float) if len(df) > 1 else np.array([0.0])
@@ -138,7 +255,8 @@ def calidad(df: pd.DataFrame) -> dict:
             "mayor_hueco_dias": round(float(dif.max()) / 86400, 1),
             "duplicadas": int(df.index.duplicated().sum()),
             "con_nan": int(df[["Open", "High", "Low", "Close"]].isna().any(axis=1).sum()),
-            "spread_cero_pct": round(100 * float((df["Spread"] == 0).mean()), 1)}
+            "spread_cero_pct": round(100 * float((df["Spread"] == 0).mean()), 1),
+            "sospechosas": (lambda v: {"velas": v["sospechosas"], "anios": v["anios"], "spread0_minutos": v["spread0_minutos"]})(velas_sospechosas(df))}
 
 
 # ------------------------------------------------- simbolos candidatos por familia

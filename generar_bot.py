@@ -90,7 +90,7 @@ def _senal_cab(cfg) -> str:
 
 def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float] = None,
                 veredicto: Optional[dict] = None, fecha: Optional[datetime] = None,
-                capital: float = 0.0, limite_pct: float = 10.0, nombre: str = "") -> str:
+                capital: float = 0.0, limite_pct: float = 10.0, nombre: str = "", usd_por_unidad_forzado: float = 0.0) -> str:
     """cfg: engine.Config tal como lo usa el backtester (SL en dolares llega como modo 'precio');
     sl_usd: monto en dolares del SL si el usuario lo cargo asi (el EA lo convierte a precio con el tick del broker)."""
     cfg.validar()
@@ -261,6 +261,8 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "BE_PAUSA_PERD": _b(cfg.be_activo and cfg.be_pausa_perdida and cfg.pausa_activa),
         "PAR_ON": _b(cfg.parcial_activo), "PAR_MODO": str(("r", "pct_tp").index(cfg.parcial_nivel_modo)), "PAR_VAL": _f(cfg.parcial_nivel_valor, 4),
         "PAR_PCT": _f(cfg.parcial_pct, 2), "PAR_MOVER": _b(cfg.parcial_mover_sl), "PAR_SL": _f(cfg.parcial_sl_nivel, 4),
+        "USD_UNIT": _f(max(float(usd_por_unidad_forzado), 0.0), 4),
+        "CORTE_DIA": str(("europa", "servidor").index(cfg.corte_dia)),
         "RE_ON": _b(cfg.reentrada_activa), "RE_NIVEL": str(("larga", "corta").index(cfg.reentrada_nivel)),
         "RE_MODO": str(("confirmacion", "limite").index(cfg.reentrada_modo)), "RE_MAX": str(int(cfg.reentrada_max)),
         "RE_VELAS": str(int(cfg.reentrada_velas)), "RE_ADX_ON": _b(cfg.re_adx_min is not None),
@@ -390,6 +392,8 @@ const double          InpNYCIni         = @@NY_C_INI@@;   // Nueva York: inicio 
 const double          InpNYCFin         = @@NY_C_FIN@@;   // Nueva York: fin del recorte (hora local)
 const double          InpServerOffset   = @@SRV_OFFSET@@; // Desfase del servidor en INVIERNO respecto de GMT (GMT+2 -> 2)
 const bool            InpServerDST      = @@SRV_DST@@;    // El servidor cambia de hora con EE.UU. (GMT+2/+3)
+const double          InpUsdUnitForce   = @@USD_UNIT@@;   // US$ por cada 1.00 de precio con 1 lote, forzado a mano (0 = automatico: contrato o valor del tick)
+const int             InpDayCut         = @@CORTE_DIA@@;  // Corte del dia de la cuenta: 0 = medianoche de Europa Central (CE(S)T), 1 = medianoche del servidor
 
 // ---------------------------- proteccion de la cuenta -----------------------
 const bool            InpGuards         = true;           // Activar proteccion de cuenta
@@ -1146,7 +1150,7 @@ bool DirectionAllows(const int side)
 }
 
 // ============================ reglas de la cuenta (pisos, riesgo, pausa) ======
-// El "dia" de la cuenta se corta a medianoche de Europa Central (CE(S)T), como el de FTMO, y no a la del servidor.
+// El "dia" de la cuenta se corta a medianoche de Europa Central (CE(S)T) o a la del servidor, segun InpDayCut (el mismo corte que el backtest).
 datetime ToCET(const datetime utc)
 {
    MqlDateTime u;
@@ -1156,6 +1160,10 @@ datetime ToCET(const datetime utc)
 }
 
 int DayKeyCET(const datetime utc) { return DayKeyOf(ToCET(utc)); }
+
+// dia de la cuenta de una hora del SERVIDOR (velas) y del momento actual
+int DayKeyAt(const datetime t) { return (InpDayCut == 1) ? DayKeyOf(t) : DayKeyCET(ServidorAUtc(t)); }
+int DayKeyNow() { return (InpDayCut == 1) ? DayKeyOf(TimeTradeServer()) : DayKeyCET(TimeGMT()); }
 
 // pisos de equity (en dinero) de los limites efectivos; SENT = sin limite
 double FloorDay()
@@ -1172,13 +1180,30 @@ double FloorTotal()
    return base * (1.0 - InpMaxTotalLossPct / 100.0);
 }
 
+// Dinero por cada 1.00 de movimiento de precio con 1 lote. Para forex y CFD cuyo beneficio esta en la moneda de la cuenta (el oro en USD) es
+// el tamano del contrato (XAUUSD: 100 onzas = 100 US$ por 1.00): es lo que usa el servidor para calcular el resultado real. Algunos servidores
+// informan mal el valor del tick (p. ej. 0,01 en vez de 1), asi que NO se usa para esos simbolos. En el resto (otra moneda, futuros, acciones)
+// se usa valor del tick / tamano del tick. 0.0 si no hay dato.
+double UsdPerUnit()
+{
+   if(InpUsdUnitForce > 0.0) return InpUsdUnitForce;
+   const double ts = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   const double tv = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   const double viaTick = (ts > 0.0 && tv > 0.0) ? tv / ts : 0.0;
+   const double cs = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+   const long modo = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_CALC_MODE);
+   const bool cfd = (modo == SYMBOL_CALC_MODE_FOREX || modo == SYMBOL_CALC_MODE_FOREX_NO_LEVERAGE || modo == SYMBOL_CALC_MODE_CFD
+                     || modo == SYMBOL_CALC_MODE_CFDINDEX || modo == SYMBOL_CALC_MODE_CFDLEVERAGE);
+   if(cs > 0.0 && cfd && SymbolInfoString(_Symbol, SYMBOL_CURRENCY_PROFIT) == AccountInfoString(ACCOUNT_CURRENCY)) return cs;
+   return viaTick;
+}
+
 // riesgo en dinero de una operacion con SL a la distancia d (precio): perdida del SL + comision
 double RiskUsd(const double d)
 {
-   const double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   const double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(tickSize <= 0.0 || tickValue <= 0.0) return 0.0;
-   return d * (tickValue / tickSize) * InpLots + InpCommissionUsd;
+   const double u = UsdPerUnit();
+   if(u <= 0.0) return 0.0;
+   return d * u * InpLots + InpCommissionUsd;
 }
 
 // controles previos a abrir: riesgo maximo por operacion y proteccion (que un SL no rompa un limite)
@@ -1226,7 +1251,7 @@ bool WinRetraceBlocks(const int i, const int lado, const double px)
    const int k = (lado == 1) ? 0 : 1;
    const datetime r = g_lastWin[k];
    if(r <= 0 || g_winDist[k] <= 0.0) return false;
-   if(InpPauseWinVence == 1 && DayKeyCET(ServidorAUtc(g_time[i])) != DayKeyCET(ServidorAUtc(r))) return false;
+   if(InpPauseWinVence == 1 && DayKeyAt(g_time[i]) != DayKeyAt(r)) return false;
    if(InpPauseWinVence == 2 && (double)(g_time[i] - r) / 3600.0 >= InpPauseWinVenceH) return false;
    const double nivel = g_winRef[k] - lado * InpPauseWinRetro / 100.0 * g_winDist[k];   // compra: debajo del cierre; venta: encima
    return (lado == 1) ? (px > nivel) : (px < nivel);
@@ -1282,10 +1307,9 @@ double SlDistance(const int i, const int side, const double price)
    }
    if(InpSLMode == BOT_SL_ATR) return g_atr[i] * InpSLValue;
    if(InpSLMode == BOT_SL_PCT) return g_c[i] * InpSLValue / 100.0;
-   const double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   const double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(tickSize <= 0.0 || tickValue <= 0.0 || InpLots <= 0.0) return 0.0;
-   return InpSLUsd / ((tickValue / tickSize) * InpLots);       // US$ -> distancia de precio con este lote
+   const double u = UsdPerUnit();
+   if(u <= 0.0 || InpLots <= 0.0) return 0.0;
+   return InpSLUsd / (u * InpLots);                            // US$ -> distancia de precio con este lote
 }
 
 ENUM_ORDER_TYPE_FILLING FillingMarket()
@@ -1682,7 +1706,7 @@ bool GuardsOK()
       GlobalVariableSet(g_gv + "STOP", 1.0);
       return false;
    }
-   const int key = DayKeyCET(TimeGMT());
+   const int key = DayKeyNow();
    if(key != g_dayKey)
    {
       g_dayKey = key;
@@ -1888,9 +1912,7 @@ double BeDist(const int modo, const double valor, const double d, const double v
 // distancia de activacion y SL nuevo (entrada + nivel) para una posicion con SL original a distancia d; false si no son validos
 bool BeLevels(const int side, const double open, const double d, double &act, double &sl)
 {
-   const double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   const double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   const double vu = (tickSize > 0.0 && tickValue > 0.0) ? tickValue / tickSize * InpLots : 0.0;
+   const double vu = UsdPerUnit() * InpLots;
    act = BeDist(InpBeActMode, InpBeActVal, d, vu);
    const double niv = BeDist(InpBeLvlMode, InpBeLvlVal, d, vu);
    if(!(act > 0.0 && niv >= 0.0 && niv < act)) return false;
@@ -2090,10 +2112,18 @@ int OnInit()
       Avisar("RECHAZADO: el lote " + DoubleToString(InpLots, 2) + " no es operable en este simbolo (minimo/maximo/paso).");
       return INIT_FAILED;
    }
-   if(InpSLMode == BOT_SL_USD && (SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE) <= 0.0 || SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE) <= 0.0))
+   if(UsdPerUnit() <= 0.0 && (InpSLMode == BOT_SL_USD || InpBeActMode == 1 || InpBeLvlMode == 1 || InpRiskOn))
    {
-      Avisar("RECHAZADO: no se puede convertir el SL en dolares (sin tick size/value).");
+      Avisar("RECHAZADO: no se puede convertir dolares en distancia de precio (sin tamano de contrato ni tick size/value).");
       return INIT_FAILED;
+   }
+   {
+      const double _ts = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE), _tv = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      const double _vt = (_ts > 0.0 && _tv > 0.0) ? _tv / _ts : 0.0, _u = UsdPerUnit();
+      if(_u > 0.0 && MathAbs(_vt - _u) > 0.01 * _u)
+         Avisar("AVISO: el servidor informa un valor del tick que no cuadra con el contrato (" + DoubleToString(_vt, 4) + " US$ por 1.00 contra " +
+                DoubleToString(_u, 4) + " del tamano del contrato). El bot usa el tamano del contrato: " + DoubleToString(_u * InpLots, 2) +
+                " US$ por cada 1.00 de precio con " + DoubleToString(InpLots, 2) + " lotes.");
    }
    if(InpSesOn)
    {
@@ -2112,7 +2142,7 @@ int OnInit()
    if(InpInitialBalance > 0.0) g_initBal = InpInitialBalance;
    else if(GlobalVariableCheck(g_gv + "INIT")) g_initBal = GlobalVariableGet(g_gv + "INIT");
    else { g_initBal = AccountInfoDouble(ACCOUNT_BALANCE); GlobalVariableSet(g_gv + "INIT", g_initBal); }
-   g_dayKey = DayKeyCET(TimeGMT());
+   g_dayKey = DayKeyNow();
    g_peak = GlobalVariableCheck(g_gv + "PEAK") ? GlobalVariableGet(g_gv + "PEAK") : MathMax(g_initBal, AccountInfoDouble(ACCOUNT_BALANCE));
    GlobalVariableSet(g_gv + "PEAK", g_peak);
    g_lastLoss[0] = GlobalVariableCheck(g_gv + "LASTLOSS_B") ? (datetime)GlobalVariableGet(g_gv + "LASTLOSS_B") : 0;
@@ -2251,7 +2281,7 @@ void OnTimer()
    {
       string problema = "";
       if(g_stopTotal) problema = "DETENIDO por freno de perdida total";
-      else if(g_blockDay == DayKeyCET(TimeGMT())) problema = "freno diario activo hoy";
+      else if(g_blockDay == DayKeyNow()) problema = "freno diario activo hoy";
       else if(!AlgoOK()) problema = "SIN trading algoritmico habilitado";
       else if(TerminalInfoInteger(TERMINAL_CONNECTED) == 0) problema = "SIN conexion con el servidor";
       string msg;
@@ -2381,8 +2411,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
             g_winDist[ladoPos] = MathAbs(precio - g_entryPx[ladoPos]);
             if(conParcial)                              // con parcial, el recorrido es el del resultado total (en precio), como el backtester
             {
-               const double tsz = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE), tvl = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-               const double vu = (tsz > 0.0 && tvl > 0.0) ? tvl / tsz * InpLots : 0.0;
+               const double vu = UsdPerUnit() * InpLots;
                if(vu > 0.0)
                {
                   g_winDist[ladoPos] = MathAbs(res) / vu;

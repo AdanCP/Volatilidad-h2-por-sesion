@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sincroniza el historial de MT5 (FTMO) a la carpeta datos_mt5 y, opcionalmente, lo sube a GitHub.
+"""Sincroniza el historial de MT5 a la carpeta datos_mt5 y, opcionalmente, lo sube a GitHub.
 
 La app online (Render) lee esa carpeta, asi puede elegir simbolos como si leyera MT5.
 Solo LEE datos de MT5. Corre en tu PC con Windows, con el terminal abierto y con sesion iniciada.

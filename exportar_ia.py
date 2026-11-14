@@ -100,7 +100,11 @@ def informe(r: dict, cfg, simbolo: str, pdin: dict, meta: dict, veredicto: dict 
     # ---- datos y corrida
     L += ["## 2. Datos y corrida", ""]
     datos = {"Símbolo": simbolo, "Fuente de datos": meta.get("fuente"), "Temporalidad": meta.get("tf"),
-             "Remuestreo": meta.get("regla"), "Primera vela": idx[0], "Última vela": idx[-1], "Velas": len(idx),
+             "Remuestreo": meta.get("regla"), "Hora del historial corregida": meta.get("hora_corregida") or "no",
+             "Salto de huso detectado (sin corregir)": meta.get("salto_huso_detectado") or "no",
+             "Velas sospechosas excluidas": meta.get("velas_excluidas") or "no",
+             "Valor por 1,00 de precio forzado (US$ con 1 lote)": meta.get("valor_por_unidad_forzado") or "automático",
+             "Primera vela": idx[0], "Última vela": idx[-1], "Velas": len(idx),
              "Meses de datos": round((idx[-1] - idx[0]).days / 30.44, 1), "Out-of-sample reservado (%)": meta.get("oos"),
              "Repeticiones del azar": meta.get("azar_n"), "Prueba n.º de esta sesión": r.get("prueba"),
              "Lotes": pdin.get("lotes"), "Comisión por lote (US$)": pdin.get("comision"), "Capital (US$)": pdin.get("capital"),

@@ -32,7 +32,11 @@ inline bool OrderSend(MqlTradeRequest&,MqlTradeResult&){return true;}
 inline int PositionsTotal(){return 0;} inline int OrdersTotal(){return 0;}
 inline std::string PositionGetSymbol(int){return "";} inline long PositionGetInteger(int){return 0;} inline double PositionGetDouble(int){return 0;}
 inline unsigned long OrderGetTicket(int){return 0;} inline std::string OrderGetString(int){return "";} inline long OrderGetInteger(int){return 0;}
-inline double SymbolInfoDouble(const std::string&,int){return 1;} inline long SymbolInfoInteger(const std::string&,int){return 0;}
+enum{SYMBOL_TRADE_CONTRACT_SIZE=700,SYMBOL_TRADE_CALC_MODE,SYMBOL_CURRENCY_PROFIT,SYMBOL_CALC_MODE_FOREX,SYMBOL_CALC_MODE_FOREX_NO_LEVERAGE,SYMBOL_CALC_MODE_FUTURES,SYMBOL_CALC_MODE_CFD,SYMBOL_CALC_MODE_CFDINDEX,SYMBOL_CALC_MODE_CFDLEVERAGE};
+static double stub_ts=1,stub_tv=1,stub_cs=0; static long stub_modo=0; static std::string stub_mon="";     // datos del simbolo (los tests los cambian)
+inline double SymbolInfoDouble(const std::string&,int p){if(p==SYMBOL_TRADE_TICK_SIZE)return stub_ts;if(p==SYMBOL_TRADE_TICK_VALUE)return stub_tv;if(p==SYMBOL_TRADE_CONTRACT_SIZE)return stub_cs;return 1;}
+inline long SymbolInfoInteger(const std::string&,int p){if(p==SYMBOL_TRADE_CALC_MODE)return stub_modo;return 0;}
+inline std::string SymbolInfoString(const std::string&,int){return stub_mon;}
 inline double NormalizeDouble(double v,int){return v;}
 inline double AccountInfoDouble(int){return 100000;}
 inline bool GlobalVariableCheck(const std::string&){return false;} inline double GlobalVariableGet(const std::string&){return 0;} inline void GlobalVariableSet(const std::string&,double){}

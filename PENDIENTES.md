@@ -23,7 +23,7 @@
 ## Postergados por pedido
 - Filtro de noticias (FX Street u otra fuente).
 - Renombrar la carpeta del proyecto.
-- Neutralizar los textos "FTMO".
+- (hecho) Neutralizar los textos "FTMO".
 - Problema del scroll de la barra lateral.
 - Análisis de volatilidad por hora.
 - Selector de perfiles de broker (Instant Funding, Goat, etc.). No se quiere por ahora.
@@ -50,3 +50,12 @@
 - Hecha: motor, pantalla (menú 3), resultados, guía, bot MQL5 y tests (test_reentrada.py, test_reentrada_bot.py).
 - A probar por el usuario: con datos reales, comparar con y sin reentrada (también fuera de muestra); compilar el bot en MetaEditor y probarlo en el probador de estrategias (la lógica de ReAttempt no se pudo simular acá, solo el ADX/DI y la confirmación).
 - Ideas aparte (no hechas): RR propio para la reentrada, apilar posiciones, aviso en pantalla cuando se activan dos filtros que se solapan.
+
+## Valor del tick mal informado (Funding Pips)
+- Hecho: la app (data.corregir_tick_value) y el bot (UsdPerUnit) usan el tamaño del contrato para forex/CFD con beneficio en la moneda de la cuenta; avisan si el tick value informado no cuadra. test_tick_value.py.
+- A confirmar con el usuario: si la comision de 5 USD por lote es por lado o ida y vuelta (la app carga la comision por lote y por operacion completa).
+
+## Datos: hora, calidad y valor por unidad (agregado)
+- Hecho: corrección de hora (hasta 2 tramos, apagada), aviso de salto de huso, velas sospechosas (aviso + excluir opcional), campo para forzar el valor por 1,00 de precio (app y bot). test_datos_calidad.py, test_tick_value.py.
+- A probar por el usuario con datos reales de Funding Pips: que el aviso detecte el salto del 2025-03-09 y que tras corregir ya no avise; comparar la corrida con y sin corrección (esperado: 192 operaciones / +96,3R con corrección en la configuración que me pasó).
+- Límite conocido: el umbral de volumen para las velas sospechosas es 5x la mediana de su hora (no 10x) porque el patrón de minuto ya filtra las noticias; ajustable en data.velas_sospechosas.

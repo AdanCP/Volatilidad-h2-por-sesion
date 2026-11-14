@@ -6,7 +6,7 @@ TIPO_MEDIA = "sma" antes de ejecutar este archivo). La de SMA suma el modo "prec
 Usa solo los módulos del backtester (data, engine, metrics, ui_helpers). No toca app.py ni los bots.
 
 Fuentes de datos:
-  - MT5 directo (FTMO): solo corriendo la app EN TU PC con Windows, con el terminal abierto
+  - MT5 directo: solo corriendo la app EN TU PC con Windows, con el terminal abierto
     (pip install MetaTrader5 y streamlit run app_backtest.py). Elegís símbolos por familia.
   - CSV exportado de MT5: sirve online (Render). Generalos con exportar_mt5.py; podés subir
     varios archivos, uno por símbolo.
@@ -62,11 +62,13 @@ class _Estado:
 
 estado = _Estado()
 
+MT5_ERR = ""
 try:
     import MetaTrader5  # noqa: F401
     MT5_OK = True
-except ImportError:
+except Exception as _e:        # no solo ImportError: un numpy incompatible o una DLL que falta también lo impiden
     MT5_OK = False
+    MT5_ERR = f"{type(_e).__name__}: {_e}"
 
 SPREADS = {"Spread de la vela": "vela", "Ceros → mediana": "mediana",
            "Valor fijo": "fijo", "Sin spread": "ninguno"}
@@ -81,7 +83,8 @@ SL_ATR, SL_PCT, SL_USD = "Múltiplo de ATR", "% del precio", "Dólares fijos"
 SL_EMA_CRUCE, SL_EMA_PRECIO = "Distancia al cruce de medias", "Distancia a la media"
 SL_EMA = SL_EMA_CRUCE
 TP_RR, TP_USD = "Ratio R:R", "Dólares fijos"
-ETQ_MT5 = "MT5 directo (FTMO)" if MT5_OK else "MT5 directo (solo en tu PC con Windows)"
+ETQ_MT5 = "MT5 directo"
+_ETQ_MT5_VIEJAS = ("MT5 directo (FTMO)", "MT5 directo (solo en tu PC con Windows)")   # etiquetas de versiones anteriores
 ETQ_CSV = "CSV exportado de MT5"
 ETQ_SINT = "Datos sintéticos (demo)"
 
@@ -204,8 +207,7 @@ def _cargar_cfg(clave_up):
             for _n_ in SESIONES:
                 vals.setdefault(f"sesion_{cio.slug(_n_)}", _n_ in _elegidas)
     vals = sesmod.rebasar_horas(vals, _PARES_HORA, date.today())      # las horas Argentina se reajustan al horario de verano de hoy
-    if vals.get("fuente_de_datos") == ETQ_MT5 and not MT5_OK:      # MT5 directo no existe en esta máquina
-        vals = {k_: v_ for k_, v_ in vals.items() if k_ != "fuente_de_datos"}
+    vals.pop("fuente_de_datos", None)       # la fuente de datos no es parte de la estrategia: al cargar siempre queda MT5 (lo guardado puede ser CSV)
     estado.cfg_cargada = vals
     estado.cfg_n = estado.cfg_n + 1
     estado.cfg_msg = ("ok", f"Configuración cargada ({len(vals)} campos). Los que no estaban en el archivo quedaron como de fábrica.")
@@ -271,7 +273,7 @@ def _acc_css(lista, activos, grupo, claves):
 with st.sidebar:
     # La fuente es la base de todo: va fuera de los menús, como un título, debajo del modo oscuro.
     st.markdown('<div class="fte">Fuente de datos</div>', unsafe_allow_html=True)
-    fuente = _W(st).radio("Fuente de datos", [ETQ_MT5, ETQ_CSV, ETQ_SINT], index=0 if MT5_OK else 1,
+    fuente = _W(st).radio("Fuente de datos", [ETQ_MT5, ETQ_CSV, ETQ_SINT], index=0,
                       label_visibility="collapsed")
     st.markdown('<div class="fte-fin"></div>', unsafe_allow_html=True)
     exp_instr = st.expander("1. Instrumento a operar", expanded=False)
@@ -282,8 +284,9 @@ with st.sidebar:
         try:
             if fuente == ETQ_MT5 and not MT5_OK:
                 st.warning("MT5 directo solo funciona corriendo la app **en tu PC con Windows**, con el "
-                           "terminal de FTMO abierto y con sesión iniciada:\n\n"
+                           "terminal de MT5 abierto y con sesión iniciada:\n\n"
                            "1. `pip install MetaTrader5`\n2. `streamlit run app_backtest.py`\n\n"
+                           + (f"Error al importar el módulo: `{MT5_ERR}`\n\n" if MT5_ERR else "") +
                            "En Render (online) no existe terminal de MT5. Online usá **CSV exportado**: "
                            "generalo en tu PC con `exportar_mt5.py`.")
             elif fuente == ETQ_MT5:
@@ -351,7 +354,71 @@ with st.sidebar:
             st.error(str(e))
             datos, specs = {}, {}
 
+        hora_corr_txt, excluidas_txt, salto_txt = None, None, None
         if datos:
+            # --- hora del historial: algunos servidores guardan la historia con la hora corrida (p. ej. 1 h antes de un cambio de huso)
+            _saltos = {s_: data.detectar_salto_horario(d_) for s_, d_ in datos.items()}
+            _hay_saltos = {s_: v_ for s_, v_ in _saltos.items() if v_}
+            corr_on = _W(st).checkbox("Corregir la hora del historial", key="hora_corr_on",
+                                      help="Resta horas a las velas anteriores a una fecha. Sirve cuando el servidor devuelve la historia con la "
+                                           "hora corrida (por ejemplo 1 hora adelantada antes de un cambio de huso): las sesiones, el corte "
+                                           "del día y las reglas de cuenta se aplican a la hora equivocada. Se aplica al cargar, antes de los "
+                                           "indicadores; el archivo original no se toca. Apagada por defecto.")
+            if corr_on:
+                c1_ = c2_ = st                      # una debajo de otra: en la barra lateral, dos columnas cortan la fecha
+                _h1 = _W(c1_).number_input("Horas a restar", -12.0, 12.0, 1.0, 1.0, key="hora_corr_h1")
+                _f1 = _W(c2_).date_input("A las velas anteriores a", date(2025, 3, 9), key="hora_corr_f1")
+                _tramos = [(str(_f1), _h1)]
+                if _W(st).checkbox("Agregar un segundo tramo (se acumula)", key="hora_corr_2"):
+                    c3_ = c4_ = st
+                    _h2 = _W(c3_).number_input("Horas a restar (2.º tramo)", -12.0, 12.0, 1.0, 1.0, key="hora_corr_h2")
+                    _f2 = _W(c4_).date_input("A las velas anteriores a (2.º tramo)", date(2022, 1, 1), key="hora_corr_f2")
+                    _tramos.append((str(_f2), _h2))
+                _info_corr = {}
+                for s_ in list(datos):
+                    datos[s_], _info_corr[s_] = data.corregir_hora(datos[s_], _tramos)
+                _q = next(iter(_info_corr.values()))
+                hora_corr_txt = ("restar " + " y ".join(f"{h_:g} h antes del {f_}" for f_, h_ in _q["tramos"])
+                                 + f" ({_q['velas_corridas']} velas corridas, {_q['duplicadas_quitadas']} duplicadas quitadas)")
+                _quedan = {s_: data.detectar_salto_horario(d_) for s_, d_ in datos.items()}
+                if any(_quedan.values()):
+                    _s0 = next(v_ for v_ in _quedan.values() if v_)[0]
+                    st.warning(f"Con la corrección todavía se detecta un salto de huso cerca del {_s0['fecha']:%d/%m/%Y} "
+                               f"(la apertura semanal pasa de las {_s0['de']:02d}:00 a las {_s0['a']:02d}:00). Revisá las fechas y las horas.")
+                else:
+                    st.caption("Con la corrección ya no se detecta ningún salto de huso en el historial.")
+            elif _hay_saltos:
+                _s0 = next(iter(_hay_saltos.values()))
+                if len(_s0) >= 3:
+                    st.info("La apertura semanal cambia de hora varias veces, como en un servidor que no sigue el horario de EE.UU. "
+                            "No se propone ninguna corrección.")
+                else:
+                    _c0 = _s0[0]
+                    salto_txt = f"{_c0['fecha']:%Y-%m-%d} (apertura semanal de las {_c0['de']:02d}:00 a las {_c0['a']:02d}:00)"
+                    st.warning(f"El historial parece cambiar de huso horario cerca del {_c0['fecha']:%d/%m/%Y}: la apertura semanal del mercado "
+                               f"pasa de las {_c0['de']:02d}:00 a las {_c0['a']:02d}:00 ({_c0['horas']:+d} h). Si es así, las sesiones y los "
+                               f"cortes quedan corridos antes de esa fecha. Probá «Corregir la hora del historial» "
+                               f"(restar {-_c0['horas']:g} h a las velas anteriores a esa fecha) y comparalo.")
+            # --- calidad de las velas: avisa y, si se pide, excluye las corruptas
+            _sosp = {s_: data.velas_sospechosas(d_) for s_, d_ in datos.items()}
+            _con_sosp = {s_: v_ for s_, v_ in _sosp.items() if v_["sospechosas"]}
+            if _con_sosp:
+                for s_, v_ in _con_sosp.items():
+                    _det = "; ".join(f"{a_['anio']}: {a_['velas']} velas ({a_['pct_del_anio']:g}% del año), siempre en el minuto :{a_['minuto']:02d}"
+                                     for a_ in v_["anios"])
+                    st.warning(f"{s_}: {v_['sospechosas']} velas sospechosas (resumen de una hora o un día: volumen y rango muy por encima de lo "
+                               f"normal, siempre en el mismo minuto). {_det}. Inflan el ADX y el ATR y distorsionan el backtest. "
+                               + ("Si afectan a muchas velas de un año, conviene empezar el backtest después de ese año en vez de sacarlas una "
+                                  "por una." if any(a_["pct_del_anio"] > 3 for a_ in v_["anios"]) else ""))
+                if _W(st).checkbox("Excluir las velas sospechosas", key="excluir_sosp",
+                                   help="Las saca del historial. Apagado por defecto. Si son pocas, es razonable; si son muchas (una de cada "
+                                        "doce velas, por ejemplo) la serie queda irregular y es mejor recortar el período."):
+                    datos = {s_: data.excluir_velas(d_, _sosp[s_]["mascara"]) for s_, d_ in datos.items()}
+                    excluidas_txt = ", ".join(f"{s_}: {v_['sospechosas']}" for s_, v_ in _con_sosp.items())
+            for s_, d_ in datos.items():
+                for z_ in data.velas_sospechosas(d_)["spread0_minutos"][:1]:
+                    st.caption(f"{s_}: el spread vale 0 de forma concentrada en el minuto :{z_['minuto']:02d} ({z_['anio']}, "
+                               f"{z_['pct_spread_cero']:g}% de esas velas): spread no registrado en esas velas.")
             regla = _W(st).selectbox("Remuestrear a", ["No", "15min", "30min", "1h", "4h", "1D"])
             if regla != "No":
                 datos = {s: data.resamplear(d_, regla) for s, d_ in datos.items()}
@@ -834,6 +901,17 @@ with st.sidebar:
                        "En MT5: clic derecho en el símbolo → Especificación.")
         else:
             st.caption("tick_size, tick_value y el paso de lote se leen de cada símbolo en MT5.")
+            for _s_, _sp_ in specs.items():
+                if _sp_.get("tick_value_corregido"):
+                    st.warning(f"{_s_}: el servidor informa un valor del tick que no cuadra con el contrato "
+                               f"({_sp_['tick_value_informado']:g} contra {_sp_['tick_value']:g} por tick con 1 lote). "
+                               f"Se usa el tamaño del contrato ({_sp_['contrato']:g}), que es lo que el servidor usa para calcular el resultado real.")
+        vpu_forzar = _W(st).checkbox("Forzar el valor por 1,00 de precio", key="vpu_forzar",
+                                     help="Para cuando el servidor informa mal el valor del tick y la corrección automática no alcanza. "
+                                          "Es el dinero que mueve 1 lote por cada 1,00 de precio (el oro con contrato de 100 onzas: 100). "
+                                          "Manda sobre lo que lee de MT5 o lo que cargaste arriba, y también se usa en el bot.")
+        vpu_forzado = _W(st).number_input("US$ por cada 1,00 de precio con 1 lote", 0.0001, 100_000_000.0, 100.0, 1.0, key="vpu_forzado",
+                                          disabled=not vpu_forzar)
         comision = _W(st).number_input("Comisión por lote (US$)", 0.0, value=0.0)
         capital = _W(st).number_input("Capital de la cuenta (US$)", 0.0, 100_000_000.0, 100_000.0, 1000.0)
         st.caption("Capital inicial: sobre él se calculan los límites de pérdida y se estima, en la conclusión final, "
@@ -857,13 +935,13 @@ with st.sidebar:
             "Modo diario", MODOS_DIA, horizontal=True,
             help="Trailing: el límite es un % del balance con el que empezó el día y se recalcula cada día. "
                  "Estático: un monto fijo en dólares (el % del capital inicial) que se resta del balance de inicio del día.")]
-        st.caption("0 = sin límite. Se vigila el equity (incluye lo flotante). En FTMO es el 5% del capital.")
+        st.caption("0 = sin límite. Se vigila el equity (incluye lo flotante). Valor habitual en las prop firms: 5% del capital.")
         perd_tot = _W(st).number_input("Pérdida total máx. (%)", 0.0, 100.0, 10.0, 0.5)
         modo_tot = {MODOS_TOT[0]: "estatico", MODOS_TOT[1]: "trailing"}[_W(st).radio(
             "Modo total", MODOS_TOT, horizontal=True,
             help="Estático: el piso es fijo (capital inicial menos el %). Trailing: el piso sube con "
                  "el balance máximo alcanzado y nunca baja.")]
-        st.caption("0 = sin límite. En FTMO es el 10% del capital inicial y el piso no sube.")
+        st.caption("0 = sin límite. Valor habitual en las prop firms: 10% del capital inicial, con el piso fijo.")
         colchon = _W(st).number_input("Colchón antes del límite (%)", 0.0, 50.0, 1.0, 0.5)
         st.caption("Se resta a los dos límites: el bot y el backtest frenan ese margen antes del límite real, para cubrir "
                    "saltos de precio y slippage. Con 5% y colchón 1%, frena en 4%.")
@@ -891,8 +969,16 @@ with st.sidebar:
         if not retiro_on:
             st.caption("La consistencia actúa sobre los retiros: tildá «Retirar al llegar al objetivo» en el menú 7 para usarla.")
         offset_dia = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="offset_dia")
-        st.caption("Sirve para cortar el día a medianoche de Europa Central (hora CE(S)T), como FTMO. Medilo con el "
-                   "mercado abierto; es el mismo dato del filtro de sesión.")
+        st.caption("Medilo con el mercado abierto (hora de «Observación de mercado» menos GMT); es el mismo dato del filtro de sesión. "
+                   "Con el corte «Europa Central» sirve para cortar el día a medianoche CE(S)T.")
+        _CORTES = {"Medianoche de Europa Central (CE(S)T)": "europa", "Medianoche del servidor (hora de la plataforma)": "servidor"}
+        corte_dia = _CORTES[_W(st).radio("Corte del día (límite diario, mejor día, consistencia)", list(_CORTES), key="corte_dia",
+                                         help="A qué hora se reinicia el límite diario: depende de la prop firm. Algunas lo reinician a la "
+                                              "medianoche de Europa Central y otras a la medianoche de la plataforma (el reloj del MT5). "
+                                              "Mirá la regla de tu cuenta. Con la plataforma en GMT+2 en invierno y GMT+3 en verano, la "
+                                              "medianoche del servidor cae una hora antes que la de Europa Central.")]
+        if corte_dia == "servidor":
+            st.caption("Los datos tienen que estar en la hora del servidor de esa cuenta (así los baja MT5).")
         st.divider()
         finde_mant = _W(st).checkbox("Mantener posición el fin de semana", value=True, help=(
             "Tildado: las operaciones abiertas el viernes siguen abiertas hasta el lunes, como hasta ahora. Destildado: toda operación "
@@ -984,9 +1070,13 @@ def params_dinero(simbolo: str) -> dict:
     """tick_size, tick_value y límites de lote del símbolo (de MT5 si hay conexión; si no, los cargados a mano)."""
     sp = specs.get(simbolo)
     if sp:
-        return {"tick_size": float(sp["tick_size"]), "tick_value": float(sp["tick_value"]),
-                "vol": (sp["vol_min"], sp["vol_max"], sp["vol_step"])}
-    return {"tick_size": float(tick_size_man), "tick_value": float(tick_value_man), "vol": (0.01, 1000.0, 0.01)}
+        p_ = {"tick_size": float(sp["tick_size"]), "tick_value": float(sp["tick_value"]),
+              "vol": (sp["vol_min"], sp["vol_max"], sp["vol_step"])}
+    else:
+        p_ = {"tick_size": float(tick_size_man), "tick_value": float(tick_value_man), "vol": (0.01, 1000.0, 0.01)}
+    if vpu_forzar:                                   # valor por 1,00 de precio forzado a mano: manda sobre MT5 y lo cargado
+        p_["tick_value"] = float(vpu_forzado) * p_["tick_size"]
+    return p_
 
 
 def construir_config(simbolo: str = None) -> eng.Config:
@@ -1039,7 +1129,7 @@ def construir_config(simbolo: str = None) -> eng.Config:
         be_nivel_modo=be_niv_modo, be_nivel_valor=float(be_niv_valor), be_pausa_perdida=bool(be_pausa_perd and pausa_on),
         parcial_activo=bool(parcial_on), parcial_nivel_modo=parcial_modo, parcial_nivel_valor=float(parcial_valor),
         parcial_pct=float(parcial_pct), parcial_mover_sl=bool(parcial_mover), parcial_sl_nivel=float(parcial_sl),
-        lotes=float(lotes), lote_paso=float(p["vol"][2]), lote_min=float(p["vol"][0]),
+        lotes=float(lotes), lote_paso=float(p["vol"][2]), lote_min=float(p["vol"][0]), corte_dia=corte_dia,
         reentrada_activa=bool(reent_on), reentrada_nivel=re_nivel, reentrada_modo=re_modo, reentrada_max=int(re_max),
         reentrada_velas=int(re_velas), re_adx_min=float(re_adx_min) if re_adx_on else None, re_di_favor=bool(re_di),
         re_adx_creciente_n=int(re_cre_n) if re_cre_on else 0)
@@ -1188,7 +1278,8 @@ with st.sidebar:
         else:
             _mq5 = gb.generar_mq5(_cfg_bot, activo, _tf_bot, float(lotes),
                                   float(sl_usd) if sl_modo == SL_USD else None, _vd_bot,
-                                  capital=float(capital), limite_pct=float(limite_pct), nombre=_nom_bot)
+                                  capital=float(capital), limite_pct=float(limite_pct), nombre=_nom_bot,
+                                  usd_por_unidad_forzado=float(vpu_forzado) if vpu_forzar else 0.0)
             with st.container(key="bot_gen"):
                 st.download_button("⚙️ Generar bot (.mq5)", _mq5.encode("utf-8"),
                                    file_name=gb.nombre_archivo(activo, _tf_bot, _nom_bot), mime="text/plain",
@@ -2055,6 +2146,8 @@ with st.expander("Supuestos y limitaciones"):
 
 # ------------------------------------------------------------- descarga para IA
 estado.paquete_ia = (r, cfg_usada, act_res, pdin, veredicto, relato,
-                     {"media": MEDIA, "fuente": fuente, "tf": tf_txt, "regla": regla, "oos": oos, "azar_n": int(azar_n)},
+                     {"media": MEDIA, "fuente": fuente, "tf": tf_txt, "regla": regla, "oos": oos, "azar_n": int(azar_n),
+                      "hora_corregida": hora_corr_txt, "salto_huso_detectado": salto_txt, "velas_excluidas": excluidas_txt,
+                      "valor_por_unidad_forzado": float(vpu_forzado) if vpu_forzar else None},
                      float(globals().get("_obj_pct", 5.0)))
 _boton_descarga()

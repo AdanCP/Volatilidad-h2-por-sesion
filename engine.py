@@ -166,6 +166,7 @@ class Config:
     # SL, TP, breakeven, parcial y filtros. Una sola posicion a la vez. Modo "confirmacion": la vela toca la media y cierra del lado de la
     # tendencia, se entra al cierre. Modo "limite": orden en la media (conocida al cierre de la vela anterior). reentrada_max: 1 o 2 por
     # tendencia (la 2da solo si la 1ra tambien cerro positiva). Caduca reentrada_velas velas despues del cruce. Confirmacion de ADX propia.
+    corte_dia: str = "europa"               # donde se corta el "dia" de las reglas de cuenta: "europa" (medianoche CE(S)T) | "servidor" (medianoche de la plataforma)
     reentrada_activa: bool = False
     reentrada_nivel: str = "larga"          # "larga" | "corta" (en modo precio hay una sola media)
     reentrada_modo: str = "confirmacion"    # "confirmacion" | "limite"
@@ -262,6 +263,10 @@ class Config:
         if self.parcial_mover_sl and not self.parcial_sl_nivel < niv:
             raise ValueError("Cierre parcial: el SL del resto tiene que quedar por debajo del nivel del parcial.")
 
+    def _validar_corte_dia(self) -> None:
+        if self.corte_dia not in ("europa", "servidor"):
+            raise ValueError("El corte del dia debe ser 'europa' o 'servidor'.")
+
     def _validar_reentrada(self) -> None:
         if not self.reentrada_activa:
             return
@@ -280,6 +285,7 @@ class Config:
 
     def validar(self) -> None:
         self._validar_parcial()
+        self._validar_corte_dia()
         self._validar_reentrada()
         if self.vwap_dist_min_atr < 0 or self.vwap_min_minutos < 0:
             raise ValueError("Los parametros del VWAP no pueden ser negativos.")
@@ -481,7 +487,7 @@ def niveles_vp(df: pd.DataFrame, cfg: Config):
     v = np.ones(n) if sin_vol else df["Volume"].to_numpy(float)
     esc, N = float(cfg.vp_escalon), int(cfg.vp_dias)
     base_min = pd.Series(df.index).diff().median() / pd.Timedelta(minutes=1)
-    dia = claves_dia(df.index, cfg)
+    dia = claves_dia(df.index, cfg, cuenta=False)       # el perfil de volumen siempre corta a medianoche de Europa Central
     cortes = np.flatnonzero(np.diff(dia)) + 1
     ini, fin = np.r_[0, cortes], np.r_[cortes, n]
     perfiles = []                                   # solo los dias validos, en orden
@@ -717,10 +723,13 @@ def reent_de(cfg: Config):
             "adx_cre": int(cfg.re_adx_creciente_n), "adx_per": int(cfg.re_adx_periodo)}
 
 
-def claves_dia(indice: pd.DatetimeIndex, cfg: Config) -> np.ndarray:
-    """Clave de dia (dias desde 1970) de cada vela para las reglas de cuenta. Con el desfase del servidor cargado, el dia
-    se corta a medianoche de Europa Central (hora CE(S)T, la que usa FTMO); sin el, a medianoche de los datos."""
-    if cfg.servidor_offset_horas is not None:
+def claves_dia(indice: pd.DatetimeIndex, cfg: Config, cuenta: bool = True) -> np.ndarray:
+    """Clave de dia (dias desde 1970) de cada vela. Con el desfase del servidor cargado, el dia se corta a medianoche de Europa
+    Central (hora CE(S)T); sin el, a medianoche de los datos. Para las reglas de cuenta (cuenta=True) con corte_dia="servidor" el
+    dia se corta a medianoche de la plataforma, o sea de los datos (que vienen en hora del servidor)."""
+    if cuenta and cfg.corte_dia == "servidor":
+        local = pd.DatetimeIndex(indice)
+    elif cfg.servidor_offset_horas is not None:
         utc = ses.servidor_a_utc(indice, cfg.servidor_offset_horas, cfg.servidor_dst_eeuu)
         local = pd.DatetimeIndex(utc).tz_localize("UTC").tz_convert("Europe/Berlin").tz_localize(None)
     else:
