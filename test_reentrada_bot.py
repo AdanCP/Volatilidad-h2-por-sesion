@@ -94,3 +94,37 @@ def test_la_confirmacion_de_adx_del_bot_coincide_con_la_del_motor(amin, di, cre)
     for i, ln in enumerate(out):
         c_, v_ = (int(x) for x in ln.split())
         assert (bool(c_), bool(v_)) == (esperado(i, 1), esperado(i, -1)), i
+
+
+# ----------------------------------------------------- SL / TP / lotaje propios de la reentrada
+def test_plantilla_con_gestion_propia_lleva_los_valores():
+    c = _c(reentrada_activa=True, re_sl_modo="atr", re_sl_valor=1.5, re_rr=1.0, re_lote_max=0.6)
+    t = _gen(c, "XAUUSD", "M5", 0.17, sl_usd=20.0)
+    for patron in (r"InpReSlMode\s+= 1;", r"InpReSlVal\s+= 1\.5;", r"InpReRrOn\s+= true;", r"InpReRr\s+= 1\.0+;", r"InpReLotMax\s+= 0\.6;"):
+        assert re.search(patron, t), patron
+    assert "gestion propia" in t and "@@" not in t and t.count("{") == t.count("}")
+    t0 = _gen(_c(reentrada_activa=True), "XAUUSD", "M5", 0.17, sl_usd=20.0)
+    assert re.search(r"InpReSlMode\s+= 0;", t0) and re.search(r"InpReRrOn\s+= false;", t0) and "gestion propia" not in t0
+
+
+def test_el_lote_y_el_rr_de_la_posicion_se_guardan_y_se_restauran():
+    t = _gen(_c(reentrada_activa=True, re_sl_modo="precio", re_sl_valor=1.0), "XAUUSD", "M5", 0.17, sl_usd=20.0)
+    for clave in ("CURLOTS", "CURRR", "BASED"):
+        assert f'g_gv + "{clave}"' in t
+    assert "d * u * g_curLots" in t                                   # el riesgo usa el lote de la posicion
+
+
+@pytest.mark.skipif(not HAY_GPP, reason="sin g++")
+@pytest.mark.parametrize("d,lotmax", [(5.0, 0.0), (1.0, 0.0), (1.7, 0.0), (20.0, 0.0), (1.0, 1.0), (400.0, 0.0)])
+def test_el_lote_recalculado_del_bot_coincide_con_el_del_motor(d, lotmax):
+    lotes, base_d = 0.17, 10.0
+    t = _gen(_c(reentrada_activa=True, re_sl_modo="precio", re_sl_valor=d, re_lote_max=lotmax or None), "XAUUSD", "M5", lotes, sl_usd=20.0)
+    main = f'''int main(){{g_baseD={base_d!r};printf("%.6f\\n",ReLots({d!r}));}}'''
+    with tempfile.TemporaryDirectory() as d_:
+        exe = _compilar(t, main, d_)
+        got = float(subprocess.run([exe], capture_output=True, text=True).stdout.strip().split("\n")[-1])
+    # la misma regla que _abrir_re() del motor
+    esp = float(np.floor(lotes * (base_d / d) / 0.01 + 1e-9)) * 0.01
+    if esp < 0.01 - 1e-9 or (lotmax and esp > lotmax + 1e-9) or esp > 100:
+        esp = 0.0
+    assert abs(got - esp) < 1e-6, (got, esp)

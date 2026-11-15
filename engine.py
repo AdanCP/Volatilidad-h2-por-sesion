@@ -152,6 +152,11 @@ class Config:
     # entrada + parcial_sl_nivel (en R). Convive con el breakeven (el SL efectivo es el mas favorable). El resto termina en TP/SL/BE
     # (o por señal) y, si ya se cobro el parcial y sale por SL o BE, el resultado es "PARC_SL". El resultado en R es la suma ponderada.
     # lotes > 0: la parte cerrada se redondea al paso de volumen (lote_paso); si lo que queda es menor que lote_min se cierra todo.
+    # Cierre por tiempo: si la operacion sigue abierta al cierre de la vela `entrada + tstop_velas` (se evalua una sola vez), sin breakeven activado
+    # y va en tstop_r R o peor (puede ser negativo, 0 o positivo), se cierra a mercado al cierre de esa vela. Si va mejor, sigue como siempre.
+    tstop_activo: bool = False
+    tstop_velas: int = 24
+    tstop_r: float = -0.25
     parcial_activo: bool = False
     parcial_nivel_modo: str = "r"
     parcial_nivel_valor: float = 1.5
@@ -176,6 +181,11 @@ class Config:
     re_di_favor: bool = True                # el DI del lado de la operacion debe superar al contrario
     re_adx_creciente_n: int = 0             # 0 = sin condicion; >0: ADX mayor que el de hace N velas
     re_adx_periodo: int = 14
+    # SL / TP / lotaje propios de la reentrada. "igual" = la misma gestion que la entrada por cruce (valor de fabrica).
+    re_sl_modo: str = "igual"               # "igual" | "atr" (multiplo de ATR) | "precio" (distancia fija en unidades de precio)
+    re_sl_valor: float = 0.0
+    re_rr: Optional[float] = None           # R:R propio de la reentrada (None = el de la entrada). Sin efecto con salida por señal.
+    re_lote_max: Optional[float] = None     # tope de lotaje: con SL propio el lote se recalcula para arriesgar lo mismo; si lo supera, no se reentra
 
     def pb_efectivo(self) -> bool:
         """El pullback solo actua si esta activo y el porcentaje es mayor que 0 (0 % = entrada al cierre, como sin pullback)."""
@@ -241,6 +251,14 @@ class Config:
         if act is not None and self.salida_modo == "rr" and not act < self.rr:
             raise ValueError("Breakeven: la activacion tiene que ser menor que el TP (si el TP llega antes, el breakeven nunca actua).")
 
+    def _validar_tstop(self) -> None:
+        if not self.tstop_activo:
+            return
+        if int(self.tstop_velas) != self.tstop_velas or self.tstop_velas < 1:
+            raise ValueError("Las velas del cierre por tiempo tienen que ser un entero de 1 o más.")
+        if not -50 <= self.tstop_r <= 50:
+            raise ValueError("El R del cierre por tiempo tiene que estar entre -50 y 50.")
+
     def _validar_parcial(self) -> None:
         if not self.parcial_activo:
             return
@@ -278,6 +296,12 @@ class Config:
             raise ValueError("Las reentradas por tendencia deben ser 1 o 2.")
         if self.reentrada_velas < 1:
             raise ValueError("La caducidad de la reentrada debe ser de al menos 1 vela.")
+        if self.re_sl_modo not in ("igual", "atr", "precio") or (self.re_sl_modo != "igual" and not self.re_sl_valor > 0):
+            raise ValueError("El SL de la reentrada debe ser 'igual', o 'atr' / 'precio' con un valor mayor que 0.")
+        if self.re_rr is not None and not 0.05 <= self.re_rr <= 50:
+            raise ValueError("El R:R de la reentrada tiene que estar entre 0,05 y 50.")
+        if self.re_lote_max is not None and not self.re_lote_max > 0:
+            raise ValueError("El tope de lotaje de la reentrada tiene que ser mayor que 0.")
         if self.re_adx_periodo < 2 or self.re_adx_creciente_n < 0 or (self.re_adx_min is not None and self.re_adx_min < 0):
             raise ValueError("Los parametros del ADX de la reentrada no son validos.")
         if self.sesion_activo and self.servidor_offset_horas is None:
@@ -285,6 +309,7 @@ class Config:
 
     def validar(self) -> None:
         self._validar_parcial()
+        self._validar_tstop()
         self._validar_corte_dia()
         self._validar_reentrada()
         if self.vwap_dist_min_atr < 0 or self.vwap_min_minutos < 0:
@@ -371,7 +396,7 @@ VP_MODOS = ("poc", "fuera", "dentro")
 VP_AREA = 0.70                  # el area de valor reune el 70 % del volumen del perfil
 VP_MIN_MINUTOS = 360            # un dia solo cuenta para el perfil si tiene al menos 6 horas de velas (descarta domingos y feriados casi vacios)
 
-FILTROS_APAGADOS = dict(vp_activo=False, tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False, be_activo=False, parcial_activo=False, reentrada_activa=False)
+FILTROS_APAGADOS = dict(vp_activo=False, tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False, be_activo=False, parcial_activo=False, reentrada_activa=False, tstop_activo=False)
 
 
 @dataclass
@@ -720,7 +745,10 @@ def reent_de(cfg: Config):
         return None
     return {"nivel": cfg.reentrada_nivel, "modo": cfg.reentrada_modo, "max": int(cfg.reentrada_max), "velas": int(cfg.reentrada_velas),
             "adx_min": None if cfg.re_adx_min is None else float(cfg.re_adx_min), "di": bool(cfg.re_di_favor),
-            "adx_cre": int(cfg.re_adx_creciente_n), "adx_per": int(cfg.re_adx_periodo)}
+            "adx_cre": int(cfg.re_adx_creciente_n), "adx_per": int(cfg.re_adx_periodo),
+            "sl_modo": cfg.re_sl_modo, "sl_valor": float(cfg.re_sl_valor), "rr": None if cfg.re_rr is None else float(cfg.re_rr),
+            "lote_max": None if cfg.re_lote_max is None else float(cfg.re_lote_max), "lotes": float(cfg.lotes),
+            "lote_paso": float(cfg.lote_paso) if cfg.lote_paso > 0 else 0.01, "lote_min": float(cfg.lote_min)}
 
 
 def claves_dia(indice: pd.DatetimeIndex, cfg: Config, cuenta: bool = True) -> np.ndarray:
@@ -780,6 +808,13 @@ def fraccion_parcial(cfg: Config) -> float:
     return float(cerrado / cfg.lotes)
 
 
+def tstop_de(cfg: Config):
+    """Parametros del cierre por tiempo para simular(), o None si esta apagado."""
+    if not cfg.tstop_activo:
+        return None
+    return {"velas": int(cfg.tstop_velas), "r": float(cfg.tstop_r)}
+
+
 def parcial_de(cfg: Config):
     """Parametros del cierre parcial para simular(), o None si no se usa (o si el lote no alcanza para partirlo)."""
     if not cfg.parcial_activo:
@@ -791,7 +826,7 @@ def parcial_de(cfg: Config):
             "sl_nivel": float(cfg.parcial_sl_nivel) if cfg.parcial_mover_sl else None}
 
 
-def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None, be=None, parcial=None, reent=None):
+def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None, be=None, parcial=None, reent=None, tstop=None):
     """señales: lista de (indice, lado). Devuelve (DataFrame de operaciones, ignoradas).
 
     pb=None: entrada al cierre de la vela de la señal. pb={"pct","ema","velas"}: la señal deja una orden pendiente.
@@ -815,6 +850,9 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
     La columna "reentrada" vale 0 en las entradas por cruce y 1 o 2 en las reentradas ("señal" es el cruce que origino la tendencia).
     En la tabla, "i" es la vela de ENTRADA real y "señal" la vela del cruce (iguales sin pullback)."""
     h, l, c, sp, dist = P.h, P.l, P.c, P.sp, P.dist
+    if reent is not None:                               # los campos de gestion propia son opcionales: sin ellos, la misma que la entrada
+        reent = {"sl_modo": "igual", "sl_valor": 0.0, "rr": None, "lote_max": None, "lotes": 0.0,
+                 "lote_paso": 0.01, "lote_min": 0.01, **reent}
     n = len(c)
     filas, libre, ignoradas, sl_invalido, be_invalidas = [], 0, 0, 0, 0
     st = {"ordenes": 0, "llenadas": 0, "caducadas": 0, "cruce_contrario": 0}
@@ -939,6 +977,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
     ex = {"parc": False, "sl_sal": None}               # datos extra de la ultima corrida de recorrer(): parcial cobrado y precio del SL de salida
 
     def recorrer(desde, lado, sl, tp, entrada=None, lim=None, bepar=None, tope=None, parpar=None):
+        # (cierre por tiempo: la vela de entrada es desde - 1; se evalua al cierre de la vela desde - 1 + tstop["velas"])
         """Devuelve (resultado, ambigua, vela de salida, breakeven activado). bepar = (distancia de activacion, distancia del nivel).
         parpar = (distancia del parcial, fraccion que se cierra, distancia del SL del resto o None). Resultado "PARC_SL": parcial cobrado
         y el resto salio por SL o breakeven; "PARC_TOT": el parcial cerro toda la posicion. ex["parc"] dice si se cobro el parcial y
@@ -993,6 +1032,10 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 return "TP", False, j, armada
             if por_senal and ((P.diff[j] < 0) if lado == 1 else (P.diff[j] > 0)):
                 return "SEN", False, j, armada
+            if tstop is not None and j == desde - 1 + tstop["velas"] and not armada:     # sigue abierta tras SL, TP, parcial y señal de esta vela
+                px_ = c[j] if lado == 1 else c[j] + sp[j]                             # sale al cierre: el largo vende al bid, el corto compra al ask
+                if lado * (px_ - entrada) / (lado * (entrada - sl)) <= tstop["r"] + 1e-12:
+                    return "TIEMPO", False, j, armada
         if tope is not None:
             return "FIN", False, tope, armada
         return "ABIERTA", False, n - 1, armada
@@ -1003,13 +1046,16 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             return None
         return int(P.fs[k])
 
+    be_vu = be["vu"] if be else 0.0                    # US$ por unidad de precio para el breakeven (cambia en una reentrada con lote recalculado)
+    re_salt = {"lote_max": 0, "lote_min": 0}
+
     def bepar_de(d):
         """(distancia de activacion, distancia del nivel) en precio para una operacion con SL a distancia d, o None sin breakeven."""
         nonlocal be_invalidas
         if be is None:
             return None
-        a = be_distancia(be["act_modo"], be["act_valor"], d, rr, be["vu"])
-        b = be_distancia(be["nivel_modo"], be["nivel_valor"], d, rr, be["vu"])
+        a = be_distancia(be["act_modo"], be["act_valor"], d, rr, be_vu)
+        b = be_distancia(be["nivel_modo"], be["nivel_valor"], d, rr, be_vu)
         if not (a > 0 and 0 <= b < a):
             be_invalidas += 1
             return None
@@ -1029,8 +1075,8 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         """Convierte el resultado de recorrer() en una fila (R, parcial, costo extra), la anota y la aplica a la cuenta. Devuelve (res final, R)."""
         parc = parpar is not None and ex["parc"]
         motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal", "LIM": "limite", "BE": "be", "FIN": "finde",
-                      "PARC_SL": "parc_sl", "PARC_TOT": "parcial"}.get(res, "")
-        if res in ("SEN", "FIN"):                       # sale al cierre: el largo vende al bid, el corto compra al ask
+                      "PARC_SL": "parc_sl", "PARC_TOT": "parcial", "TIEMPO": "tiempo"}.get(res, "")
+        if res in ("SEN", "FIN", "TIEMPO"):                       # sale al cierre: el largo vende al bid, el corto compra al ask
             salida_px = c[j_out] if lado == 1 else c[j_out] + sp[j_out]
             r = lado * (salida_px - entrada) / d
             res = "TP" if r > 0 else "SL"
@@ -1106,15 +1152,30 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             return j, ((min(e, h[j]) if lado == 1 else max(e, l[j])) if lim_modo else None), jd
         return None
 
-    def abrir_re(i_cruce, lado, desde, n_re):
+    def abrir_re(i_cruce, lado, desde, n_re, d_base):
+        """Intenta una reentrada (d_base: distancia del SL de la entrada por cruce, para igualar el riesgo si el SL es propio).
+        Con R:R / SL / lote propios cambia temporalmente rr, vu, comm y be_vu y los restituye al terminar."""
+        nonlocal rr, vu, comm, be_vu
+        guardado = (rr, be_vu, vu if ct else None, comm if ct else None)
+        try:
+            return _abrir_re(i_cruce, lado, desde, n_re, d_base)
+        finally:
+            rr, be_vu = guardado[0], guardado[1]
+            if ct:
+                vu, comm = guardado[2], guardado[3]
+
+    def _abrir_re(i_cruce, lado, desde, n_re, d_base):
         """Intenta una reentrada. None si no hay (o si las reglas de cuenta / el SL la descartan); si no, (res, R, vela de salida)."""
-        nonlocal sl_invalido
+        nonlocal sl_invalido, rr, vu, comm, be_vu
         hit = buscar_re(i_cruce, lado, desde)
         if hit is None:
             return None
         k, px, jd = hit
         entrada = (px + sp[k] if lado == 1 else px) if px is not None else (c[k] + sp[k] if lado == 1 else c[k])
-        if P.sl_ref is not None:
+        sl_propio = reent["sl_modo"] != "igual"
+        if sl_propio:
+            d = float(P.atr[jd]) * reent["sl_valor"] if reent["sl_modo"] == "atr" else reent["sl_valor"]
+        elif P.sl_ref is not None:
             d = lado * (entrada - (P.sl_ref[jd] - lado * _off(P, jd)))
             if not d > 0:
                 sl_invalido += 1
@@ -1123,6 +1184,24 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             d = dist[jd]
         if not d > 0:
             return None
+        if sl_propio and d_base > 0:                    # mismo riesgo en US$ que la entrada: el lote se recalcula (nunca arriesga mas)
+            f = d_base / d
+            lotes = reent["lotes"]
+            if lotes > 0:
+                paso = reent["lote_paso"]
+                lote = int(np.floor(lotes * f / paso + 1e-9)) * paso
+                if lote < max(reent["lote_min"], paso) - 1e-9:
+                    re_salt["lote_min"] += 1
+                    return None
+                if reent["lote_max"] is not None and lote > reent["lote_max"] + 1e-9:
+                    re_salt["lote_max"] += 1
+                    return None
+                f = lote / lotes
+            be_vu = be_vu * f
+            if ct:
+                vu, comm = vu * f, comm * f
+        if reent["rr"] is not None:
+            rr = reent["rr"]
         lim = None
         if ct:
             if cs["quemada"]:
@@ -1287,7 +1366,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         if reent is not None:                           # reentradas de esta tendencia: solo tras una operacion cerrada con R > 0
             ult_r, ult_j, n_re, abierta = r, j_out, 0, False
             while ult_r > 0 and n_re < reent["max"] and not (ct and cs["quemada"]):
-                op = abrir_re(i, lado, ult_j + 1, n_re + 1)
+                op = abrir_re(i, lado, ult_j + 1, n_re + 1, d)
                 if op is None:
                     break
                 n_re += 1
@@ -1302,6 +1381,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             "parcial", "R_parcial", "R_resto", "reentrada"]
     out = pd.DataFrame(filas, columns=cols)
     out.attrs["pb"] = st
+    out.attrs["reent_saltadas_lote"] = re_salt         # reentradas descartadas por el lote recalculado (tope o minimo)
     out.attrs["sl_invalido"] = sl_invalido            # señales sin operar porque el SL anclado a la media quedaba al reves
     out.attrs["be_invalidas"] = be_invalidas          # operaciones donde el nivel del breakeven no quedaba por debajo de la activacion
     if ct:
@@ -1330,6 +1410,6 @@ def ejecutar(P: Preparado, cfg: Config, lo: int = 0, hi: Optional[int] = None) -
             descartes[m] = descartes.get(m, 0) + 1
     señales = [(i, lado) for i, lado, m in en_rango if m is None]
     pb = pb_de(cfg)
-    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo, cuenta_de(P, cfg), be_de(cfg), parcial_de(cfg), reent_de(cfg))
+    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo, cuenta_de(P, cfg), be_de(cfg), parcial_de(cfg), reent_de(cfg), tstop_de(cfg))
     return Resultado(tr, descartes, len(en_rango), len(señales), ign, dict(tr.attrs.get("pb", {})) if pb else {},
                      dict(tr.attrs.get("cuenta", {})))

@@ -617,15 +617,37 @@ with st.sidebar:
         if be_on and be_act_modo == "r" and be_niv_modo == "r" and be_niv_valor >= be_act_valor:
             st.error("El nivel del SL tiene que ser menor que la activación.")
         _sep_filtro()
+        st.markdown("**Cierre por tiempo (opcional)**",
+                    help="Si la operación sigue abierta N velas después de la entrada y en ese momento va perdiendo lo indicado o peor, "
+                         "se cierra a mercado al cierre de esa vela. Si va mejor, sigue como siempre (SL, TP, breakeven, etc.). Se evalúa "
+                         "una sola vez por operación. Si dentro de esa vela se toca el SL o el TP, mandan ellos. Si el breakeven ya se "
+                         "activó, no se aplica. Con cierre parcial, se aplica al resto. Las velas son las reales del archivo: los fines de "
+                         "semana y los huecos no cuentan. Cuenta como una operación cerrada normal (ganada o perdida según su resultado).")
+        tstop_on = _W(st).checkbox("Cerrar si no arranca (cierre por tiempo)", key="tstop_on")
+        tstop_velas, tstop_r = 24, -0.25
+        if tstop_on:
+            _TFMIN_ = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+            tstop_velas = int(_W(st).number_input("Velas después de la entrada", 1, 5000, 24, 1, key="tstop_velas"))
+            _tf_ = globals().get("tf") or ""                       # la temporalidad solo se elige con MT5 directo; con CSV se detecta de los datos
+            _min_ = tstop_velas * _TFMIN_.get(_tf_, 0)
+            if _min_:
+                st.caption(f"{tstop_velas} velas {_tf_} = " + (f"{_min_ // 60} h" + (f" {_min_ % 60} min" if _min_ % 60 else "") if _min_ >= 60 else f"{_min_} min") + ".")
+            tstop_r = float(_W(st).number_input("Cerrar si va en (R) o peor", -50.0, 50.0, -0.25, 0.05, key="tstop_r",
+                                                help="Negativo: va perdiendo ese R o más (−0,25 = un cuarto del riesgo). 0: cerrar si no está en "
+                                                     "ganancia. Positivo: cerrar si todavía no ganó ese R."))
+            st.caption("Se evalúa una sola vez, al cierre de esa vela; la operación se cierra a mercado con su spread. "
+                       "No se aplica si el breakeven ya se activó.")
+        _sep_filtro()
         st.markdown("**Reentrada (opcional)**",
                     help="En una tendencia fuerte el siguiente cruce tarda y se pierde gran parte del movimiento. Con la reentrada, "
                          "después de una operación de esa tendencia que cerró en ganancia (R mayor que 0) se vuelve a entrar cuando "
                          "el precio retrocede a la media. La tendencia dura hasta el cruce contrario. Se repite la misma entrada: "
-                         "mismo SL, TP, breakeven, cierre parcial y filtros. Una sola posición a la vez. La reentrada exige además "
+                         "mismo SL, TP, breakeven, cierre parcial y filtros (salvo que le pongas SL, TP o lotaje propios). Una sola posición a la vez. La reentrada exige además "
                          "una confirmación de ADX (más abajo).")
         reent_on = _W(st).checkbox("Activar la reentrada", key="reentrada_on")
         re_nivel, re_modo, re_max, re_velas = "larga", "confirmacion", 1, 60
         re_adx_on, re_adx_min, re_di, re_cre_on, re_cre_n = True, 25.0, True, False, 3
+        re_sl_ui, re_sl_val, re_rr_on, re_rr_val, re_lote_on, re_lote_val = "igual", 0.0, False, 1.0, True, 1.0
         if reent_on:
             _acc_activos.add("re")
             _acc_cab("re", _acc_lista, "sg")
@@ -644,6 +666,30 @@ with st.sidebar:
                                           help="Con 2, la segunda se hace solo si la primera también cerró en ganancia."))
                 re_velas = _W(st).number_input("Caducidad (velas desde el cruce)", 1, 5000, 60, 10, key="re_velas",
                                                help="Pasadas estas velas desde el cruce ya no se reentra, aunque la tendencia siga.")
+                st.markdown("**SL y TP de la reentrada**")
+                _RE_SL = {"Igual que la entrada": "igual", "Múltiplo de ATR": "atr", "Dólares fijos": "usd"}
+                re_sl_ui = _RE_SL[_W(st).radio("SL de la reentrada", list(_RE_SL), key="re_sl_modo",
+                                               help="Con un SL propio la reentrada puede ser una operación más corta. El lotaje se recalcula "
+                                                    "solo para arriesgar los mismos US$ que la entrada por cruce (un SL más corto = más lotes; "
+                                                    "uno más largo = menos). Nunca arriesga más que la entrada.")]
+                if re_sl_ui == "atr":
+                    re_sl_val = _W(st).number_input("SL de la reentrada (múltiplo de ATR)", 0.1, 20.0, 1.0, 0.1, key="re_sl_atr")
+                elif re_sl_ui == "usd":
+                    re_sl_val = _W(st).number_input("SL de la reentrada (US$ con el lote de la entrada)", 1.0, 10_000_000.0, 50.0, 10.0,
+                                                    key="re_sl_usd")
+                re_rr_on = _W(st).checkbox("TP propio (R:R)", key="re_rr_on",
+                                           help="Apagado: el mismo R:R que la entrada. Prendido: un objetivo propio, por ejemplo 1:1 "
+                                                "para una operación más corta. No se usa si la salida es por señal.")
+                if re_rr_on:
+                    re_rr_val = _W(st).number_input("R:R de la reentrada", 0.1, 50.0, 1.0, 0.1, key="re_rr")
+                if re_sl_ui != "igual":
+                    re_lote_on = _W(st).checkbox("Limitar el lotaje de la reentrada", value=True, key="re_lote_on",
+                                                 help="Con un SL corto el lote recalculado puede ser muy grande: el spread pesa más, el "
+                                                      "deslizamiento se multiplica y puede chocar con el máximo de la cuenta. Si el lote "
+                                                      "calculado supera el tope, esa reentrada NO se hace.")
+                    re_lote_val = _W(st).number_input("Lotaje máximo de la reentrada", 0.01, 1000.0, 1.0, 0.1, key="re_lote_max",
+                                                      disabled=not re_lote_on)
+                    st.caption("El lote se redondea hacia abajo al paso del símbolo; si queda por debajo del mínimo, no se reentra.")
                 st.markdown("**Confirmación de ADX**")
                 re_adx_on = _W(st).checkbox("ADX mínimo", value=True, key="re_adx_on")
                 re_adx_min = _W(st).number_input("ADX mínimo para reentrar", 1.0, 100.0, 25.0, 1.0, key="re_adx_min", disabled=not re_adx_on)
@@ -1130,9 +1176,15 @@ def construir_config(simbolo: str = None) -> eng.Config:
         parcial_activo=bool(parcial_on), parcial_nivel_modo=parcial_modo, parcial_nivel_valor=float(parcial_valor),
         parcial_pct=float(parcial_pct), parcial_mover_sl=bool(parcial_mover), parcial_sl_nivel=float(parcial_sl),
         lotes=float(lotes), lote_paso=float(p["vol"][2]), lote_min=float(p["vol"][0]), corte_dia=corte_dia,
+        tstop_activo=bool(tstop_on), tstop_velas=int(tstop_velas), tstop_r=float(tstop_r),
         reentrada_activa=bool(reent_on), reentrada_nivel=re_nivel, reentrada_modo=re_modo, reentrada_max=int(re_max),
         reentrada_velas=int(re_velas), re_adx_min=float(re_adx_min) if re_adx_on else None, re_di_favor=bool(re_di),
-        re_adx_creciente_n=int(re_cre_n) if re_cre_on else 0)
+        re_adx_creciente_n=int(re_cre_n) if re_cre_on else 0,
+        re_sl_modo=("precio" if re_sl_ui == "usd" else re_sl_ui) if reent_on else "igual",
+        re_sl_valor=(float(re_sl_val) / met.valor_por_unidad(p["tick_size"], p["tick_value"], lotes) if re_sl_ui == "usd"
+                     else float(re_sl_val)) if reent_on else 0.0,
+        re_rr=float(re_rr_val) if (reent_on and re_rr_on) else None,
+        re_lote_max=float(re_lote_val) if (reent_on and re_sl_ui != "igual" and re_lote_on) else None)
 
 
 # ------------------------------------------------------------------ cuerpo
@@ -1824,6 +1876,26 @@ if not getattr(cfg_usada, "finde_mantener", True) and len(tr):
     st.caption("El cierre se hace en la última vela de la semana, al precio de cierre, y paga el spread. Cuenta como ganada si ese "
                "resultado es positivo y como perdida si no, y entra a las rachas, al dinero y a las pausas como cualquier otra "
                "operación. Las órdenes pendientes del pullback que no se llenaron antes del cierre se cancelaron.")
+
+# ------------------------------------------------------------- cierre por tiempo
+if getattr(cfg_usada, "tstop_activo", False) and len(tr):
+    _ts_ = tr[tr["motivo"] == "tiempo"]
+    _n_ts, _n_ops_ts = len(_ts_), int(tr["res"].isin(["TP", "SL", "BE", "PARC_SL"]).sum())
+    st.write("")
+    html(vis.titulo_seccion("Cierre por tiempo", "Operaciones cerradas a mercado porque no arrancaron (tramo «Todo»)"))
+    t1, t2, t3 = st.columns(3)
+    with t1:
+        html(vis.kpi("Cerradas por tiempo", vis.n(_n_ts, 0),
+                     f"{vis.n(100 * _n_ts / max(_n_ops_ts, 1), 1)} % de las operaciones · {vis.n(float(_ts_['R'].sum()), 2, True)} R en total", vis.ORQ, 165))
+    with t2:
+        html(vis.kpi("R promedio de esos cierres", vis.n(float(_ts_["R"].mean()) if _n_ts else 0.0, 2, True),
+                     "contra −1 R si hubieran llegado al SL", vis.AZUL, 165))
+    with t3:
+        html(vis.kpi("Después de N velas", vis.n(int(cfg_usada.tstop_velas), 0),
+                     f"si van en {vis.n(float(cfg_usada.tstop_r), 2, True)} R o peor", vis.INDIGO, 165))
+    st.caption("Se evalúa una sola vez por operación, al cierre de la vela N desde la entrada, y solo si sigue abierta y el breakeven no se "
+               "activó. Si en esa vela se toca el SL o el TP, manda el SL o el TP. Se cierra al precio de cierre y paga el spread; cuenta "
+               "como ganada o perdida según su resultado. El % de equilibrio no tiene en cuenta estos cierres.")
 
 # ------------------------------------------------------------- retiros de la cuenta (simulados) u objetivo y retiros (teorico)
 _retiro_sim = bool(cfg_usada.reglas_activas and cfg_usada.retiro_activo and r.get("cuenta"))

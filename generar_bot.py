@@ -169,6 +169,18 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
                    + (f". Confirmacion de ADX: minimo {_f(cfg.re_adx_min, 1)}" if cfg.re_adx_min is not None else ". Sin ADX minimo")
                    + (", DI a favor" if cfg.re_di_favor else "")
                    + (f", ADX creciente en {int(cfg.re_adx_creciente_n)} velas" if cfg.re_adx_creciente_n > 0 else "") + ".")
+        if cfg.re_sl_modo != "igual" or cfg.re_rr is not None:
+            cab.append("// La reentrada tiene gestion propia: "
+                       + ((f"SL a {_f(cfg.re_sl_valor, 2)} ATR" if cfg.re_sl_modo == "atr" else f"SL a {_f(cfg.re_sl_valor, 2)} de precio")
+                          + " con el lote recalculado para arriesgar lo mismo en US$ que la entrada por cruce (redondeado hacia abajo al paso"
+                          + (f"; si supera {_f(cfg.re_lote_max, 2)} lotes no se reentra" if cfg.re_lote_max is not None else "")
+                          + ")" if cfg.re_sl_modo != "igual" else "SL igual que la entrada")
+                       + (f", TP 1:{_f(cfg.re_rr, 2)}" if cfg.re_rr is not None else ", TP igual que la entrada") + ".")
+    if cfg.tstop_activo:
+        _cr = float(cfg.tstop_r)
+        _cd = (f"va perdiendo {_f(abs(_cr), 2)} R o mas" if _cr < 0 else ("no esta en ganancia" if _cr == 0 else f"todavia no gano {_f(_cr, 2)} R"))
+        cab.append(f"// Cierre por tiempo: si a las {int(cfg.tstop_velas)} velas cerradas de la entrada la operacion sigue abierta y {_cd}, se cierra a mercado "
+                   "(se mira UNA sola vez, al abrir la vela siguiente a la N; si el breakeven ya se activo no se aplica; con cierre parcial se aplica al resto).")
     if not cfg.finde_mantener:
         cab.append("// Fin de semana: NO se mantienen posiciones. El viernes a las 16:59 de Nueva York se cierra todo (posiciones y ordenes pendientes) y a partir de "
                    "ahi no se abren operaciones nuevas"
@@ -268,6 +280,10 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "RE_VELAS": str(int(cfg.reentrada_velas)), "RE_ADX_ON": _b(cfg.re_adx_min is not None),
         "RE_ADX_MIN": _f(cfg.re_adx_min if cfg.re_adx_min is not None else 0.0, 4), "RE_DI": _b(cfg.re_di_favor),
         "RE_ADX_CRE": str(int(cfg.re_adx_creciente_n)), "RE_ADX_PER": str(int(cfg.re_adx_periodo)),
+        "TSTOP_ON": _b(cfg.tstop_activo), "TSTOP_BARS": str(int(cfg.tstop_velas)), "TSTOP_R": _f(cfg.tstop_r, 4),
+        "RE_SL_MODO": str(("igual", "atr", "precio").index(cfg.re_sl_modo)), "RE_SL_VAL": _f(cfg.re_sl_valor, 6),
+        "RE_RR_ON": _b(cfg.re_rr is not None), "RE_RR": _f(cfg.re_rr if cfg.re_rr is not None else cfg.rr, 4),
+        "RE_LOTE_MAX": _f(cfg.re_lote_max if cfg.re_lote_max is not None else 0.0, 2),
     }
     txt = _PLANTILLA
     for k, v in valores.items():
@@ -416,6 +432,9 @@ const double          InpPauseWinRetro  = @@PAUSA_GAN_RETRO@@;    // Retroceso p
 const int             InpPauseWinVence  = @@PAUSA_GAN_VENCE@@;    // ... vencimiento de esa condicion: 0 nunca, 1 al terminar el dia (CET), 2 despues de N horas
 const double          InpPauseWinVenceH = @@PAUSA_GAN_VENCE_H@@;  // ... horas de vigencia (si el vencimiento es 2)
 const double          InpCommissionUsd  = @@COMISION@@;           // Comision por operacion (US$)
+const bool            InpTStopOn        = @@TSTOP_ON@@;           // Cierre por tiempo: si a las N velas de la entrada la operacion sigue abierta y va en R o peor, se cierra a mercado
+const int             InpTStopBars      = @@TSTOP_BARS@@;         // ... velas cerradas desde la entrada en que se mira (una sola vez)
+const double          InpTStopR         = @@TSTOP_R@@;            // ... se cierra si el resultado es este R o peor (negativo = perdiendo, 0, o positivo)
 const bool            InpBeOn           = @@BE_ON@@;              // Breakeven: al llegar la ganancia a la activacion, el SL pasa a la entrada mas un nivel (por tick, sin esperar al cierre de la vela)
 const int             InpBeActMode      = @@BE_ACT_MODO@@;        // ... activacion: 0 = multiplos de R, 1 = US$ fijos (con los lotes del bot), 2 = % del camino al TP
 const double          InpBeActVal       = @@BE_ACT_VAL@@;         // ... valor de la activacion (en la unidad de arriba)
@@ -441,6 +460,11 @@ const double          InpReAdxMin       = @@RE_ADX_MIN@@;      // ... valor del 
 const bool            InpReDi           = @@RE_DI@@;           // ... confirmacion: el DI del lado de la operacion supera al contrario
 const int             InpReAdxRise      = @@RE_ADX_CRE@@;      // ... confirmacion: ADX mayor que el de hace N velas (0 = sin condicion)
 const int             InpReAdxPer       = @@RE_ADX_PER@@;      // ... periodo del ADX de la reentrada
+const int             InpReSlMode       = @@RE_SL_MODO@@;      // ... SL de la reentrada: 0 = igual que la entrada, 1 = multiplo de ATR, 2 = distancia fija de precio
+const double          InpReSlVal        = @@RE_SL_VAL@@;       // ... valor del SL propio (multiplo de ATR o unidades de precio)
+const bool            InpReRrOn         = @@RE_RR_ON@@;        // ... TP propio de la reentrada
+const double          InpReRr           = @@RE_RR@@;           // ... relacion TP/SL de la reentrada
+const double          InpReLotMax       = @@RE_LOTE_MAX@@;     // ... con SL propio el lote se recalcula (mismo riesgo en US$); si pasa este tope no se reentra (0 = sin tope)
 
 // ============================ estado ==========================================
 const double SENT = -1.0e300;          // "sin dato" (equivale a NaN en el backtester)
@@ -460,6 +484,9 @@ int      g_reSide   = 0;               // reentrada: lado de la tendencia vigent
 datetime g_reCrossT = 0;               // ... vela (hora servidor) del cruce que la origino
 int      g_reN      = 0;               // ... reentradas hechas en esa tendencia
 bool     g_reElig   = false;           // ... la ultima operacion de la tendencia cerro con ganancia: se puede reentrar
+double   g_curLots  = InpLots;            // lote de la operacion en curso (el de la reentrada si tiene SL propio) y su relacion TP/SL
+double   g_curRR    = InpRR;
+double   g_baseD    = 0.0;             // distancia del SL de la ultima entrada por cruce (para igualar el riesgo de la reentrada)
 bool     g_rePend   = false;           // ... hay una reentrada pedida (orden o entrada a mercado) que todavia no se confirmo como abierta
 double   g_rAdx[], g_rPdi[], g_rNdi[];  // ADX y DI con el periodo de la reentrada
 bool     g_pbActive = false;           // hay una orden de pullback en espera
@@ -1203,7 +1230,7 @@ double RiskUsd(const double d)
 {
    const double u = UsdPerUnit();
    if(u <= 0.0) return 0.0;
-   return d * u * InpLots + InpCommissionUsd;
+   return d * u * g_curLots + InpCommissionUsd * g_curLots / InpLots;
 }
 
 // controles previos a abrir: riesgo maximo por operacion y proteccion (que un SL no rompa un limite)
@@ -1443,15 +1470,16 @@ bool MarketEntry(const int side, const double d0, const double lvl = 0.0)
    ZeroMemory(rs);
    rq.action    = TRADE_ACTION_DEAL;
    rq.symbol    = _Symbol;
-   rq.volume    = InpLots;
+   rq.volume    = g_curLots;
    rq.type      = (side == 1) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    rq.price     = Px(price);
    rq.sl        = (lvl > 0.0) ? Px(lvl) : Px(price - side * d);
-   rq.tp        = (InpExitSignal == 1) ? 0.0 : Px(price + side * d * InpRR);
+   rq.tp        = (InpExitSignal == 1) ? 0.0 : Px(price + side * d * g_curRR);
    rq.deviation = InpDeviation;
    rq.magic     = InpMagic;
    rq.comment   = "@@COMENTARIO@@";
    rq.type_filling = FillingMarket();
+   if(!g_rePend) { g_baseD = d; GlobalVariableSet(g_gv + "BASED", g_baseD); }     // distancia del SL de la entrada por cruce
    const bool ok = OrderSend(rq, rs);
    if(!ok || (rs.retcode != TRADE_RETCODE_DONE && rs.retcode != TRADE_RETCODE_PLACED))
    {
@@ -1526,13 +1554,15 @@ void PlacePullback(const int i)
    ZeroMemory(rs);
    rq.action = TRADE_ACTION_PENDING;
    rq.symbol = _Symbol;
-   rq.volume = InpLots;
+   rq.volume = g_curLots;
    rq.type   = (g_pbSide == 1) ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
    rq.price  = Px(price);
    rq.sl     = (lvl > 0.0) ? Px(lvl) : Px(price - g_pbSide * d);
-   rq.tp     = (InpExitSignal == 1) ? 0.0 : Px(price + g_pbSide * d * InpRR);
+   rq.tp     = (InpExitSignal == 1) ? 0.0 : Px(price + g_pbSide * d * g_curRR);
    rq.magic  = InpMagic;
    rq.comment = "@@COMENTARIO@@ pullback";
+   g_baseD = d;
+   GlobalVariableSet(g_gv + "BASED", g_baseD);
    rq.type_filling = ORDER_FILLING_RETURN;
    rq.type_time = ORDER_TIME_GTC;
    if(!OrderSend(rq, rs) || (rs.retcode != TRADE_RETCODE_DONE && rs.retcode != TRADE_RETCODE_PLACED))
@@ -1540,6 +1570,14 @@ void PlacePullback(const int i)
    else
       Print("Pullback: orden limite en ", DoubleToString(Px(price), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
             " (vela ", g_pbBars, " de ", InpPBBars, ").");
+}
+
+// lote y R:R de las entradas por cruce (la reentrada con SL / TP propios cambia estos valores mientras dura su posicion)
+void CurBase()
+{
+   g_curLots = InpLots;
+   g_curRR   = InpRR;
+   GlobalVariableSet(g_gv + "CURLOTS", 0.0);
 }
 
 // ============================ reentrada =======================================
@@ -1562,7 +1600,7 @@ void ReEnd(const string motivo)
    g_reSide = 0;
    g_reN = 0;
    g_reElig = false;
-   if(g_rePend) { DeletePending(); g_rePend = false; }
+   if(g_rePend) { DeletePending(); g_rePend = false; CurBase(); }
    RePersist();
 }
 
@@ -1618,12 +1656,27 @@ bool ReAdxOk(const int i, const int side)
 }
 
 // Intenta una reentrada con la vela cerrada i. true si se hizo algo que ocupa esta vela (entro o dejo la orden).
+// lote de una reentrada con SL propio a distancia d: arriesga lo mismo en US$ que la entrada por cruce (SL a g_baseD con InpLots), redondeado
+// hacia abajo al paso. 0 = no se reentra (queda por debajo del minimo o pasa el tope / el maximo del simbolo)
+double ReLots(const double d)
+{
+   const double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   const double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   const double vmax = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   const double paso = (step > 0.0) ? step : 0.01;
+   const double lote = MathFloor(InpLots * (g_baseD / d) / paso + 1.0e-9) * paso;
+   if(lote < MathMax(vmin, paso) - 1.0e-9) { Print("Reentrada descartada: el lote recalculado (", DoubleToString(lote, 2), ") queda por debajo del minimo."); return 0.0; }
+   if(InpReLotMax > 0.0 && lote > InpReLotMax + 1.0e-9) { Print("Reentrada descartada: el lote recalculado (", DoubleToString(lote, 2), ") supera el tope de ", DoubleToString(InpReLotMax, 2), "."); return 0.0; }
+   if(lote > vmax + 1.0e-9) { Print("Reentrada descartada: el lote recalculado (", DoubleToString(lote, 2), ") supera el maximo del simbolo."); return 0.0; }
+   return lote;
+}
+
 bool ReAttempt(const int i)
 {
    if(!InpReOn || g_reSide == 0 || !g_reElig || g_reN >= InpReMax) return false;
    const int side = g_reSide;
    const bool lim = (InpReMode == 1);
-   if(g_rePend) { DeletePending(); g_rePend = false; }          // la orden de la vela anterior ya no sirve: se rehace con los datos nuevos
+   if(g_rePend) { DeletePending(); g_rePend = false; CurBase(); }   // la orden de la vela anterior ya no sirve: se rehace con los datos nuevos
    const int bars = ReBarsSince(i);
    if(lim ? (bars + 1 > InpReBars) : (bars > InpReBars)) return false;
    const double e = (InpReLevel == 1) ? g_ef[i] : g_es[i];
@@ -1654,15 +1707,34 @@ bool ReAttempt(const int i)
       if(aMercado) price = (side == 1) ? ask : bid;
    }
    if(WinRetraceBlocks(i, side, price)) return false;
-   double d = SlDistance(i, side, price);
-   const double lvl = SlLevel(i, side);
-   if(d <= 0.0) { if(InpSLMode == BOT_SL_EMA) Print("Reentrada descartada: la media quedo del lado equivocado del precio (SL al reves)."); return false; }
-   if(!AccountRulesOK(d)) return false;
+   double d, lvl = 0.0, lotsRe = InpLots, rrRe = InpRR;
+   if(InpReSlMode != 0)                                          // SL propio: sin ancla a una media; el lote se recalcula para arriesgar lo mismo que la entrada
+   {
+      d = (InpReSlMode == 1) ? g_atr[i] * InpReSlVal : InpReSlVal;
+      if(!(d > 0.0)) return false;
+      if(g_baseD > 0.0)
+      {
+         lotsRe = ReLots(d);
+         if(lotsRe <= 0.0) return false;
+      }
+   }
+   else
+   {
+      d = SlDistance(i, side, price);
+      lvl = SlLevel(i, side);
+      if(d <= 0.0) { if(InpSLMode == BOT_SL_EMA) Print("Reentrada descartada: la media quedo del lado equivocado del precio (SL al reves)."); return false; }
+   }
+   if(InpReRrOn) rrRe = InpReRr;
+   g_curLots = lotsRe;                                           // desde aca el riesgo, el volumen, el TP, el breakeven y el parcial usan los de la reentrada
+   g_curRR   = rrRe;
+   if(!AccountRulesOK(d)) { CurBase(); return false; }
+   GlobalVariableSet(g_gv + "CURLOTS", g_curLots);
+   GlobalVariableSet(g_gv + "CURRR", g_curRR);
    if(aMercado)
    {
-      Print("Reentrada ", g_reN + 1, " de ", InpReMax, ": entrada a mercado (", (side == 1 ? "compra" : "venta"), ").");
+      Print("Reentrada ", g_reN + 1, " de ", InpReMax, ": entrada a mercado (", (side == 1 ? "compra" : "venta"), ", ", DoubleToString(g_curLots, 2), " lotes).");
       g_rePend = true;
-      if(!MarketEntry(side, d, lvl)) g_rePend = false;
+      if(!MarketEntry(side, d, lvl)) { g_rePend = false; CurBase(); }
       return true;
    }
    MqlTradeRequest rq;
@@ -1671,11 +1743,11 @@ bool ReAttempt(const int i)
    ZeroMemory(rs);
    rq.action = TRADE_ACTION_PENDING;
    rq.symbol = _Symbol;
-   rq.volume = InpLots;
+   rq.volume = g_curLots;
    rq.type   = (side == 1) ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
    rq.price  = Px(price);
    rq.sl     = (lvl > 0.0) ? Px(lvl) : Px(price - side * d);
-   rq.tp     = (InpExitSignal == 1) ? 0.0 : Px(price + side * d * InpRR);
+   rq.tp     = (InpExitSignal == 1) ? 0.0 : Px(price + side * d * g_curRR);
    rq.magic  = InpMagic;
    rq.comment = "@@COMENTARIO@@ pullback reentrada";
    rq.type_filling = ORDER_FILLING_RETURN;
@@ -1683,10 +1755,11 @@ bool ReAttempt(const int i)
    if(!OrderSend(rq, rs) || (rs.retcode != TRADE_RETCODE_DONE && rs.retcode != TRADE_RETCODE_PLACED))
    {
       Print("Orden de reentrada rechazada (", rs.retcode, ")");
+      CurBase();
       return false;
    }
    g_rePend = true;
-   Print("Reentrada ", g_reN + 1, " de ", InpReMax, ": orden limite en ", DoubleToString(Px(price), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)), ".");
+   Print("Reentrada ", g_reN + 1, " de ", InpReMax, ": orden limite en ", DoubleToString(Px(price), (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)), ", ", DoubleToString(g_curLots, 2), " lotes.");
    return true;
 }
 
@@ -1742,7 +1815,7 @@ bool   g_parCerrando = false;    // el cierre en curso es el parcial (no es el c
 // distancia de precio del nivel del parcial (misma regla que engine.be_distancia)
 double ParDist(const double d)
 {
-   return (InpParMode == 1) ? InpParVal / 100.0 * InpRR * d : InpParVal * d;
+   return (InpParMode == 1) ? InpParVal / 100.0 * g_curRR * d : InpParVal * d;
 }
 
 // volumen que se cierra: el % pedido redondeado al paso (al mas cercano). 0 = no se puede partir; igual al volumen = se cierra todo
@@ -1802,13 +1875,13 @@ void ManageParcial()
          const double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
          const double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
          const double vol  = PositionGetDouble(POSITION_VOLUME);
-         const double cerrar = ParVolume(InpLots, InpParPct, step, vmin);
+         const double cerrar = ParVolume(g_curLots, InpParPct, step, vmin);
          if(cerrar <= 0.0)                               // el lote no se puede partir: no hay parcial para esta operacion
          {
             g_parDone = true; g_parSlDone = true;
             GlobalVariableSet(g_gv + "PARDONE", 1.0);
             GlobalVariableSet(g_gv + "PARSLDONE", 1.0);
-            Print("Cierre parcial: con ", DoubleToString(InpLots, 2), " lotes no se puede cerrar esa parte. No se aplica.");
+            Print("Cierre parcial: con ", DoubleToString(g_curLots, 2), " lotes no se puede cerrar esa parte. No se aplica.");
             return;
          }
          g_parDone = true;
@@ -1905,14 +1978,14 @@ bool   g_beCerrar = false;     // el cierre en curso es el breakeven (el precio 
 double BeDist(const int modo, const double valor, const double d, const double vu)
 {
    if(modo == 0) return valor * d;                     // multiplos de R
-   if(modo == 2) return valor / 100.0 * InpRR * d;     // % del camino al TP (solo con TP)
+   if(modo == 2) return valor / 100.0 * g_curRR * d;     // % del camino al TP (solo con TP)
    return (vu > 0.0) ? valor / vu : 0.0;               // US$ fijos con los lotes del bot
 }
 
 // distancia de activacion y SL nuevo (entrada + nivel) para una posicion con SL original a distancia d; false si no son validos
 bool BeLevels(const int side, const double open, const double d, double &act, double &sl)
 {
-   const double vu = UsdPerUnit() * InpLots;
+   const double vu = UsdPerUnit() * g_curLots;
    act = BeDist(InpBeActMode, InpBeActVal, d, vu);
    const double niv = BeDist(InpBeLvlMode, InpBeLvlVal, d, vu);
    if(!(act > 0.0 && niv >= 0.0 && niv < act)) return false;
@@ -1994,18 +2067,93 @@ void ManageBreakeven()
    }
 }
 
+// ============================ cierre por tiempo ===============================
+// A las InpTStopBars velas cerradas desde la vela de entrada se mira UNA sola vez el resultado de la operacion abierta: si va en InpTStopR
+// o peor se cierra a mercado; si va mejor sigue como siempre. No se aplica si el breakeven ya se activo. Con cierre parcial se aplica al
+// resto (el R se mide con la distancia del SL original). Entrada a mercado: la vela de entrada es la de la senal (la posicion abre al
+// inicio de la vela siguiente), asi que se mira cuando la entrada es la N-esima vela hacia atras; orden limite (pullback / reentrada): la
+// posicion abre dentro de su vela, asi que se mira una vela mas tarde. Si el bot estuvo apagado y se pasa la vela, se evalua al volver.
+ulong g_tsId     = 0;          // posicion (identificador) cuyo cierre por tiempo ya se evaluo
+bool  g_tsCerrar = false;      // el cierre en curso es el cierre por tiempo (para el aviso)
+
+// velas cerradas hasta la ultima cerrada (indice i) contadas desde la vela que contiene la hora t: 1 = la propia vela de entrada es la ultima cerrada
+int TsBarsSince(const datetime t, const int i)
+{
+   for(int k = i; k >= 0; k--)
+      if(g_time[k] <= t) return i - k + 1;
+   return 1000000000;                                  // la entrada es anterior a los datos cargados: ya paso de sobra
+}
+
+// R de una posicion al precio px, con la distancia del SL original d
+double TsR(const int side, const double open, const double px, const double d)
+{
+   return (d > 0.0) ? side * (px - open) / d : 0.0;
+}
+
+// decide el cierre por tiempo: true = cerrar si el R de la operacion es el del umbral o peor
+bool TsDebeCerrar(const double r)
+{
+   return r <= InpTStopR + 1.0e-12;
+}
+
+void RevisarCierrePorTiempo(const int i)
+{
+   if(!InpTStopOn) return;
+   for(int k = PositionsTotal() - 1; k >= 0; k--)
+   {
+      if(PositionGetSymbol(k) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+      const ulong id = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      if(g_tsId == id) return;                         // ya se evaluo (se guarda para sobrevivir a un reinicio)
+      const int    side = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+      const double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      const bool   lim  = StringFind(PositionGetString(POSITION_COMMENT), "pullback") >= 0;
+      const int    off  = InpTStopBars + (lim ? 1 : 0);
+      const int    barras = TsBarsSince((datetime)PositionGetInteger(POSITION_TIME), i);
+      if(barras < off) return;                         // todavia no llego la vela
+      g_tsId = id;
+      GlobalVariableSet(g_gv + "TSID", (double)id);
+      if(InpBeOn && g_beId == id)
+      {
+         Print("Cierre por tiempo: el breakeven ya se activo, no se aplica.");
+         return;
+      }
+      const double slNow = PositionGetDouble(POSITION_SL);
+      double d = side * (open - slNow);
+      if(InpParOn && g_parId == id && g_parD > 0.0) d = g_parD;          // con el parcial el SL pudo moverse: se usa la distancia original
+      if(!(d > 0.0)) return;
+      const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID), ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double px;
+      if(barras == off)                                // a tiempo: se usa el cierre de la vela N (el corto compra al ask: cierre + spread)
+         px = (side == 1) ? g_c[i] : g_c[i] + (ask - bid);
+      else                                             // el bot se reinicio despues de esa vela: se evalua con el precio actual
+         px = (side == 1) ? bid : ask;
+      const double r = TsR(side, open, px, d);
+      if(TsDebeCerrar(r))
+      {
+         Print("Cierre por tiempo: ", IntegerToString(barras), " velas, R=", DoubleToString(r, 2), " (umbral ", DoubleToString(InpTStopR, 2), "). Se cierra la operacion.");
+         g_tsCerrar = true;
+         CloseAll();
+      }
+      else
+         Print("Cierre por tiempo: ", IntegerToString(barras), " velas, R=", DoubleToString(r, 2), " (umbral ", DoubleToString(InpTStopR, 2), "). La operacion sigue.");
+      return;
+   }
+}
+
 // ============================ logica por vela =================================
 void OnNewBar()
 {
    if(!LoadData()) return;
    const int i = g_m - 1;                      // ultima vela cerrada = vela de la senal
    ReTrack(i);                                 // reentrada: el cruce contrario o la caducidad terminan la tendencia
+   if(!HasPosition() && !g_rePend && (g_curLots != InpLots || g_curRR != InpRR)) CurBase();  // sin posicion ni reentrada pedida: lote y R:R de la entrada por cruce
 
    if(HasPosition())                           // una operacion a la vez: SL y TP ya estan puestos
    {
       g_pbActive = false;
       DeletePending();
       if(InpExitSignal == 1) RevisarSalidaPorSenal();
+      if(HasPosition()) RevisarCierrePorTiempo(i);     // (si la senal ya cerro la operacion no se mira)
       return;
    }
 
@@ -2149,6 +2297,14 @@ int OnInit()
    g_lastLoss[1] = GlobalVariableCheck(g_gv + "LASTLOSS_S") ? (datetime)GlobalVariableGet(g_gv + "LASTLOSS_S") : 0;
    g_lastWin[0]  = GlobalVariableCheck(g_gv + "LASTWIN_B")  ? (datetime)GlobalVariableGet(g_gv + "LASTWIN_B")  : 0;
    g_lastWin[1]  = GlobalVariableCheck(g_gv + "LASTWIN_S")  ? (datetime)GlobalVariableGet(g_gv + "LASTWIN_S")  : 0;
+   g_curLots = InpLots;
+   g_curRR   = InpRR;
+   if(GlobalVariableCheck(g_gv + "BASED")) g_baseD = GlobalVariableGet(g_gv + "BASED");
+   if(HasPosition() && GlobalVariableCheck(g_gv + "CURLOTS") && GlobalVariableGet(g_gv + "CURLOTS") > 0.0)   // lote y R:R de una reentrada abierta antes de reiniciar
+   {
+      g_curLots = GlobalVariableGet(g_gv + "CURLOTS");
+      if(GlobalVariableCheck(g_gv + "CURRR") && GlobalVariableGet(g_gv + "CURRR") > 0.0) g_curRR = GlobalVariableGet(g_gv + "CURRR");
+   }
    if(InpReOn && GlobalVariableCheck(g_gv + "RESIDE"))   // tendencia de las reentradas en curso antes de reiniciar el bot
    {
       g_reSide   = (int)GlobalVariableGet(g_gv + "RESIDE");
@@ -2156,6 +2312,8 @@ int OnInit()
       g_reN      = GlobalVariableCheck(g_gv + "REN") ? (int)GlobalVariableGet(g_gv + "REN") : 0;
       g_reElig   = (GlobalVariableCheck(g_gv + "REELIG") && GlobalVariableGet(g_gv + "REELIG") > 0.5);
    }
+   if(GlobalVariableCheck(g_gv + "TSID"))               // cierre por tiempo ya evaluado en una operacion abierta antes de reiniciar el bot
+      g_tsId = (ulong)GlobalVariableGet(g_gv + "TSID");
    if(GlobalVariableCheck(g_gv + "BEID"))               // breakeven de una operacion abierta antes de reiniciar el bot
    {
       g_beId   = (ulong)GlobalVariableGet(g_gv + "BEID");
@@ -2357,7 +2515,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       if(motivo == DEAL_REASON_TP) que = "TP ALCANZADO";
       else if(motivo == DEAL_REASON_SL) que = "SL ALCANZADO";
       else if(motivo == DEAL_REASON_SO) que = "CIERRE FORZADO POR EL BROKER (stop out)";
-      else if(motivo == DEAL_REASON_EXPERT) que = g_salidaSenal ? "SALIDA POR SENAL (el precio cambio de lado de la media)" : "CIERRE POR EL BOT (freno de perdida)";
+      else if(motivo == DEAL_REASON_EXPERT) que = g_salidaSenal ? "SALIDA POR SENAL (el precio cambio de lado de la media)"
+                                                : (g_tsCerrar ? "CIERRE POR TIEMPO (la operacion no arranco)" : "CIERRE POR EL BOT (freno de perdida)");
       else if(motivo == DEAL_REASON_CLIENT || motivo == DEAL_REASON_MOBILE || motivo == DEAL_REASON_WEB) que = "CIERRE MANUAL";
       double res = HistoryDealGetDouble(trans.deal, DEAL_PROFIT) + HistoryDealGetDouble(trans.deal, DEAL_SWAP)
                    + HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
@@ -2411,7 +2570,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
             g_winDist[ladoPos] = MathAbs(precio - g_entryPx[ladoPos]);
             if(conParcial)                              // con parcial, el recorrido es el del resultado total (en precio), como el backtester
             {
-               const double vu = UsdPerUnit() * InpLots;
+               const double vu = UsdPerUnit() * g_curLots;
                if(vu > 0.0)
                {
                   g_winDist[ladoPos] = MathAbs(res) / vu;
@@ -2424,6 +2583,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       }
       g_salidaSenal = false;
       g_beCerrar = false;
+      g_tsCerrar = false;
       Avisar(que + ": " + string(tipo == DEAL_TYPE_SELL ? "compra" : "venta") + " cerrada a " + DoubleToString(precio, dig)
              + " | resultado " + (res >= 0.0 ? "+" : "") + DoubleToString(res, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY));
    }

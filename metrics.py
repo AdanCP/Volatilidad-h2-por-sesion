@@ -65,7 +65,7 @@ def azar(P, cfg, lo, hi, n_sig, veces, rng) -> np.ndarray:
         idx = np.sort(rng.choice(np.arange(lo, hi), size=n_sig, replace=False))
         sig = list(zip(idx, rng.choice(lados, size=n_sig)))
         tr, _ = eng.simular(P, sig, cfg.rr, cfg.costo_extra, eng.pb_de(cfg), cfg.salida_modo,
-                              eng.cuenta_de(P, cfg), eng.be_de(cfg), eng.parcial_de(cfg), eng.reent_de(cfg))
+                              eng.cuenta_de(P, cfg), eng.be_de(cfg), eng.parcial_de(cfg), eng.reent_de(cfg), eng.tstop_de(cfg))
         out.append(resumen(tr, cfg.rr)["exp_R"])
     return np.array([x for x in out if not np.isnan(x)])
 
@@ -138,6 +138,8 @@ def ablacion(df, cfg_base, filtros=None, oos_pct=0.3, azar_veces=100, semilla=42
         filtros = {**filtros, **extra}
     if por_defecto and cfg_base.be_activo:                         # el breakeven elegido entra como un paso mas (se compara contra no usarlo)
         filtros = {**filtros, "Breakeven": dict(be_activo=True)}
+    if por_defecto and cfg_base.tstop_activo:                      # el cierre por tiempo elegido tambien (se compara contra no usarlo)
+        filtros = {**filtros, "Cierre por tiempo": dict(tstop_activo=True)}
     base = replace(cfg_base, **eng.FILTROS_APAGADOS)
     configs = [("Cruce solo", base)]
     omitidos = []

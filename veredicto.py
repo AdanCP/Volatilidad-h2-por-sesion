@@ -152,6 +152,11 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         _v = cfg.be_nivel_valor
         _b = ("la entrada" if _v == 0 else (f"{n(_v, 2)} R sobre la entrada" if cfg.be_nivel_modo == "r" else f"US${n(_v)} sobre la entrada"))
         gestion += f" (con breakeven: al llegar a {_a} el SL pasa a {_b})"
+    if getattr(cfg, "tstop_activo", False):
+        _tr = float(cfg.tstop_r)
+        _cond = ("en pérdida de " + n(abs(_tr), 2) + " R o más" if _tr < 0 else
+                 ("sin ganancia" if _tr == 0 else "con menos de " + n(_tr, 2) + " R de ganancia"))
+        gestion += (f" (cierre por tiempo: si a las {int(cfg.tstop_velas)} velas de la entrada sigue abierta {_cond}, se cierra a mercado)")
     if not getattr(cfg, "finde_mantener", True):
         gestion += " y sin posiciones el fin de semana (se cierra todo el viernes antes del cierre del mercado)"
     filtros = []

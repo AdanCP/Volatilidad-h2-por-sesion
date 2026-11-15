@@ -127,6 +127,13 @@ def informe(r: dict, cfg, simbolo: str, pdin: dict, meta: dict, veredicto: dict 
     if si:
         L += [f"- {si} señales sin operar: la media de referencia quedó del lado equivocado del precio (SL a una media).", ""]
 
+    if getattr(cfg, "tstop_activo", False) and len(tr) and "motivo" in tr:
+        _ts = tr[tr["motivo"] == "tiempo"]
+        L += ["### Cierre por tiempo (tramo Todo)", "",
+              f"- Regla: a las {int(cfg.tstop_velas)} velas de la entrada, si sigue abierta (sin breakeven) y va en {cfg.tstop_r} R o peor, se cierra a mercado.",
+              f"- Operaciones cerradas por tiempo: {len(_ts)} de {len(tr)}; R total {_v(float(_ts['R'].sum()), 2)}; "
+              f"R promedio {_v(float(_ts['R'].mean()) if len(_ts) else 0.0, 2)}.", ""]
+
     # ---- cuenta
     cu = r.get("cuenta")
     if getattr(cfg, "reglas_activas", False) and cu:
