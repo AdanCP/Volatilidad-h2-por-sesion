@@ -24,6 +24,7 @@ import pandas as pd
 
 import indicators as ind
 import sessions as ses
+import noticias as noti_
 
 
 SENTIDOS_PAUSA = ("ambos", "mismo", "contrario")
@@ -45,6 +46,7 @@ class Config:
     sl_ema_ref: str = "larga"       # con sl_modo "ema": "cruce" (punto medio de las dos medias: el nivel del cruce), "corta" o "larga" (en modo precio, la unica media)
     atr_periodo: int = 14
     direccion: str = "ambas"        # "ambas" | "largos" | "cortos"
+    ruptura: object = None          # ruptura.ConfigRup: estrategia de ruptura del rango de apertura de NY (solo la usa esa pagina; None = la de siempre)
     # entrada en pullback (opcional: apagado = entrada al cierre del cruce, como siempre)
     pullback_activo: bool = False
     pullback_pct: float = 50.0      # 0-100: % de la distancia extremo->EMA que debe devolver el precio (100 = toca la EMA)
@@ -157,6 +159,16 @@ class Config:
     tstop_activo: bool = False
     tstop_velas: int = 24
     tstop_r: float = -0.25
+    # Trading de noticias (reglas de cuenta): 1) no se abre una operacion a menos de noticias_min minutos de una noticia de alto impacto de USD;
+    # 2) antes de la noticia se cierra la operacion abierta si va en noticias_cerrar_r R o peor (None = no cerrar nada).
+    # fuente "velas": la noticia se detecta por una vela grande a las 8:30/10:00/14:00/14:30 de Nueva York; "csv": calendario (noticias_eventos, epochs UTC).
+    noticias_activo: bool = False
+    noticias_min: float = 6.0
+    noticias_cerrar_r: Optional[float] = -0.5
+    noticias_fuente: str = "velas"
+    noticias_rango_atr: float = 4.0
+    noticias_rango_min: float = 6.0
+    noticias_eventos: tuple = ()
     parcial_activo: bool = False
     parcial_nivel_modo: str = "r"
     parcial_nivel_valor: float = 1.5
@@ -259,6 +271,22 @@ class Config:
         if not -50 <= self.tstop_r <= 50:
             raise ValueError("El R del cierre por tiempo tiene que estar entre -50 y 50.")
 
+    def _validar_noticias(self) -> None:
+        if not self.noticias_activo:
+            return
+        if not 0 < self.noticias_min <= 120:
+            raise ValueError("Los minutos antes y después de la noticia tienen que estar entre 0 y 120.")
+        if self.noticias_cerrar_r is not None and not -50 <= self.noticias_cerrar_r <= 50:
+            raise ValueError("El R para cerrar antes de la noticia tiene que estar entre -50 y 50 (o vacío para no cerrar nada).")
+        if self.noticias_fuente not in ("velas", "csv"):
+            raise ValueError("La fuente de las noticias tiene que ser 'velas' o 'csv'.")
+        if self.noticias_fuente == "velas" and (self.noticias_rango_atr <= 0 or self.noticias_rango_min < 0):
+            raise ValueError("El rango de detección de noticias (veces el ATR y mínimo en precio) tiene que ser positivo.")
+        if self.noticias_fuente == "csv" and not self.noticias_eventos:
+            raise ValueError("Cargá el CSV del calendario de noticias (o usá la detección en las velas).")
+        if self.servidor_offset_horas is None:
+            raise ValueError("El filtro de noticias necesita el desfase horario del servidor.")
+
     def _validar_parcial(self) -> None:
         if not self.parcial_activo:
             return
@@ -310,6 +338,7 @@ class Config:
     def validar(self) -> None:
         self._validar_parcial()
         self._validar_tstop()
+        self._validar_noticias()
         self._validar_corte_dia()
         self._validar_reentrada()
         if self.vwap_dist_min_atr < 0 or self.vwap_min_minutos < 0:
@@ -354,6 +383,8 @@ class Config:
         self._validar_be()
         if self.direccion not in ("ambas", "largos", "cortos"):
             raise ValueError("Direccion invalida.")
+        if self.ruptura is not None:
+            self.ruptura.validar(self)
         if self.spread not in ("vela", "mediana", "fijo", "ninguno"):
             raise ValueError("Modo de spread invalido.")
         if self.sesion_activo and self.servidor_offset_horas is None:
@@ -396,7 +427,7 @@ VP_MODOS = ("poc", "fuera", "dentro")
 VP_AREA = 0.70                  # el area de valor reune el 70 % del volumen del perfil
 VP_MIN_MINUTOS = 360            # un dia solo cuenta para el perfil si tiene al menos 6 horas de velas (descarta domingos y feriados casi vacios)
 
-FILTROS_APAGADOS = dict(vp_activo=False, tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False, be_activo=False, parcial_activo=False, reentrada_activa=False, tstop_activo=False)
+FILTROS_APAGADOS = dict(vp_activo=False, tm1_activo=False, tm2_activo=False, sma_activo=False, vwap_activo=False, adx_activo=False, rango_activo=False, atr_activo=False, sesion_activo=False, pullback_activo=False, be_activo=False, parcial_activo=False, reentrada_activa=False, tstop_activo=False, noticias_activo=False)
 
 
 @dataclass
@@ -424,7 +455,9 @@ class Preparado:
     vp: Optional[tuple] = None              # (POC, VAH, VAL) de cada vela (NaN si todavia no hay perfil), solo con el filtro Volume Profile
     fs: Optional[np.ndarray] = None         # ultima vela de la semana de cada vela (n si no hay otro fin de semana adelante); solo si no se mantiene el finde
     bloq_vie: Optional[np.ndarray] = None   # True en las velas del viernes desde la hora en que ya no se abren operaciones (solo con ese campo)
+    noti: Optional[dict] = None             # noticias (solo con noticias_activo): mascaras ent / ov / cierre, eventos, detectadas por año y avisos
     re: Optional[dict] = None               # datos de la reentrada (solo con reentrada_activa): ok de filtros por lado, sesion, ADX y DI
+    rup: Optional[dict] = None              # ruptura del rango de apertura (solo con Config.ruptura): mascaras de horario, grupos por dia y tabla de dias
 
 
 def _off(P, i: int) -> float:
@@ -589,6 +622,20 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     diff = (c - ema_c) if modo_precio else (ema_c - ema_l)
     prev = np.r_[np.nan, diff[:-1]]
     sube, baja = (diff > 0) & (prev <= 0), (diff < 0) & (prev >= 0)
+    rup = None
+    if cfg.ruptura is not None:                  # ruptura del rango de apertura: las señales y el SL de cada una vienen de ruptura.py (el resto del motor es el mismo)
+        import ruptura as rup_
+        rup = rup_.senales(df, cfg, cfg.ruptura, _spread(df, cfg), atr)
+        sube, baja, dist = rup["sube"], rup["baja"], rup["dist"]
+        warm = 1                                 # sin el calentamiento de las medias (la ruptura no las usa): solo el de los filtros activos
+        if cfg.sma_activo:
+            warm = max(warm, cfg.sma_periodo + max(cfg.sma_pendiente_n, 0))
+        if cfg.adx_activo:
+            warm = max(warm, 2 * cfg.adx_periodo + max(cfg.adx_creciente_n, 0) + 1)
+        if cfg.rango_activo:
+            warm = max(warm, cfg.rango_ventana + 1)
+        if cfg.atr_activo and cfg.atr_rel_n:
+            warm = max(warm, cfg.atr_rel_n + cfg.atr_periodo)
 
     sma = ind.sma(c, cfg.sma_periodo) if cfg.sma_activo else None
     tm, tm_aviso = {}, []
@@ -629,6 +676,22 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
             ny = pd.DatetimeIndex(utc_).tz_localize("UTC").tz_convert("America/New_York")
             hh = ny.hour.to_numpy() + ny.minute.to_numpy() / 60.0
             bloq_vie = (ny.weekday.to_numpy() == 4) & (hh >= float(cfg.finde_no_abrir_desde))
+
+    noti = None
+    if cfg.noticias_activo:
+        utc_n = ses.servidor_a_utc(df.index, cfg.servidor_offset_horas, cfg.servidor_dst_eeuu)
+        avisos_n, años_n = [], {}
+        if cfg.noticias_fuente == "csv":
+            ev_n = np.asarray(cfg.noticias_eventos, dtype=np.int64)
+            ini_d, fin_d = int(noti_._epoch(utc_n)[0]), int(noti_._epoch(utc_n)[-1])
+            if not ((ev_n >= ini_d) & (ev_n <= fin_d)).any():
+                avisos_n.append("El CSV del calendario no tiene ninguna noticia dentro del período de los datos: el filtro no va a hacer nada.")
+            elif ev_n.min() > ini_d + 7 * 86400 or ev_n.max() < fin_d - 7 * 86400:
+                avisos_n.append("El CSV del calendario no cubre todo el período de los datos: en las partes sin calendario el filtro no actúa.")
+        else:
+            ev_n, años_n, avisos_n = noti_.eventos_en_velas(df, cfg)
+        noti = noti_.armar(utc_n, ev_n, cfg.noticias_min)
+        noti["años"], noti["avisos"] = años_n, avisos_n
 
     def entre(v, lo, hi):
         return not (np.isnan(v) or (lo is not None and v < lo) or (hi is not None and v > hi))
@@ -703,12 +766,16 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
         else:
             continue
         motivo = None
-        if not cfg.pb_efectivo() and ((bloq_vie is not None and bloq_vie[i]) or (fs is not None and fs[i] == i)):
+        if rup is not None and rup["pre"][i] is not None:
+            motivo = rup["pre"][i]                                    # ruptura: fuera de la ultima entrada, rango fuera de tamaño o sin historial
+        elif not cfg.pb_efectivo() and ((bloq_vie is not None and bloq_vie[i]) or (fs is not None and fs[i] == i)):
             motivo = "viernes"                                        # (con pullback se mira al ejecutar: se cancela la orden) / la ultima vela de la semana no abre
         elif cfg.sesion_activo and not cfg.pb_efectivo() and not ok_ses[i]:    # con pullback la sesion se mira al ejecutar
             motivo = "sesion"
         else:
             motivo = motivo_filtros(i, lado)
+        if motivo is None and noti is not None and not cfg.pb_efectivo() and noti["ent"][i]:
+            motivo = "noticias"                                       # va ultimo: solo cuenta lo que habria entrado (con pullback se mira al llenar la orden)
         cruces.append((i, lado, motivo))
 
     re = None
@@ -729,7 +796,7 @@ def preparar(df: pd.DataFrame, cfg: Config) -> Preparado:
     return Preparado(h, l, c, sp, atr, dist, df.index, cruces, 100 * float((raw == 0).mean()),
                      ema_c, ema_l, sube, baja, ok_ses if (cfg.pb_efectivo() and cfg.sesion_activo) else None,
                      claves_dia(df.index, cfg) if cfg.reglas_activas else None, diff,
-                     sl_ref, sl_off, tuple(tm_aviso), vp, fs, bloq_vie, re)
+                     sl_ref, sl_off, tuple(tm_aviso), vp, fs, bloq_vie, noti=noti, re=re, rup=rup)
 
 
 def pb_de(cfg: Config):
@@ -808,6 +875,13 @@ def fraccion_parcial(cfg: Config) -> float:
     return float(cerrado / cfg.lotes)
 
 
+def noti_de(cfg: Config):
+    """Regla 2 de noticias para simular(): {"r": R} o None si no hay que cerrar nada (apagado o sin R)."""
+    if not cfg.noticias_activo or cfg.noticias_cerrar_r is None:
+        return None
+    return {"r": float(cfg.noticias_cerrar_r)}
+
+
 def tstop_de(cfg: Config):
     """Parametros del cierre por tiempo para simular(), o None si esta apagado."""
     if not cfg.tstop_activo:
@@ -826,7 +900,7 @@ def parcial_de(cfg: Config):
             "sl_nivel": float(cfg.parcial_sl_nivel) if cfg.parcial_mover_sl else None}
 
 
-def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None, be=None, parcial=None, reent=None, tstop=None):
+def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None, salida: str = "rr", cuenta=None, be=None, parcial=None, reent=None, tstop=None, nrule=None, tp_dist=None, vu_sig=None, hcierre=None, grupo=None):
     """señales: lista de (indice, lado). Devuelve (DataFrame de operaciones, ignoradas).
 
     pb=None: entrada al cierre de la vela de la señal. pb={"pct","ema","velas"}: la señal deja una orden pendiente.
@@ -848,14 +922,28 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
     reent (ver reent_de): reentrada. Despues de una operacion de la tendencia que cerro con R > 0 se busca un retroceso a la media dentro de
     la ventana (hasta el cruce contrario, la caducidad o el fin de semana) y se vuelve a entrar con la misma gestion. Una posicion a la vez.
     La columna "reentrada" vale 0 en las entradas por cruce y 1 o 2 en las reentradas ("señal" es el cruce que origino la tendencia).
-    En la tabla, "i" es la vela de ENTRADA real y "señal" la vela del cruce (iguales sin pullback)."""
+    En la tabla, "i" es la vela de ENTRADA real y "señal" la vela del cruce (iguales sin pullback).
+    tp_dist / vu_sig (solo los usa la estrategia de reversion, reversion.py; con None todo sigue igual): arrays por vela con la distancia del TP (en
+    precio, desde el precio de entrada: el R:R de esa operacion es tp_dist / distancia del SL) y los US$ por unidad de precio de esa operacion
+    (riesgo fijo en US$: el lote cambia con la distancia del SL). Solo con entrada a mercado (sin pullback).
+    hcierre / grupo (solo los usa la estrategia de ruptura, ruptura.py; con None todo sigue igual): hcierre = array de bool por vela; la operacion
+    que sigue abierta al CIERRE de una vela marcada se cierra a mercado ahi (motivo "hora", despues de revisar SL, TP, breakeven y parcial de esa vela).
+    grupo = {"id": array por vela (id del dia, -1 fuera), "max": entradas por dia}: dentro de un grupo solo se toma la primera señal; con max 2, la segunda
+    solo si es del lado contrario y la primera salio por su SL original (motivo "sl"; no cuentan breakeven, hora, tiempo, parcial ni limite de cuenta).
+    Las señales descartadas por el grupo se anotan en .attrs["grupo"]."""
     h, l, c, sp, dist = P.h, P.l, P.c, P.sp, P.dist
+    if (tp_dist is not None or vu_sig is not None) and pb is not None:
+        raise ValueError("El TP y el lote por señal no se pueden combinar con el pullback.")
     if reent is not None:                               # los campos de gestion propia son opcionales: sin ellos, la misma que la entrada
         reent = {"sl_modo": "igual", "sl_valor": 0.0, "rr": None, "lote_max": None, "lotes": 0.0,
                  "lote_paso": 0.01, "lote_min": 0.01, **reent}
     n = len(c)
     filas, libre, ignoradas, sl_invalido, be_invalidas = [], 0, 0, 0, 0
     st = {"ordenes": 0, "llenadas": 0, "caducadas": 0, "cruce_contrario": 0}
+    NT = P.noti                                         # noticias (None = apagado): regla 1 con las mascaras, regla 2 con nrule
+    if NT is not None:
+        st["noticias"] = 0
+    G, gcont = {}, {"dia_lleno": 0, "no_contra": 0}      # entradas por dia (solo con grupo): por id de dia, {n, lado, sl}
     por_senal = salida == "senal"
     if por_senal and P.diff is None:
         raise ValueError("La salida por señal necesita el lado de la media (preparar() con esta version).")
@@ -974,7 +1062,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             S["cd_best"], S["cd"] = 0.0, 0.0                 # el ciclo siguiente arranca de cero
             cs["retirado"] += float(w)
 
-    ex = {"parc": False, "sl_sal": None}               # datos extra de la ultima corrida de recorrer(): parcial cobrado y precio del SL de salida
+    ex = {"parc": False, "sl_sal": None, "noti": 0}               # datos extra de la ultima corrida de recorrer(): parcial cobrado y precio del SL de salida
 
     def recorrer(desde, lado, sl, tp, entrada=None, lim=None, bepar=None, tope=None, parpar=None):
         # (cierre por tiempo: la vela de entrada es desde - 1; se evalua al cierre de la vela desde - 1 + tstop["velas"])
@@ -984,7 +1072,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         ex["sl_sal"] a que precio salio el SL.
         tope: ultima vela de la semana (sin mantener el fin de semana): si hasta ahi no salio, se cierra ahi (resultado "FIN")."""
         armada, sl_cur, parc = False, sl, False
-        ex["parc"], ex["sl_sal"] = False, sl
+        ex["parc"], ex["sl_sal"], ex["noti"] = False, sl, 0
         if bepar is not None:
             act_px, be_px = entrada + lado * bepar[0], entrada + lado * bepar[1]
         ps_px = None
@@ -1036,6 +1124,13 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 px_ = c[j] if lado == 1 else c[j] + sp[j]                             # sale al cierre: el largo vende al bid, el corto compra al ask
                 if lado * (px_ - entrada) / (lado * (entrada - sl)) <= tstop["r"] + 1e-12:
                     return "TIEMPO", False, j, armada
+            if hcierre is not None and hcierre[j]:                       # cierre forzado a la hora fija: sale al cierre de esta vela, con o sin breakeven
+                return "HORA", False, j, armada
+            if nrule is not None and not armada and NT["cierre"][j]:     # ultima vela antes de la ventana de una noticia: se cierra si va en R o peor
+                px_ = c[j] if lado == 1 else c[j] + sp[j]
+                if lado * (px_ - entrada) / (lado * (entrada - sl)) <= nrule["r"] + 1e-12:
+                    ex["noti"] = int(NT["cierre"][j])
+                    return "NOTICIA", False, j, armada
         if tope is not None:
             return "FIN", False, tope, armada
         return "ABIERTA", False, n - 1, armada
@@ -1075,8 +1170,8 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         """Convierte el resultado de recorrer() en una fila (R, parcial, costo extra), la anota y la aplica a la cuenta. Devuelve (res final, R)."""
         parc = parpar is not None and ex["parc"]
         motivo_sal = {"TP": "tp", "SL": "sl", "SEN": "senal", "LIM": "limite", "BE": "be", "FIN": "finde",
-                      "PARC_SL": "parc_sl", "PARC_TOT": "parcial", "TIEMPO": "tiempo"}.get(res, "")
-        if res in ("SEN", "FIN", "TIEMPO"):                       # sale al cierre: el largo vende al bid, el corto compra al ask
+                      "PARC_SL": "parc_sl", "PARC_TOT": "parcial", "TIEMPO": "tiempo", "NOTICIA": "noticia", "HORA": "hora"}.get(res, "")
+        if res in ("SEN", "FIN", "TIEMPO", "NOTICIA", "HORA"):                       # sale al cierre: el largo vende al bid, el corto compra al ask
             salida_px = c[j_out] if lado == 1 else c[j_out] + sp[j_out]
             r = lado * (salida_px - entrada) / d
             res = "TP" if r > 0 else "SL"
@@ -1107,7 +1202,7 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             cs["prot_desde"], cs["prot_n"] = None, 0          # se abrio una operacion: la cuenta tiene margen
         filas.append({"i": k, "señal": i, "lado": lado, "entrada": entrada, "sl": sl, "tp": tp, "dist": d,
                       "res": res, "amb": amb, "salida": j_out, "R": r, "motivo": motivo_sal, "be": int(armada),
-                      "parcial": int(parc), "R_parcial": r_par, "R_resto": r_res, "reentrada": n_re})
+                      "parcial": int(parc), "R_parcial": r_par, "R_resto": r_res, "reentrada": n_re, "noticia_ev": ex["noti"]})
         if res != "ABIERTA" and ct:
             cerrar(r, d, j_out, lado, entrada, res == "BE")
         return res, r
@@ -1131,6 +1226,8 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         for j in range(max(desde, 1), fin + 1):
             if P.bloq_vie is not None and P.bloq_vie[j]:
                 break
+            if NT is not None and (NT["ov"][j] if reent["modo"] == "limite" else NT["ent"][j]):
+                continue                                # entrada dentro de la ventana de una noticia
             if R["ses"] is not None and not R["ses"][j]:
                 continue
             if lim_modo:
@@ -1244,6 +1341,15 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
         if i < libre:                                   # operacion en curso (o orden pendiente): se ignora
             ignoradas += 1
             continue
+        g_i = int(grupo["id"][i]) if grupo is not None else -1
+        if g_i >= 0 and g_i in G:                       # ya se entro hoy: el dia se llena, o la segunda solo en contra y tras un SL
+            e_ = G[g_i]
+            if e_["n"] >= grupo["max"]:
+                gcont["dia_lleno"] += 1
+                continue
+            if lado == e_["lado"] or not e_["sl"]:
+                gcont["no_contra"] += 1
+                continue
         if ct:
             if cs["quemada"]:
                 break
@@ -1273,6 +1379,12 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 d = dist[k]
             if not d > 0:
                 continue
+            if tp_dist is not None:                     # reversion: el TP depende de la señal (media, punto medio...)
+                if not tp_dist[i] > 0:
+                    continue
+                rr = tp_dist[i] / d
+            if vu_sig is not None:                      # reversion: riesgo fijo en US$, el lote depende de la distancia del SL
+                vu = be_vu = float(vu_sig[i])
             if ct:
                 motivo_p, lim = puerta(d)
                 if motivo_p != "ok":
@@ -1299,6 +1411,9 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             for j in range(i + 1, fin + 1):
                 if P.bloq_vie is not None and P.bloq_vie[j]:     # viernes desde la hora limite: ya no se abren operaciones, se cancela la orden
                     fin_esp = j - 1
+                    break
+                if NT is not None and NT["ov"][j]:              # empieza la ventana de una noticia: el bot cancela la orden pendiente
+                    fin_esp, motivo = j - 1, "noticias"
                     break
                 e = ema[j - 1]                          # EMA conocida al dejar la orden
                 if lado == 1:
@@ -1360,6 +1475,10 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
             else:
                 res, amb, j_out, armada = recorrer(k + 1, lado, sl, tp, entrada, lim, bepar, tope_de(k), parpar)
         res, r = registrar(i, k, lado, entrada, sl, tp, d, res, amb, j_out, armada, bepar, parpar, lim)
+        if g_i >= 0:                                    # primera entrada del dia (o la segunda): se anota el lado y si salio por su SL original
+            e_ = G.setdefault(g_i, {"n": 0, "lado": lado, "sl": False})
+            e_["n"] += 1
+            e_["sl"] = filas[-1]["motivo"] == "sl"
         if res == "ABIERTA":
             break
         libre = j_out + 1
@@ -1379,11 +1498,15 @@ def simular(P: Preparado, señales, rr: float, costo_extra: float = 0.0, pb=None
                 break
     cols = ["i", "señal", "lado", "entrada", "sl", "tp", "dist", "res", "amb", "salida", "R", "motivo", "be",
             "parcial", "R_parcial", "R_resto", "reentrada"]
+    if NT is not None:
+        cols.append("noticia_ev")                       # epoch UTC de la noticia que cerro la operacion (0 en las demas)
     out = pd.DataFrame(filas, columns=cols)
     out.attrs["pb"] = st
     out.attrs["reent_saltadas_lote"] = re_salt         # reentradas descartadas por el lote recalculado (tope o minimo)
     out.attrs["sl_invalido"] = sl_invalido            # señales sin operar porque el SL anclado a la media quedaba al reves
     out.attrs["be_invalidas"] = be_invalidas          # operaciones donde el nivel del breakeven no quedaba por debajo de la activacion
+    if grupo is not None:
+        out.attrs["grupo"] = gcont                     # señales descartadas por las entradas del dia (ruptura)
     if ct:
         cs["balance_final"] = S["bal"]
         out.attrs["cuenta"] = cs
@@ -1410,6 +1533,7 @@ def ejecutar(P: Preparado, cfg: Config, lo: int = 0, hi: Optional[int] = None) -
             descartes[m] = descartes.get(m, 0) + 1
     señales = [(i, lado) for i, lado, m in en_rango if m is None]
     pb = pb_de(cfg)
-    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo, cuenta_de(P, cfg), be_de(cfg), parcial_de(cfg), reent_de(cfg), tstop_de(cfg))
+    extra = {} if P.rup is None else {"hcierre": P.rup["hcierre"], "grupo": {"id": P.rup["grupo"], "max": cfg.ruptura.entradas_dia}}    # solo la ruptura
+    tr, ign = simular(P, señales, cfg.rr, cfg.costo_extra, pb, cfg.salida_modo, cuenta_de(P, cfg), be_de(cfg), parcial_de(cfg), reent_de(cfg), tstop_de(cfg), noti_de(cfg), **extra)
     return Resultado(tr, descartes, len(en_rango), len(señales), ign, dict(tr.attrs.get("pb", {})) if pb else {},
                      dict(tr.attrs.get("cuenta", {})))

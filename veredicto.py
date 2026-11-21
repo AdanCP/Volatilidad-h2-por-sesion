@@ -88,6 +88,10 @@ def proyectar(par: Optional[dict], tasa_mes: float, usd_por_R: Optional[float] =
 # ------------------------------------------------------------------ descripción
 def _senal_txt(cfg) -> str:
     """'el cruce de EMA 13/34' (igual que siempre), 'el cruce de SMA 20/50' o 'el cruce del precio con la SMA 50'."""
+    rp = getattr(cfg, "ruptura", None)
+    if rp is not None:
+        _h = lambda m: f"{int(m) // 60:02d}:{int(m) % 60:02d}"
+        return f"la ruptura del rango de apertura de Nueva York (<b>{_h(rp.apertura_min)}-{_h(rp.apertura_min + rp.rango_min)}</b>, hora de NY)"
     tipo = getattr(cfg, "media_tipo", "ema").upper()
     if getattr(cfg, "modo_senal", "cruce") == "precio":
         return f"el cruce del precio con la {tipo} <b>{cfg.media_unica}</b>"
@@ -121,7 +125,16 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
             _sl_txt = f"SL a {_dist} de la {_ref}"
     else:
         _sl_txt = None
-    if cfg.salida_modo == "senal":
+    if getattr(cfg, "ruptura", None) is not None:
+        rp = cfg.ruptura
+        _h = lambda m: f"{int(m) // 60:02d}:{int(m) % 60:02d}"
+        _sl_r = {"mitad": "SL en la mitad del rango", "opuesto": "SL en el lado opuesto del rango",
+                 "atr": f"SL de {n(rp.sl_atr_x, 1)}×ATR({cfg.atr_periodo})"}[rp.sl_modo]
+        gestion = (f"{_sl_r}, TP a 1:{n(cfg.rr, 1)}, {rp.entradas_dia} entrada{'s' if rp.entradas_dia > 1 else ''} por día, última entrada "
+                   f"{_h(rp.ultima_min)} y cierre forzado {_h(rp.cierre_min)} (hora de NY)")
+        if rp.tam_activo:
+            gestion += f", solo con rango de {n(rp.tam_min, 1)} a {n(rp.tam_max, 1)} veces el promedio de los últimos {rp.tam_n} días"
+    elif cfg.salida_modo == "senal":
         if cfg.modo_senal == "precio":
             sal = f"sin TP fijo: se sale al cierre de la primera vela que cierra del otro lado de la media {cfg.media_unica}"
         else:
@@ -157,6 +170,9 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         _cond = ("en pérdida de " + n(abs(_tr), 2) + " R o más" if _tr < 0 else
                  ("sin ganancia" if _tr == 0 else "con menos de " + n(_tr, 2) + " R de ganancia"))
         gestion += (f" (cierre por tiempo: si a las {int(cfg.tstop_velas)} velas de la entrada sigue abierta {_cond}, se cierra a mercado)")
+    if getattr(cfg, "noticias_activo", False):
+        gestion += (f" (noticias: sin abrir a ±{n(cfg.noticias_min, 0)} min de una noticia de alto impacto"
+                    + ("" if cfg.noticias_cerrar_r is None else f" y cierre previo si va en {n(cfg.noticias_cerrar_r, 2)} R o peor") + ")")
     if not getattr(cfg, "finde_mantener", True):
         gestion += " y sin posiciones el fin de semana (se cierra todo el viernes antes del cierre del mercado)"
     filtros = []

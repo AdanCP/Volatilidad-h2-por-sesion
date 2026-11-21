@@ -122,6 +122,7 @@ PAG = {
     "sesiones": st.Page("pagina_sesiones.py", title="Sesiones XAU/USD", icon="📈", url_path="sesiones"),
     "ema": st.Page("app_backtest.py", title="Backtester EMA", icon="🧪", url_path="ema"),
     "sma": st.Page("app_backtest_sma.py", title="Backtester SMA", icon="📐", url_path="sma"),
+    "ruptura": st.Page("app_backtest_ruptura.py", title="Backtester Ruptura", icon="🔔", url_path="ruptura"),
 }
 
 

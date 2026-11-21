@@ -1,0 +1,18 @@
+{
+ "0:cruce": "7bc47a7745e183d8a8f7941bde0b3b536d3741aa:265:[]",
+ "0:cruce_filtros": "726168bbe8a95d200eae6913b9ffb67e7bc2254e:116:[[\"adx\", 125], [\"sesion\", 57]]",
+ "0:precio": "1ed01f96ce7596dba5c2b1ac07db8e284ad9f5d7:273:[]",
+ "0:precio_rr": "ea11846e233e378945ecfe0b83eed01932ef29e4:254:[]",
+ "0:precio_pullback": "17befb045ee9352148c72c24f4712466b3f28d36:270:[]",
+ "0:precio_gestion": "8c43f42d6c9fdfcabdad6f49c417a5b67169d9d5:320:[]",
+ "0:precio_cuenta_noticias": "6cf0180e72eea2fcbbc81dab184c43c5a1542122:281:[[\"noticias\", 5]]",
+ "0:cruce_reentrada_finde": "09a4d00edc49e1f1650c0da19833d2f227ff2d26:260:[[\"viernes\", 21]]",
+ "1:cruce": "5d36eb26ddf8bb57c64ccfbdb993c8b36a086be5:268:[]",
+ "1:cruce_filtros": "1ab3629a8dbe1acf3d8a27559bd0f8be45208639:103:[[\"adx\", 152], [\"sesion\", 80]]",
+ "1:precio": "c8d1c839e81bf68c08f68b10f66803ddd4c2962b:293:[]",
+ "1:precio_rr": "e9b101cddaaeaeb6af8b273525207f442f42ef09:352:[]",
+ "1:precio_pullback": "be257509e3944fe273e722a519059079f4d1c1fd:291:[]",
+ "1:precio_gestion": "772d456c0b6b18a3e09b0fd2c67fb77382bbd2e2:373:[]",
+ "1:precio_cuenta_noticias": "c0c2bd2ed9c78cdf585ad86cc064808d3ac606d4:113:[[\"noticias\", 10]]",
+ "1:cruce_reentrada_finde": "4ab6e7d3b82f6a1238fce1802e10b1f5f026d4db:259:[[\"viernes\", 21]]"
+}

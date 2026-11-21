@@ -177,6 +177,9 @@ _CSS_SIDEBAR = """
 [data-testid="stSidebar"] [data-testid="stExpander"]:has(> details > summary:hover){transform:translateY(-2px);}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary :is(p,span){color:@SIDETXT@ !important;font-weight:700;}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary svg{fill:@SIDETXT@;color:@SIDETXT@;}
+/* menú abierto: la barra del título se pone clara y el título blanco no se leía; va en el índigo de la app */
+[data-testid="stSidebar"] [data-testid="stExpander"] details[open] > summary :is(p,span){color:@ACC@ !important;}
+[data-testid="stSidebar"] [data-testid="stExpander"] details[open] > summary svg{fill:@ACC@;color:@ACC@;}
 [data-testid="stSidebar"] .sep-filtro{border-top:1px solid rgba(255,255,255,.35);margin:-.15rem 0;}
 .fte{font-size:1.05rem;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:@SIDETXT@ !important;
   border-top:1px solid @VEILB@;padding-top:.7rem;margin-top:.4rem;}

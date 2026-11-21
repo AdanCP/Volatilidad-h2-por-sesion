@@ -280,6 +280,9 @@ def generar_mq5(cfg, simbolo: str, tf: str, lotes: float, sl_usd: Optional[float
         "RE_VELAS": str(int(cfg.reentrada_velas)), "RE_ADX_ON": _b(cfg.re_adx_min is not None),
         "RE_ADX_MIN": _f(cfg.re_adx_min if cfg.re_adx_min is not None else 0.0, 4), "RE_DI": _b(cfg.re_di_favor),
         "RE_ADX_CRE": str(int(cfg.re_adx_creciente_n)), "RE_ADX_PER": str(int(cfg.re_adx_periodo)),
+        "NEWS_ON": _b(cfg.noticias_activo), "NEWS_MIN": _f(cfg.noticias_min, 4),
+        "NEWS_CLOSE_ON": _b(cfg.noticias_activo and cfg.noticias_cerrar_r is not None),
+        "NEWS_CLOSE_R": _f(cfg.noticias_cerrar_r if cfg.noticias_cerrar_r is not None else 0.0, 4),
         "TSTOP_ON": _b(cfg.tstop_activo), "TSTOP_BARS": str(int(cfg.tstop_velas)), "TSTOP_R": _f(cfg.tstop_r, 4),
         "RE_SL_MODO": str(("igual", "atr", "precio").index(cfg.re_sl_modo)), "RE_SL_VAL": _f(cfg.re_sl_valor, 6),
         "RE_RR_ON": _b(cfg.re_rr is not None), "RE_RR": _f(cfg.re_rr if cfg.re_rr is not None else cfg.rr, 4),
@@ -435,6 +438,10 @@ const double          InpCommissionUsd  = @@COMISION@@;           // Comision po
 const bool            InpTStopOn        = @@TSTOP_ON@@;           // Cierre por tiempo: si a las N velas de la entrada la operacion sigue abierta y va en R o peor, se cierra a mercado
 const int             InpTStopBars      = @@TSTOP_BARS@@;         // ... velas cerradas desde la entrada en que se mira (una sola vez)
 const double          InpTStopR         = @@TSTOP_R@@;            // ... se cierra si el resultado es este R o peor (negativo = perdiendo, 0, o positivo)
+const bool            InpNewsOn         = @@NEWS_ON@@;            // Trading de noticias: no se abre nada a +-N minutos de una noticia de USD de impacto alto (calendario de MT5)
+const double          InpNewsMin        = @@NEWS_MIN@@;           // ... minutos antes y despues de la noticia
+const bool            InpNewsCloseOn    = @@NEWS_CLOSE_ON@@;      // ... antes de la noticia se cierra la operacion abierta si va en InpNewsCloseR o peor (no si el breakeven ya se activo)
+const double          InpNewsCloseR     = @@NEWS_CLOSE_R@@;       // ... umbral en R (negativo = perdiendo; 0 = cerrar si no esta en ganancia)
 const bool            InpBeOn           = @@BE_ON@@;              // Breakeven: al llegar la ganancia a la activacion, el SL pasa a la entrada mas un nivel (por tick, sin esperar al cierre de la vela)
 const int             InpBeActMode      = @@BE_ACT_MODO@@;        // ... activacion: 0 = multiplos de R, 1 = US$ fijos (con los lotes del bot), 2 = % del camino al TP
 const double          InpBeActVal       = @@BE_ACT_VAL@@;         // ... valor de la activacion (en la unidad de arriba)
@@ -793,6 +800,101 @@ bool FindeBloqueaEntrada(const datetime t_apertura)
    if(dow != 5) return false;
    if(h + PeriodSeconds() / 3600.0 >= 17.0 - 1e-6) return true;
    return InpFindeBloq && h >= InpFindeBloqH;
+}
+
+// ============================ trading de noticias: calendario y regla 1 =============================
+// Regla 1: no se abre nada a menos de InpNewsMin minutos de una noticia de USD de impacto alto (ni entradas, ni reentradas, ni ordenes
+// limite: la orden no se deja, o se cancela, si su vela toca la ventana). La regla 2 (mas abajo) cierra antes de la noticia la operacion
+// abierta que va en InpNewsCloseR o peor. Las noticias salen del calendario economico de MT5 (sus horas ya vienen en hora del servidor).
+// En el probador de estrategias el calendario no existe: ahi el filtro se apaga solo. Si el calendario falla, no se abren operaciones
+// nuevas (y nunca se cierra nada por no tener calendario).
+datetime g_newsT[];                    // noticias (hora servidor), ordenadas
+string   g_newsN[];                    // ... y su nombre
+int      g_newsM = 0;
+datetime g_newsLoad = 0;               // ultima lectura del calendario (hora del servidor)
+bool     g_newsOK = false;             // el calendario se pudo leer
+bool     g_newsAvisado = false;        // ya se aviso que no hay calendario
+
+bool NewsActive() { return InpNewsOn && !MQLInfoInteger(MQL_TESTER); }
+
+void NewsFalla(const string que)
+{
+   g_newsOK = false;
+   if(g_newsAvisado) return;
+   g_newsAvisado = true;
+   Avisar("CALENDARIO DE NOTICIAS NO DISPONIBLE (" + que + "): el bot no abre operaciones nuevas hasta que vuelva. No se cierra nada por esto.");
+}
+
+// lee el calendario (USD, impacto alto) de ayer a dentro de 4 dias; se repite cada 10 minutos (cada minuto si fallo)
+bool NewsRefresh(const bool force)
+{
+   const datetime ahora = TimeTradeServer();
+   if(!force && g_newsLoad != 0 && ahora - g_newsLoad < (g_newsOK ? 600 : 60)) return g_newsOK;
+   g_newsLoad = ahora;
+   MqlCalendarValue vals[];
+   ResetLastError();
+   const int n = CalendarValueHistory(vals, ahora - 86400, ahora + 4 * 86400, NULL, "USD");
+   if(n <= 0)
+   {
+      NewsFalla(n < 0 ? "error " + IntegerToString(GetLastError()) : "el calendario vino vacio");
+      return false;
+   }
+   ArrayResize(g_newsT, n);
+   ArrayResize(g_newsN, n);
+   int cnt = 0;
+   for(int j = 0; j < n; j++)
+   {
+      MqlCalendarEvent ev;
+      if(!CalendarEventById(vals[j].event_id, ev)) continue;
+      if(ev.importance != CALENDAR_IMPORTANCE_HIGH) continue;
+      int p = cnt++;
+      while(p > 0 && g_newsT[p - 1] > vals[j].time)
+      {
+         g_newsT[p] = g_newsT[p - 1];
+         g_newsN[p] = g_newsN[p - 1];
+         p--;
+      }
+      g_newsT[p] = vals[j].time;
+      g_newsN[p] = ev.name;
+   }
+   g_newsM = cnt;
+   if(g_newsAvisado) { g_newsAvisado = false; Avisar("Calendario de noticias recuperado: el bot vuelve a operar normalmente."); }
+   g_newsOK = true;
+   return true;
+}
+
+// true si el intervalo [a, b] (hora servidor) toca la ventana de alguna noticia: una entrada es el intervalo [t, t]; una orden limite
+// que vive en una vela, [apertura, cierre]. Los bordes cuentan (igual que el backtester).
+bool NewsBloquea(const datetime a, const datetime b, string &nombre)
+{
+   const long w = (long)MathRound(InpNewsMin * 60.0);
+   for(int k = 0; k < g_newsM; k++)
+      if((long)g_newsT[k] - w <= (long)b && (long)g_newsT[k] + w >= (long)a)
+      {
+         nombre = g_newsN[k];
+         return true;
+      }
+   return false;
+}
+
+// true = no se puede abrir (ni dejar una orden) en el intervalo [a, b]
+bool NewsBlockEntry(const datetime a, const datetime b)
+{
+   if(!NewsActive()) return false;
+   NewsRefresh(false);
+   if(!g_newsOK)
+   {
+      Print("Sin calendario de noticias: no se abren operaciones nuevas.");
+      return true;
+   }
+   string nombre = "";
+   const datetime ahora = TimeTradeServer();
+   if(NewsBloquea(a, b, nombre) || NewsBloquea(ahora, ahora, nombre))
+   {
+      Print("Senal descartada por noticia: ", nombre, " (", TimeToString(a, TIME_DATE | TIME_MINUTES), " hora servidor).");
+      return true;
+   }
+   return false;
 }
 
 // ============================ Volume Profile ===================================
@@ -1499,6 +1601,12 @@ void PlacePullback(const int i)
       Print("Pullback cancelado: fin de semana (no se dejan ordenes el viernes desde la hora elegida ni en la ultima vela).");
       return;
    }
+   if(NewsBlockEntry(iTime(_Symbol, _Period, 0), iTime(_Symbol, _Period, 0) + PeriodSeconds()))       // la vela toca la ventana de una noticia: se cancela la orden
+   {
+      g_pbActive = false;
+      Print("Pullback cancelado: noticia.");
+      return;
+   }
    if(InpSesOn && !InSession(iTime(_Symbol, _Period, 0)))             // fuera de sesion no se deja orden (sigue contando la caducidad)
    {
       Print("Pullback: fuera de sesion, no se deja orden en esta vela (vela ", g_pbBars, " de ", InpPBBars, ").");
@@ -1686,12 +1794,14 @@ bool ReAttempt(const int i)
       const bool toca = (side == 1) ? (g_l[i] <= e && g_c[i] > e) : (g_h[i] >= e && g_c[i] < e);
       if(!toca) return false;
       if(!PassFilters(i, side, true)) return false;             // sesion y viernes de la vela de la decision, mas todos los filtros
+      if(NewsBlockEntry(iTime(_Symbol, _Period, 0), iTime(_Symbol, _Period, 0))) return false;     // noticias: la entrada es al cierre de esta vela
    }
    else
    {
       const datetime tNext = iTime(_Symbol, _Period, 0);         // la orden vive en la vela que esta por abrir
       if(FindeBloqueaEntrada(tNext)) return false;
       if(InpSesOn && !InSession(tNext)) return false;
+      if(NewsBlockEntry(tNext, tNext + PeriodSeconds())) return false;     // noticias: la orden vive en la vela que abre
       if(!ReBase(i, side)) return false;
    }
    if(!ReAdxOk(i, side)) return false;
@@ -2140,6 +2250,126 @@ void RevisarCierrePorTiempo(const int i)
    }
 }
 
+// ============================ trading de noticias: regla 2 (cierre antes de la noticia) ============
+// Igual que el backtester: en la ultima vela cerrada antes de que empiece la ventana de una noticia (la ventana arranca entre el cierre de
+// esa vela y el de la siguiente) se mira UNA sola vez la operacion abierta: si va en InpNewsCloseR o peor y el breakeven no se activo, se
+// cierra a mercado. Con velas de 5 min y N = 6 el cierre cae entre 6 y 11 min antes de la noticia. Red de seguridad: si el cierre falla se
+// reintenta en cada tick hasta 1 minuto antes de la noticia, y si sigue abierta llega un aviso; si por cualquier motivo no se evaluo en la
+// vela (bot reiniciado, operacion abierta justo antes), se evalua en cualquier tick mientras falte mas de 1 minuto.
+ulong    g_neId  = 0;                  // posicion cuya ultima noticia evaluada fue g_neT
+datetime g_neT   = 0;
+datetime g_newsCierreE = 0;            // noticia ante la que se pidio un cierre que todavia no se confirmo (0 = ninguna)
+bool     g_newsCerrar = false;         // el cierre en curso es el de la noticia (para el aviso)
+
+bool NewsDebeCerrar(const double r)
+{
+   return InpNewsCloseOn && r <= InpNewsCloseR + 1.0e-12;
+}
+
+// noticia (hora servidor) cuya ventana arranca justo despues del cierre de la ultima vela cerrada i, o 0
+datetime NewsCierreDe(const int i)
+{
+   const int per = PeriodSeconds();
+   const long fin = (long)g_time[i] + per;
+   const long w = (long)MathRound(InpNewsMin * 60.0);
+   for(int k = 0; k < g_newsM; k++)
+   {
+      const long s = (long)g_newsT[k] - w;
+      if(s >= fin && s < fin + per) return g_newsT[k];
+   }
+   return 0;
+}
+
+string NewsNombre(const datetime ev)
+{
+   for(int k = 0; k < g_newsM; k++)
+      if(g_newsT[k] == ev) return g_newsN[k];
+   return "";
+}
+
+// evalua la posicion abierta ante la noticia ev (enBarra: con el cierre de la vela i; si no, con el precio actual). true = se pidio el cierre
+bool NewsEvaluar(const datetime ev, const bool enBarra, const int i)
+{
+   for(int k = PositionsTotal() - 1; k >= 0; k--)
+   {
+      if(PositionGetSymbol(k) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+      const ulong id = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      if(g_neId == id && ev <= g_neT) return false;      // ya se evaluo esta noticia (se guarda para sobrevivir a un reinicio)
+      const int    side = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+      const double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      const double slNow = PositionGetDouble(POSITION_SL);
+      double d = side * (open - slNow);
+      if(InpParOn && g_parId == id && g_parD > 0.0) d = g_parD;          // con el parcial el SL pudo moverse: se usa la distancia original
+      if(!(d > 0.0)) return false;
+      g_neId = id;
+      g_neT = ev;
+      GlobalVariableSet(g_gv + "NEID", (double)id);
+      GlobalVariableSet(g_gv + "NET", (double)ev);
+      if(InpBeOn && g_beId == id)
+      {
+         Print("Noticia ", NewsNombre(ev), ": el breakeven ya se activo, no se cierra.");
+         return false;
+      }
+      const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID), ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double px;
+      if(enBarra) px = (side == 1) ? g_c[i] : g_c[i] + (ask - bid);       // cierre de la vela (el corto compra al ask: cierre + spread)
+      else        px = (side == 1) ? bid : ask;
+      const double r = TsR(side, open, px, d);
+      if(NewsDebeCerrar(r))
+      {
+         Print("Cierre antes de noticia: ", NewsNombre(ev), ", R=", DoubleToString(r, 2), " (umbral ", DoubleToString(InpNewsCloseR, 2), "). Se cierra la operacion.");
+         g_newsCerrar = true;
+         g_newsCierreE = ev;
+         CloseAll();
+         return true;
+      }
+      Print("Noticia ", NewsNombre(ev), ": R=", DoubleToString(r, 2), " (umbral ", DoubleToString(InpNewsCloseR, 2), "). La operacion sigue.");
+      return false;
+   }
+   return false;
+}
+
+// en cada vela nueva (con posicion abierta): evaluacion del motor
+void NewsBarra(const int i)
+{
+   if(!NewsActive() || !InpNewsCloseOn) return;
+   if(!NewsRefresh(true)) return;                      // sin calendario nunca se cierra
+   const datetime ev = NewsCierreDe(i);
+   if(ev != 0) NewsEvaluar(ev, true, i);
+}
+
+// en cada tick: reintento del cierre pedido y evaluacion tardia
+void NewsOnTick()
+{
+   if(!NewsActive() || !InpNewsCloseOn) return;
+   const datetime ahora = TimeTradeServer();
+   if(g_newsCierreE != 0)
+   {
+      if(!HasPosition()) { g_newsCierreE = 0; g_newsCerrar = false; return; }
+      if(ahora < g_newsCierreE - 60) { CloseAll(); return; }      // el cierre no se concreto: se reintenta en cada tick
+      static datetime ultAv = 0;
+      if(TimeCurrent() - ultAv > 30)
+      {
+         ultAv = TimeCurrent();
+         Avisar("NO SE PUDO CERRAR ANTES DE LA NOTICIA " + NewsNombre(g_newsCierreE) + ": la operacion sigue abierta a menos de 1 minuto. Revisala a mano.");
+      }
+      g_newsCierreE = 0;
+      g_newsCerrar = false;
+      return;
+   }
+   if(!HasPosition() || !NewsRefresh(false)) return;
+   const long w = (long)MathRound(InpNewsMin * 60.0);
+   for(int k = 0; k < g_newsM; k++)
+   {
+      const long e = (long)g_newsT[k];
+      if((long)ahora >= e - w && (long)ahora < e - 60)             // ya empezo la ventana y falta mas de 1 minuto: evaluacion tardia
+      {
+         NewsEvaluar(g_newsT[k], false, 0);
+         break;
+      }
+   }
+}
+
 // ============================ logica por vela =================================
 void OnNewBar()
 {
@@ -2154,6 +2384,7 @@ void OnNewBar()
       DeletePending();
       if(InpExitSignal == 1) RevisarSalidaPorSenal();
       if(HasPosition()) RevisarCierrePorTiempo(i);     // (si la senal ya cerro la operacion no se mira)
+      if(HasPosition()) NewsBarra(i);                  // trading de noticias, regla 2 (si el cierre por tiempo ya la cerro no se mira)
       return;
    }
 
@@ -2197,6 +2428,7 @@ void OnNewBar()
       Print("Senal descartada por los filtros: no se opera.");
       return;
    }
+   if(!conPullback && NewsBlockEntry(iTime(_Symbol, _Period, 0), iTime(_Symbol, _Period, 0))) return;     // noticias: va ultimo (con pullback se mira al dejar la orden)
 
    if(PauseBlocks(i, cr))
    {
@@ -2311,6 +2543,19 @@ int OnInit()
       g_reCrossT = GlobalVariableCheck(g_gv + "RECROSS") ? (datetime)GlobalVariableGet(g_gv + "RECROSS") : 0;
       g_reN      = GlobalVariableCheck(g_gv + "REN") ? (int)GlobalVariableGet(g_gv + "REN") : 0;
       g_reElig   = (GlobalVariableCheck(g_gv + "REELIG") && GlobalVariableGet(g_gv + "REELIG") > 0.5);
+   }
+   if(GlobalVariableCheck(g_gv + "NEID") && GlobalVariableCheck(g_gv + "NET"))     // noticia ya evaluada en una operacion abierta antes de reiniciar el bot
+   {
+      g_neId = (ulong)GlobalVariableGet(g_gv + "NEID");
+      g_neT  = (datetime)GlobalVariableGet(g_gv + "NET");
+   }
+   if(InpNewsOn && MQLInfoInteger(MQL_TESTER))
+      Print("AVISO: el calendario economico no existe en el probador de estrategias: el filtro de noticias queda APAGADO en esta prueba (en cuenta real y demo si funciona).");
+   else if(NewsActive())
+   {
+      NewsRefresh(true);
+      Print(g_newsOK ? "Calendario de noticias leido: " + IntegerToString(g_newsM) + " noticias de impacto alto (USD) en los proximos dias."
+                     : "AVISO: no se pudo leer el calendario de noticias: el bot no abre operaciones nuevas hasta que funcione.");
    }
    if(GlobalVariableCheck(g_gv + "TSID"))               // cierre por tiempo ya evaluado en una operacion abierta antes de reiniciar el bot
       g_tsId = (ulong)GlobalVariableGet(g_gv + "TSID");
@@ -2516,7 +2761,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       else if(motivo == DEAL_REASON_SL) que = "SL ALCANZADO";
       else if(motivo == DEAL_REASON_SO) que = "CIERRE FORZADO POR EL BROKER (stop out)";
       else if(motivo == DEAL_REASON_EXPERT) que = g_salidaSenal ? "SALIDA POR SENAL (el precio cambio de lado de la media)"
-                                                : (g_tsCerrar ? "CIERRE POR TIEMPO (la operacion no arranco)" : "CIERRE POR EL BOT (freno de perdida)");
+                                                : (g_tsCerrar ? "CIERRE POR TIEMPO (la operacion no arranco)"
+                                                : (g_newsCerrar ? "CIERRE ANTES DE LA NOTICIA (iba perdiendo)" : "CIERRE POR EL BOT (freno de perdida)"));
       else if(motivo == DEAL_REASON_CLIENT || motivo == DEAL_REASON_MOBILE || motivo == DEAL_REASON_WEB) que = "CIERRE MANUAL";
       double res = HistoryDealGetDouble(trans.deal, DEAL_PROFIT) + HistoryDealGetDouble(trans.deal, DEAL_SWAP)
                    + HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
@@ -2584,6 +2830,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
       g_salidaSenal = false;
       g_beCerrar = false;
       g_tsCerrar = false;
+      g_newsCerrar = false;
+      g_newsCierreE = 0;
       Avisar(que + ": " + string(tipo == DEAL_TYPE_SELL ? "compra" : "venta") + " cerrada a " + DoubleToString(precio, dig)
              + " | resultado " + (res >= 0.0 ? "+" : "") + DoubleToString(res, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY));
    }
@@ -2594,6 +2842,7 @@ void OnTick()
    ManageFinde();                                  // sin mantener el fin de semana: viernes 16:59 de Nueva York se cierra todo
    ManageParcial();                                // el cierre parcial se revisa en cada tick
    ManageBreakeven();                              // el breakeven se revisa en cada tick (no espera al cierre de la vela)
+   NewsOnTick();                                   // trading de noticias: reintento del cierre y evaluacion tardia
    if(!GuardsOK()) return;
    const datetime t0 = iTime(_Symbol, _Period, 0);
    if(g_lastBar == 0) { g_lastBar = t0; return; }   // primera vez: se espera una vela nueva

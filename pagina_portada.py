@@ -88,6 +88,23 @@ def _codigo(w: int, h: int, color: str) -> str:
     return f'<svg width="100%" viewBox="0 0 {w} {h}">{lin}</svg>'
 
 
+def _ruptura(w: int, h: int, p: dict) -> str:
+    """Caja del rango de apertura, velas que lo rompen hacia arriba y la línea de cierre por hora."""
+    ind, ros, pis, sua = p["INDIGO"], p["ROSA"], p["PISTA"], p["SUAVE"]
+    caja = (f'<rect x="70" y="26" width="86" height="26" rx="3" fill="{pis}" opacity=".95"/>'
+            f'<line x1="70" y1="26" x2="156" y2="26" stroke="{sua}" stroke-width="1.2" stroke-dasharray="3 3"/>'
+            f'<line x1="70" y1="52" x2="156" y2="52" stroke="{sua}" stroke-width="1.2" stroke-dasharray="3 3"/>')
+    velas = ""
+    for x, top, bot, col in [(22, 36, 48, sua), (40, 32, 44, sua), (58, 34, 46, sua), (82, 30, 46, sua), (100, 33, 48, sua), (118, 28, 44, sua),
+                             (136, 31, 47, sua), (172, 14, 30, ind), (190, 6, 22, ind), (208, 2, 16, ind)]:
+        velas += (f'<line x1="{x}" y1="{top - 4}" x2="{x}" y2="{bot + 4}" stroke="{col}" stroke-width="1.4"/>'
+                  f'<rect x="{x - 4}" y="{top}" width="8" height="{bot - top}" rx="1.5" fill="{col}"/>')
+    flecha = (f'<path d="M226 22 L262 8" stroke="{ind}" stroke-width="2.4" fill="none" stroke-linecap="round"/>'
+              f'<path d="M252 7 L263 7.5 L259 17.5" stroke="{ind}" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>')
+    hora = f'<line x1="262" y1="0" x2="262" y2="{h}" stroke="{ros}" stroke-width="1.4" stroke-dasharray="2 3"/>'
+    return f'<svg width="100%" viewBox="0 0 {w} {h}">{caja}{velas}{flecha}{hora}</svg>'
+
+
 def html(p: dict, ruta: dict, oscuro: bool) -> str:
     """Devuelve el HTML completo de la portada. `p` es la paleta (ui.TEMAS[...]); `ruta` mapea clave -> url_path."""
     W, H = 300, 64
@@ -95,7 +112,7 @@ def html(p: dict, ruta: dict, oscuro: bool) -> str:
         ("sesiones", "Sesiones XAU/USD", "Volatilidad del oro por sesión y por hora", _horas(W, H, p["PISTA"], p["INDIGO"])),
         ("ema", "Backtester EMA", "Cruce de dos medias exponenciales", _cruce("ema", W, 72, p)),
         ("sma", "Backtester SMA", "Precio contra una media simple o cruce de dos", _cruce("sma", W, 72, p)),
-        ("bot", "Generar bot (.mq5)", "Exporta los parámetros del backtest a MetaTrader 5", _codigo(W, H, p["INDIGO"])),
+        ("ruptura", "Backtester Ruptura", "Ruptura del rango de apertura de Nueva York", _ruptura(W, H, p)),
     ]
     tarjetas = ""
     for k, titulo, desc, img in mods:

@@ -79,7 +79,7 @@ def _intentar(f, *a, **k):
 
 
 def informe(r: dict, cfg, simbolo: str, pdin: dict, meta: dict, veredicto: dict = None, relato: str = "",
-            obj_pct: float = 5.0, abl=None, comp=None, nombre_app: str = "ACPTester"):
+            obj_pct: float = 5.0, abl=None, comp=None, nombre_app: str = "ACPTester", rev=None):
     """Devuelve (markdown, csv_operaciones, csv_resultados) de la corrida `r` (salida de metrics.evaluar)."""
     P, t, tr, idx = r["P"], r["tabla"], r["trades"], r["P"].indice
     L = [f"# Informe de {nombre_app}: {simbolo}", "",
@@ -96,6 +96,25 @@ def informe(r: dict, cfg, simbolo: str, pdin: dict, meta: dict, veredicto: dict 
     L += ["_Notas de unidades: con `sl_modo` = precio el `sl_valor` está en unidades de precio (ya convertido desde dólares); con "
           "`sl_modo` = ema es la distancia en unidades de precio entre la media y el SL (ya convertida desde pips si correspondía) o, con `sl_ema_pct` = True, un porcentaje del nivel de referencia; "
           "con atr es un múltiplo del ATR y con pct un porcentaje del precio._", ""]
+
+    if getattr(cfg, "ruptura", None) is not None and getattr(P, "rup", None) is not None:
+        import ruptura as _rup
+        _n = len(P.c)
+        _co = int(r.get("corte", int(_n * 0.7)))
+        _ram = [("Todo", 0, _n), ("In-sample", 0, _co), ("Out-of-sample", _co, _n)]
+        _e = {k: _intentar(_rup.embudo, P, tr, P.cruces, lo, hi) for k, lo, hi in _ram}
+        _s = {k: _intentar(_rup.estadisticas, P, tr, lo, hi) for k, lo, hi in _ram}
+        L += ["### Rango de apertura (ruptura)", "",
+              f"Rango {_rup.hhmm(cfg.ruptura.apertura_min)}-{_rup.hhmm(cfg.ruptura.apertura_min + cfg.ruptura.rango_min)} de Nueva York; última entrada "
+              f"{_rup.hhmm(cfg.ruptura.ultima_min)}; cierre forzado {_rup.hhmm(cfg.ruptura.cierre_min)} (hora de NY). Cada día cae en una sola fila del embudo.", "",
+              "**Embudo de días**", "",
+              _tabla(pd.DataFrame({k: v for k, v in _e.items()}), 0, "etapa"), "",
+              "**Operaciones por tramo** (cantidad y R medio por tipo de salida)", ""]
+        for k, v in _s.items():
+            L += [f"- {k}: " + (v.get("_error") if "_error" in v else
+                                 f"{v['n']} operaciones; " + "; ".join(f"{m}: {x['n']} (R medio {_v(x['R_medio'], 2)})" for m, x in v["salidas"].items()))]
+        L += [""]
+        L += ["_La comparación contra el azar no se calcula en la ruptura._", ""]
 
     # ---- datos y corrida
     L += ["## 2. Datos y corrida", ""]
@@ -133,6 +152,24 @@ def informe(r: dict, cfg, simbolo: str, pdin: dict, meta: dict, veredicto: dict 
               f"- Regla: a las {int(cfg.tstop_velas)} velas de la entrada, si sigue abierta (sin breakeven) y va en {cfg.tstop_r} R o peor, se cierra a mercado.",
               f"- Operaciones cerradas por tiempo: {len(_ts)} de {len(tr)}; R total {_v(float(_ts['R'].sum()), 2)}; "
               f"R promedio {_v(float(_ts['R'].mean()) if len(_ts) else 0.0, 2)}.", ""]
+
+    if getattr(cfg, "noticias_activo", False):
+        _P_n = r.get("P")
+        _N_n = getattr(_P_n, "noti", None) or {}
+        _nt = tr[tr["motivo"] == "noticia"] if len(tr) and "motivo" in tr else tr
+        _dn = int((r.get("descartes") or {}).get("noticias", 0))
+        _fuente = "calendario CSV" if cfg.noticias_fuente == "csv" else (
+            f"detectadas en las velas (8:30/10:00/14:00/14:30 de Nueva York, rango >= {_v(cfg.noticias_rango_atr, 1)} x ATR(14) y >= {_v(cfg.noticias_rango_min, 1)} en precio)")
+        L += ["### Trading de noticias (tramo Todo)", "",
+              f"- Regla 1: sin abrir operaciones (ni reentradas ni órdenes límite) a ±{_v(cfg.noticias_min, 0)} min de una noticia de USD de alto impacto. "
+              f"Fuente: {_fuente}. Noticias en el período: {len(_N_n.get('eventos', []))}" +
+              (" (por año: " + ", ".join(f"{a}: {c}" for a, c in sorted((_N_n.get('años') or {}).items())) + ")" if _N_n.get("años") else "") + ".",
+              f"- Señales descartadas por la ventana: {_dn}.",
+              ("- Regla 2: apagada (no se cierra nada antes de la noticia)." if cfg.noticias_cerrar_r is None else
+               f"- Regla 2: antes de la noticia, si la operación abierta va en {cfg.noticias_cerrar_r} R o peor (y sin breakeven activado) se cierra a mercado. "
+               f"Cierres: {len(_nt)}; R total {_v(float(_nt['R'].sum()) if len(_nt) else 0.0, 2)}; R promedio {_v(float(_nt['R'].mean()) if len(_nt) else 0.0, 2)}."),
+              "- Límites: las noticias detectadas en las velas se conocen a posteriori (sesgo optimista frente al calendario real); solo se cubren las "
+              "operaciones abiertas cerca de la noticia (una abierta desde antes que sigue en ganancia la atraviesa).", ""]
 
     # ---- cuenta
     cu = r.get("cuenta")
@@ -213,6 +250,27 @@ def informe(r: dict, cfg, simbolo: str, pdin: dict, meta: dict, veredicto: dict 
             L += [f"| {vd.SIMBOLO[e]} | {n} | {_txt(d)} |" for e, n, d in vc["checks"]]
             L += ["", f"Robustez: **{vc['robustez']['titulo']}** — {_txt(vc['robustez']['texto'])}", ""]
         L += [f"- {n}" for n in dict.fromkeys(notas_c or [])] + [""]
+
+    # ---- reversion a la media (sola), solo si el menu 10 estaba activo en la corrida
+    if rev is not None and rev[2].activo and rev[4] == simbolo:
+        ev_, _cfg_r, rv_, ab_, _ = rev
+        L += ["## Reversión a la media (sola)", "",
+              f"- Variante {rv_.variante}" + (f": Bollinger de {rv_.bb_n} velas y {_v(rv_.bb_k, 1)} desvíos; ADX({rv_.adx_periodo}) menor a {_v(rv_.adx_max, 1)}."
+                                          if rv_.variante == "A" else
+                                          f": ruptura falsa del máximo / mínimo de ayer, vuelta a cerrar adentro en {rv_.b_velas} velas"
+                                          + (f"; ADX({rv_.adx_periodo}) menor a {_v(rv_.adx_max, 1)}." if rv_.adx_activo_b else ".")),
+              "- SL: " + (f"extremo de la señal + {_v(rv_.sl_atr_x, 2)} x ATR({rv_.atr_periodo})" if rv_.sl_modo == "atr" else f"distancia fija {_v(rv_.sl_precio, 2)}")
+              + ". TP: " + ("la media de Bollinger (A) o el punto medio del rango de ayer (B)" if rv_.tp_modo == "media" else f"R:R fijo {_v(rv_.rr, 2)}") + ".",
+              f"- Riesgo fijo de US${_v(rv_.riesgo_usd, 2)} por operación (lote = riesgo / (distancia del SL x US$ por unidad por lote), redondeado hacia abajo).",
+              f"- Cierre por tiempo: {'sí, ' + str(rv_.tstop_velas) + ' velas, R ' + _v(rv_.tstop_r, 2) if rv_.tstop_activo else 'no'}. "
+              f"Breakeven: {'sí, activa en ' + _v(rv_.be_act_valor, 2) + ' R, SL en ' + _v(rv_.be_nivel_valor, 2) + ' R' if rv_.be_activo else 'no'}. "
+              f"Horario propio: {'sí (' + ', '.join(rv_.sesiones) + ')' if rv_.sesion_activo else 'no'}.",
+              "- Esta sección es la reversión corrida SOLA (sin la EMA). La simulación conjunta de la cartera no está incluida.", "",
+              "### Resultados por tramo", "", _tabla(ev_["tabla"].drop(columns=["descartes"], errors="ignore"), 4, "tramo"), "",
+              "### Resultado por año", "", _tabla(ev_["por_anio"], 4, "año"), "",
+              "### Señales descartadas", "", (_clave_valor(ev_["descartes"], 0) if ev_["descartes"] else "_Ninguna._"), "",
+              "### Ablación (acumulada)", "", _tabla(ab_, 4, "paso"), ""]
+        L += [f"- {a_}" for a_ in ev_["avisos"]] + [""]
 
     L += ["## Supuestos y limitaciones", "",
           "- Velas OHLC, no ticks: si una vela toca SL y TP, se cuenta SL (y se marca como ambigua).",

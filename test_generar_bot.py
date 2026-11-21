@@ -95,7 +95,7 @@ def _a_cpp(t):
     t = re.sub(r"^double\s+(g_\w+\[\].*)$", lambda m: "Arr " + re.sub(r"\[\]", "", m.group(1)).replace("double ", ""),
                t, flags=re.M)
     t = re.sub(r"\bdouble ((?:\w+\[\](?:, )?)+);", lambda m: "Arr " + re.sub(r"\[\]", "", m.group(1)) + ";", t)
-    t = t.replace("MqlRates r[];", "std::vector<MqlRates> r;").replace("ulong", "unsigned long")
+    t = t.replace("MqlRates r[];", "std::vector<MqlRates> r;").replace("MqlCalendarValue vals[];", "std::vector<MqlCalendarValue> vals;").replace("datetime g_newsT[];", "ArrT g_newsT;").replace("string   g_newsN[];", "std::vector<std::string> g_newsN;").replace("ulong", "unsigned long")
     return re.sub(r"^#property.*", "", t, flags=re.M)
 
 

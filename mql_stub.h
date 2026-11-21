@@ -76,3 +76,10 @@ enum{POSITION_TIME=500,POSITION_COMMENT};
 inline std::string PositionGetString(int){return "";}
 inline int StringFind(const std::string&a,const std::string&b){auto p=a.find(b);return p==std::string::npos?-1:(int)p;}
 enum{DEAL_TIME=600};
+// calendario economico (trading de noticias)
+struct MqlCalendarValue{unsigned long id,event_id;datetime time,period;};
+struct MqlCalendarEvent{unsigned long id;int importance;std::string name;};
+enum{CALENDAR_IMPORTANCE_HIGH=3};
+inline int CalendarValueHistory(std::vector<MqlCalendarValue>&,datetime,datetime,const void*,const std::string&){return -1;}
+inline bool CalendarEventById(unsigned long,MqlCalendarEvent&){return false;}
+inline void ResetLastError(){}

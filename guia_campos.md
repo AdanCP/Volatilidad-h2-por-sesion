@@ -176,18 +176,42 @@ Está tildada por defecto y es lo que hace el backtest desde siempre: una operac
 - En los resultados aparece la sección **Fin de semana**: cuántas operaciones se cerraron así, cuántas en ganancia y cuántas entradas del viernes se bloquearon.
 - En el bot se cierra todo (posiciones y órdenes pendientes) el viernes a las 16:59 de Nueva York, con su propio horario de verano, y no abre desde la hora elegida. Si usás la opción en el bot, el `Magic` cambia.
 
+### Trading de noticias (opcional, reglas de la cuenta)
+Pensado para evitar el slippage de las noticias de alto impacto de EEUU (empleo, IPC, FOMC...). Se activa con la casilla dentro de «⚙ Parámetros». Tiene dos reglas:
+- **Regla 1, no abrir cerca de la noticia.** Desde N minutos antes hasta N minutos después de la noticia (por defecto 6) no se abre ninguna operación: ni entrada por cruce, ni reentrada, ni se llena una orden límite del pullback (las órdenes pendientes se cancelan cuando empieza la ventana). La señal descartada se cuenta como «Noticias» en el embudo de descartes. Se revisa al final: solo cuenta lo que habría entrado.
+- **Regla 2, cerrar antes si va perdiendo (opcional).** En la última vela que cierra antes de que empiece la ventana, si hay una operación abierta, el breakeven no está activado y va en el R indicado o peor (por defecto −0,5), se cierra a mercado al cierre de esa vela (con su spread). Si va mejor, o ya activó el breakeven, sigue. Vacío = no cerrar nada. Con velas de 5 minutos el cierre cae entre N y N+5 minutos antes de la noticia; para tener margen, usá N mayor que la temporalidad. Si coincide con el cierre por tiempo, manda el cierre por tiempo.
+- **Cómo se detectan las noticias.** «Detectar en las velas»: una vela que empieza a las 8:30, 10:00, 14:00 o 14:30 de Nueva York (lunes a viernes) y cuyo rango es al menos 4 veces el ATR de 14 velas anteriores y al menos 6 en precio. Solo funciona con velas de 30 minutos o menos y necesita el desfase del servidor. Al correr se informa cuántas noticias se detectaron por año. «CSV de calendario»: columnas `fecha_hora_utc, moneda, impacto`; se usan solo las de USD con impacto alto (high / alto / 3); avisa si el calendario no cubre el período.
+- **Límite: sesgo a posteriori.** Detectar por la vela grande solo encuentra las noticias que movieron el precio, que es justo lo que se quiere evitar: el backtest sale algo mejor que con el calendario real. Para el número definitivo usá el CSV.
+- **Límite: solo cubre operaciones ABIERTAS cerca de la noticia.** Una operación abierta desde antes que sigue en ganancia atraviesa la noticia. Si la regla de tu prop firm excluye también las ganancias de operaciones CERRADAS dentro de ±5 min de una noticia, esto no lo cubre: haría falta cerrar todas las posiciones antes de la noticia (queda como mejora posible). Leé el texto exacto de la regla de Funding Pips.
+- **Bot de MT5.** Usa el calendario económico de MT5 (USD, impacto alto); no existe en el probador de estrategias, así que ahí el filtro se apaga solo y lo avisa en el registro. Si el calendario falla, no abre operaciones nuevas y avisa (nunca cierra por falta de calendario). La regla 2 se evalúa al abrir cada vela, igual que el backtest, y si el cierre falla reintenta en cada tick hasta 1 minuto antes de la noticia; si sigue abierta llega un aviso push «NO SE PUDO CERRAR ANTES DE LA NOTICIA».
+
 ## 9. Gestión de riesgo
 - **Pausa para volver a operar tras una pérdida (minutos).** Destildado por defecto. Después de una operación que cierra en pérdida (por SL, por límite o por la salida por señal), las señales que caen dentro de ese tiempo se descartan, no se posponen.
 - **Pausa para volver a operar tras una ganancia (minutos).** Destildado por defecto. Igual que el anterior, pero después de una operación que cierra en ganancia: las señales que caen dentro de ese tiempo se descartan, no se posponen. Se pueden usar los dos a la vez. En el resumen de las reglas de la cuenta, las señales salteadas se cuentan por separado («pausa tras pérdida» y «pausa tras ganancia»). El bot también lo respeta.
 - **Retroceso para volver a operar tras una ganancia (%) y vencimiento.** Tiene su propia casilla y es independiente de la pausa por minutos: podés usar solo una, solo la otra, o las dos juntas. Solo para ganancias y solo en el *mismo sentido*. Destildado por defecto. Si está activo, después de una compra ganadora la próxima compra solo se toma cuando el precio retrocede ese % del recorrido de la ganancia (de la entrada al cierre), medido desde el cierre: compra a 4000, TP 4050, 50% → próxima compra solo con precio ≤ 4025. En una venta ganadora es al revés (precio ≥ cierre + %). Si las dos están activas se exigen las dos cosas: que pasen los minutos y que el precio retroceda. *Vencimiento*: **Nunca** (rige hasta que el precio retroceda o haya otra operación), **Al terminar el día** (hora CE(S)T) o **Después de N horas**; pasado ese momento se vuelve a operar sin exigir el retroceso. Las señales descartadas se cuentan como «sin retroceso». El bot lo respeta y guarda el precio de cierre y el recorrido de la última ganadora de cada lado.
 - **Sentido de la pausa (tras pérdida y tras ganancia).** Cada pausa tiene su selector: *Ambos* frena a todas las señales (como siempre), *Mismo sentido* solo a las del mismo lado que la operación que cerró (si cerró una compra, espera antes de otra compra) y *Sentido contrario* solo a las del lado opuesto (si cerró una compra, espera antes de una venta). Cada operación cerrada arranca su propio reloj según su sentido y su resultado, y si hay dos pausas activas una señal se descarta si cualquiera la frena. Por defecto no hay ninguna pausa activa. El bot lo respeta y recuerda de qué lado fue la última operación ganadora y perdedora.
 
-## 10. Costos
+## 10. Combinar con una estrategia de reversión
+
+Suma una segunda estrategia, pensada para los mercados laterales donde el cruce de medias pierde. Está apagada por defecto: sin tildarla, el análisis es idéntico al de siempre. Usa los mismos datos, spread, reglas de la cuenta, noticias y fin de semana que el resto; tiene su propio horario, cierre por tiempo y breakeven. En esta fase se corre **sola** (su informe aparece debajo de los resultados de la EMA); la simulación conjunta de cartera y el bot vienen después.
+
+- **Señal de entrada.** Variante A: una vela cierra fuera de la banda de Bollinger y la siguiente cierra de vuelta adentro (con ADX bajo); se opera hacia la media. Variante B: el precio supera el máximo (o el mínimo) de **ayer** y dentro de las próximas K velas vuelve a cerrar adentro; se opera en contra de esa ruptura falsa. El día se corta a la medianoche del servidor y hay una señal por lado por día. Se entra al cierre de la vela de confirmación.
+- **ADX máximo.** Solo se opera con el mercado lateral (ADX menor al máximo). Obligatorio en A, opcional en B.
+- **Stop Loss.** Más allá del extremo de la señal más un múltiplo de ATR, o una distancia fija.
+- **Take Profit.** En la media de Bollinger (A) o en el punto medio del rango de ayer (B), o un R:R fijo. Con el TP en la media el R:R cambia en cada operación; el informe muestra el R:R medio observado. Si el precio ya pasó el objetivo al entrar, la señal se descarta («tp»).
+- **Riesgo por operación (US$).** Riesgo fijo: el lote es riesgo / (distancia del SL x US$ por unidad de precio por lote), redondeado hacia abajo al paso del símbolo. Si da menos que el lote mínimo la señal se salta («lote»). No usa el lote del menú 7 (ese es el de la EMA), solo su valor por unidad de precio.
+- **Cierre por tiempo y Breakeven.** Iguales a los de la EMA pero propios de la reversión (el breakeven, en múltiplos de R).
+- **Horario propio.** Igual que el menú 6, solo para la reversión. Si el resto del análisis ya usa el desfase del servidor, se usa el mismo.
+- **Prioridad y bots.** Qué pasa cuando las dos estrategias chocan (se aplica en la cartera, fase siguiente) y el magic number de la reversión.
+- **Ajuste y verificación.** Dividir por fechas (por defecto ajuste 2020–2023 y verificación 2024 en adelante) o, sin fechas, 70 % / 30 %. Se ajusta con un tramo y se mira el otro: lo que importa es la verificación.
+- **Resultados.** Expectativa por tramo, resultado por año y por mes, señales descartadas y ablación (la señal sola y cada pieza sumada). Cada prueba cuenta en el contador de la sesión: con muchas combinaciones, un resultado bueno puede ser azar.
+
+## 11. Costos
 - **Spread.** *De la vela*: el spread de cierre de cada vela (en historial viejo suele venir en 0, lo que subestima el costo). *Ceros → mediana*: reemplaza los ceros por la mediana. *Valor fijo*: el que indiques. *Sin spread*: solo para comparar.
 - **Cómo se aplica.** Los largos entran al precio de venta (ask). En los cortos, el SL y el TP se activan con el ask.
 - **Costo extra por operación.** Unidades de precio que se restan a cada operación resuelta (slippage, comisión). En R equivale a costo / distancia del SL.
 
-## 11. Control de sobreajuste
+## 12. Control de sobreajuste
 - **Out-of-sample reservado (%).** El último tramo del historial, que se mide aparte. Si el modelo funciona en el tramo de ajuste (in-sample) pero no en este, probablemente era azar o sobreajuste.
 - **Repeticiones del azar.** Cuántas veces se simulan entradas aleatorias con la misma cantidad de operaciones y las mismas reglas de SL, TP y spread. Sirve de vara de comparación.
 - **Pruebas en la sesión.** Cuenta cuántas configuraciones evaluaste. Con muchas pruebas, un buen resultado puede ser casualidad.
@@ -258,3 +282,29 @@ Es el mismo backtester que el de EMA, con todos los campos y resultados iguales.
 - Con pullback, el nivel de referencia es la misma media (la SMA única, o la corta/larga elegida).
 - El botón "Generar bot (.mq5)" arma un bot con el mismo tipo de media y la misma señal; se aplican las mismas reglas de veredicto y la protección de cuenta.
 - Es independiente de la página EMA: los valores que cargues en una no se mezclan con la otra.
+
+## Backtester Ruptura (página aparte en el menú)
+Ruptura del rango de apertura de Nueva York. Es independiente de las páginas EMA y SMA y sirve para cualquier símbolo (índices, oro, divisas): al abrirla no hay ningún símbolo elegido, tenés que elegirlo. Usa el mismo motor y los mismos datos, filtros, lotaje, reglas de la cuenta, pausas, breakeven, cierre parcial, cierre por tiempo, fin de semana, noticias, costos, in-sample / out-of-sample, ablación, veredicto, descarga para IA y PDF. Todos los horarios se guardan en hora de Nueva York y se corren solos con el horario de verano; debajo de cada uno se ve el equivalente en hora Argentina de hoy.
+
+### Menú 3: Rango de apertura, entrada, SL, TP y horario
+- **Rango de apertura**: inicio (9:30 de NY por defecto) y duración (15 minutos por defecto). El rango es el máximo y el mínimo de las velas que abren dentro de esa ventana: con velas M5 son las de las 9:30, 9:35 y 9:40. Si falta alguna (feriado, cierre anticipado, hueco en los datos), ese día no se opera y queda contado en el embudo. La duración tiene que ser múltiplo de la vela y no menor.
+- **Desfase del servidor**: el mismo dato que en el resto de la app (2 en invierno, con cambio de hora de EE.UU.). En esta página es único: lo usan también el filtro de sesión, las reglas de la cuenta y las noticias. Sirve para ubicar la apertura de NY en la hora del servidor.
+- **Entrada**: desde el fin del rango, una vela que CIERRA por encima del máximo compra y una que CIERRA por debajo del mínimo vende; se entra al cierre de esa vela (con su spread). Una mecha fuera del rango no cuenta. Una ruptura que rechaza un filtro NO gasta la entrada del día: se espera a la siguiente vela que cierre fuera del rango y pase los filtros. No hace falta que el precio vuelva al rango para tomar otra entrada.
+- **Entradas por día**: 1 o 2. La segunda solo va hacia el lado contrario de la primera y solo si la primera cerró por su stop loss original (no por breakeven, hora, tiempo, parcial u orden límite). Una sola posición a la vez.
+- **SL**: mitad del rango (por defecto), lado opuesto del rango o múltiplo de ATR. Se mide desde el precio de entrada.
+- **TP**: objetivo fijo por RR (2 por defecto), medido sobre la distancia real al SL de esa operación.
+- **Horario**: última entrada (12:00 de NY) y cierre forzado (12:30 de NY). La última entrada se mide por el CIERRE de la vela de la señal (tiene que cerrar a esa hora o antes). A la hora del cierre forzado se cierra todo a mercado (motivo «hora»).
+- **Filtro de tamaño del rango** (opcional, apagado): opera solo si el rango mide entre X e Y veces el promedio de los rangos de apertura de los últimos N días válidos (0,5 / 1,5 / 20 por defecto). Usa solo días anteriores. Con menos de N días de historia, ese día se descarta y se cuenta aparte («sin historial»).
+- Se ocultan en esta página, porque no tienen sentido con la ruptura: la señal por cruce de medias, el pullback, la reentrada por tendencia, la salida por cruce contrario, el SL anclado a una media y el menú de reversión. Los menús siguientes se renumeran (Costos pasa a ser el 10 y Control de sobreajuste el 11).
+- Compartidos sin cambios: cierre parcial, breakeven, cierre por tiempo y el período de ATR.
+
+### Resultados: sección «Rango de apertura»
+Para Todo, In-sample y Out-of-sample, con la cantidad de cada cosa (la muestra):
+- Embudo de días (cada día cae en una sola fila): días de mercado, descartados por falta de vela del rango, con rango válido, descartados por tamaño o por falta de historial, sin ruptura en el horario, rupturas solo fuera del horario, rechazadas por filtros o por noticias, no tomadas (cuenta, posición abierta o entradas del día) y días con operación.
+- Salidas: rupturas que llegaron al TP, falsas rupturas (SL), cierres por hora y otras, con cantidad y R medio.
+- Largos frente a cortos: cantidad, porcentaje de ganadoras y R total.
+- Tamaño medio del rango en las operaciones ganadoras y perdedoras (y su relación con el promedio de los días anteriores cuando hay historia).
+- La comparación contra el azar no se calcula en la ruptura. La ablación parte de «Ruptura sola» y suma cada filtro.
+
+### Bot de MT5 de la ruptura
+Todavía no está: se entrega en un segundo tramo (con la misma lógica que este backtest y con las diferencias entre backtest y bot documentadas acá). Mientras tanto, la barra lateral lo avisa en lugar del botón «Generar bot».

@@ -56,6 +56,8 @@ def resumen(tr: pd.DataFrame, rr: float) -> dict:
 
 def azar(P, cfg, lo, hi, n_sig, veces, rng) -> np.ndarray:
     """Expectativa en R de entradas aleatorias con las mismas reglas de SL, TP y spread."""
+    if getattr(cfg, "ruptura", None) is not None:       # la ruptura tiene el SL atado a su rango del dia: no hay entradas al azar equivalentes (no hecho)
+        return np.array([])
     n_sig = min(n_sig, hi - lo - 1)
     if n_sig < 1 or veces < 1:
         return np.array([])
@@ -65,7 +67,7 @@ def azar(P, cfg, lo, hi, n_sig, veces, rng) -> np.ndarray:
         idx = np.sort(rng.choice(np.arange(lo, hi), size=n_sig, replace=False))
         sig = list(zip(idx, rng.choice(lados, size=n_sig)))
         tr, _ = eng.simular(P, sig, cfg.rr, cfg.costo_extra, eng.pb_de(cfg), cfg.salida_modo,
-                              eng.cuenta_de(P, cfg), eng.be_de(cfg), eng.parcial_de(cfg), eng.reent_de(cfg), eng.tstop_de(cfg))
+                              eng.cuenta_de(P, cfg), eng.be_de(cfg), eng.parcial_de(cfg), eng.reent_de(cfg), eng.tstop_de(cfg), eng.noti_de(cfg))
         out.append(resumen(tr, cfg.rr)["exp_R"])
     return np.array([x for x in out if not np.isnan(x)])
 
@@ -140,8 +142,10 @@ def ablacion(df, cfg_base, filtros=None, oos_pct=0.3, azar_veces=100, semilla=42
         filtros = {**filtros, "Breakeven": dict(be_activo=True)}
     if por_defecto and cfg_base.tstop_activo:                      # el cierre por tiempo elegido tambien (se compara contra no usarlo)
         filtros = {**filtros, "Cierre por tiempo": dict(tstop_activo=True)}
+    if por_defecto and cfg_base.noticias_activo:                   # el trading de noticias elegido tambien
+        filtros = {**filtros, "Trading de noticias": dict(noticias_activo=True)}
     base = replace(cfg_base, **eng.FILTROS_APAGADOS)
-    configs = [("Cruce solo", base)]
+    configs = [("Ruptura sola" if getattr(cfg_base, "ruptura", None) is not None else "Cruce solo", base)]
     omitidos = []
     for nombre, ov in filtros.items():
         c = replace(base, **ov)

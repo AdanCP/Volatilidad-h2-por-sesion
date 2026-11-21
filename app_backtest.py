@@ -26,7 +26,11 @@ import config_io as cio
 import exportar_ia as xia
 import generar_bot as gb
 import metrics as met
+import noticias as noticias_mod
 import retiros as ret
+import reversion as rev_mod
+import ruptura as rup_mod
+from dataclasses import replace as replace_cfg
 import ui_estilo as vis
 import veredicto as vd
 import ui_helpers as ui
@@ -38,6 +42,7 @@ import ui_guardar as ug
 
 TIPO = globals().get("TIPO_MEDIA", "ema")       # "sma" lo define app_backtest_sma.py antes de ejecutar este archivo
 ES_SMA = TIPO == "sma"
+ES_RUP = TIPO == "ruptura"                       # «Backtester Ruptura»: ruptura del rango de apertura de Nueva York (app_backtest_ruptura.py)
 MEDIA = TIPO.upper()                            # "EMA" o "SMA", para los textos
 _PFX = "" if TIPO == "ema" else TIPO + "_"
 
@@ -119,7 +124,8 @@ def _simbolos_mt5() -> list:
     return data.listar_simbolos_mt5()
 
 
-TITULO_PAGINA = "Backtester: SMA con filtros" if ES_SMA else "Backtester: cruce de EMAs con filtros"
+TITULO_PAGINA = ("Backtester: ruptura del rango de apertura" if ES_RUP else
+                 "Backtester: SMA con filtros" if ES_SMA else "Backtester: cruce de EMAs con filtros")
 estado.setdefault("contador", met.ContadorPruebas())
 estado.setdefault("res", None)
 estado.setdefault("comp", None)
@@ -192,6 +198,9 @@ _PARES_HORA += [(cio.slug("No abrir operaciones el viernes desde (hora Argentina
 _PARES_HORA += [(cio.slug(f"{n_}: recorte desde (hora Argentina)"), cio.slug(f"{n_}: recorte hasta (hora Argentina)"), z_)
                 for n_, (z_, _i, _f) in sesmod.SESIONES_LOCAL.items()]
 
+_PARES_HORA += [(f"rv_{cio.slug(n_)}_desde", f"rv_{cio.slug(n_)}_hasta", z_) for n_, (z_, _i, _f) in sesmod.SESIONES_LOCAL.items()]
+_PARES_HORA += [(f"rv_{cio.slug(n_)}_rec_desde", f"rv_{cio.slug(n_)}_rec_hasta", z_) for n_, (z_, _i, _f) in sesmod.SESIONES_LOCAL.items()]
+
 
 def _cargar_cfg(clave_up):
     f = st.session_state.get(clave_up)
@@ -254,6 +263,22 @@ def _acc_cab(clave, lista, grupo):
     st.button("⚙ Parámetros", key=f"acc_btn_{clave}", on_click=_acc_alternar, args=(clave, grupo), use_container_width=True)
 
 
+def _acc_cab_opc(clave, lista, grupo):
+    """Botón de parámetros de una función opcional (cierre parcial, breakeven, cierre por tiempo, reentrada): se ve siempre, como el
+    de SL y TP. Adentro del panel (contenedor acc_<clave>) va la casilla «Activar…» y, si está activa, los parámetros."""
+    lista.append(clave)
+    st.button("⚙ Parámetros", key=f"acc_btn_{clave}", on_click=_acc_alternar, args=(clave, grupo), use_container_width=True)
+
+
+def _acc_estado(clave, activo):
+    """Estilo del botón de una función opcional: rosa → violeta si está activa, violeta translúcido si está apagada (solo estilo)."""
+    btn = f'[data-testid="stSidebar"] .st-key-acc_btn_{clave} [data-testid="stButton"] button'
+    css = btn + f' p::after{{content:" · {"activo" if activo else "apagado"}";font-size:.78em;font-weight:600;opacity:.85;}}'
+    if not activo:
+        css += btn + "{background:rgba(255,255,255,.14) !important;border:1px solid rgba(255,255,255,.30) !important;box-shadow:none !important;}"
+    st.markdown("<style>" + css + "</style>", unsafe_allow_html=True)
+
+
 def _acc_css(lista, activos, grupo, claves):
     """Oculta los parámetros de los filtros del menú que no son el abierto y limpia la marca de los que se desactivaron."""
     for c in claves:
@@ -296,7 +321,7 @@ with st.sidebar:
                 elegidos = []
                 for familia, items in grupos.items():
                     opciones = [nombre for _, nombre in items]
-                    por_defecto = [nombre for etiqueta, nombre in items if etiqueta == "oro"]
+                    por_defecto = [] if ES_RUP else [nombre for etiqueta, nombre in items if etiqueta == "oro"]      # la ruptura sirve para cualquier símbolo: se elige uno
                     elegidos += _W(st).multiselect(familia, opciones, por_defecto)
                 if faltan:
                     st.caption("No detectados automáticamente: " + ", ".join(faltan))
@@ -433,125 +458,204 @@ with st.sidebar:
 
     with st.expander("3. Señal y gestión", expanded=False):
         modo_senal, media_unica = "cruce", 50
-        if ES_SMA:
-            modo_senal = {"Cruce de dos SMA": "cruce", "Precio cruza una SMA": "precio"}[_W(st).radio(
-                "Señal", ["Cruce de dos SMA", "Precio cruza una SMA"],
-                help="Cruce de dos SMA: la corta cruza a la larga. Precio cruza una SMA: el cierre de la vela pasa de un lado "
-                     "al otro de la media (alcista si pasa a estar encima). En los dos casos se entra al cierre de esa vela.")]
-        if modo_senal == "precio":
-            media_unica = _W(st).number_input("Período de la SMA", 2, 1000, 50)
-            ema_c, ema_l = 20, 50                   # no intervienen en este modo
+        if ES_RUP:
+            ema_c, ema_l = 20, 50
         else:
-            c1, c2 = st.columns(2)
-            ema_c = _W(c1).number_input(f"{MEDIA} corta", 2, 500, 20 if ES_SMA else 13)
-            ema_l = _W(c2).number_input(f"{MEDIA} larga", 3, 1000, 50 if ES_SMA else 34)
+            if ES_SMA:
+                modo_senal = {"Cruce de dos SMA": "cruce", "Precio cruza una SMA": "precio"}[_W(st).radio(
+                    "Señal", ["Cruce de dos SMA", "Precio cruza una SMA"],
+                    help="Cruce de dos SMA: la corta cruza a la larga. Precio cruza una SMA: el cierre de la vela pasa de un lado "
+                         "al otro de la media (alcista si pasa a estar encima). En los dos casos se entra al cierre de esa vela.")]
+            if modo_senal == "precio":
+                media_unica = _W(st).number_input("Período de la SMA", 2, 1000, 50)
+                ema_c, ema_l = 20, 50                   # no intervienen en este modo
+            else:
+                c1, c2 = st.columns(2)
+                ema_c = _W(c1).number_input(f"{MEDIA} corta", 2, 500, 20 if ES_SMA else 13)
+                ema_l = _W(c2).number_input(f"{MEDIA} larga", 3, 1000, 50 if ES_SMA else 34)
         direccion = DIRECCIONES[_W(st).selectbox("Dirección", list(DIRECCIONES))]
         _acc_lista, _acc_activos = [], {"sl", "tp"}      # acordeón como el de los filtros: un solo bloque abierto a la vez
         st.session_state.setdefault(_clave_abierto("sg"), "sl")
         st.session_state["_acc_prev_sl"] = st.session_state["_acc_prev_tp"] = True      # siempre activos: no se abren solos
         _sep_filtro()
-        pb_on = _W(st).checkbox(f"Entrar en pullback a la {MEDIA} (opcional)",
-                            help="Apagado: se entra al cierre de la vela del cruce, como siempre. Encendido: el cruce sigue "
-                                 f"siendo la señal, pero la entrada se hace cuando el precio retrocede hacia la {MEDIA}.")
-        pb_pct, pb_ema, pb_velas = 50, "corta", 10
-        if pb_on:
-            _acc_activos.add("pb")
-            _acc_cab("pb", _acc_lista, "sg")
-            with st.container(key="acc_pb"):
-                pb_pct = _W(st).number_input(f"Retroceso hacia la {MEDIA} (%)", 0, 100, 50, 5,
-                                         help="0 = entrar al cierre (igual que sin pullback). 100 = entrar recién cuando el precio "
-                                              f"toca la {MEDIA}. Se mide sobre la distancia entre el extremo posterior al cruce y la {MEDIA}.")
-                if modo_senal == "cruce":
-                    pb_ema = {"Corta": "corta", "Larga": "larga"}[_W(st).radio(f"{MEDIA} de referencia", ["Corta", "Larga"], horizontal=True)]
-                pb_velas = _W(st).number_input("Caducidad (velas)", 1, 200, 10,
-                                           help="Si en estas velas el precio no hizo el retroceso, la orden se cancela. También "
-                                                "se cancela si aparece un cruce en sentido contrario.")
-                st.caption("Con pullback, el filtro de sesión se evalúa cuando se ejecuta la entrada.")
+        pb_on, pb_pct, pb_ema, pb_velas = False, 50, "corta", 10
+        if not ES_RUP:
+            pb_on = _W(st).checkbox(f"Entrar en pullback a la {MEDIA} (opcional)",
+                                help="Apagado: se entra al cierre de la vela del cruce, como siempre. Encendido: el cruce sigue "
+                                     f"siendo la señal, pero la entrada se hace cuando el precio retrocede hacia la {MEDIA}.")
+            pb_pct, pb_ema, pb_velas = 50, "corta", 10
+            if pb_on:
+                _acc_activos.add("pb")
+                _acc_cab("pb", _acc_lista, "sg")
+                with st.container(key="acc_pb"):
+                    pb_pct = _W(st).number_input(f"Retroceso hacia la {MEDIA} (%)", 0, 100, 50, 5,
+                                             help="0 = entrar al cierre (igual que sin pullback). 100 = entrar recién cuando el precio "
+                                                  f"toca la {MEDIA}. Se mide sobre la distancia entre el extremo posterior al cruce y la {MEDIA}.")
+                    if modo_senal == "cruce":
+                        pb_ema = {"Corta": "corta", "Larga": "larga"}[_W(st).radio(f"{MEDIA} de referencia", ["Corta", "Larga"], horizontal=True)]
+                    pb_velas = _W(st).number_input("Caducidad (velas)", 1, 200, 10,
+                                               help="Si en estas velas el precio no hizo el retroceso, la orden se cancela. También "
+                                                    "se cancela si aparece un cruce en sentido contrario.")
+                    st.caption("Con pullback, el filtro de sesión se evalúa cuando se ejecuta la entrada.")
         _sep_filtro()
-        _sal_cruce = modo_senal == "cruce"
-        _op_sal = "Cuando las medias se cruzan en sentido contrario" if _sal_cruce else "Cuando el precio cambia de lado de la media"
-        _k_sal = f"salida_tp_{modo_senal}"
-        # Primero va el Stop Loss y después el Take Profit; la salida elegida se lee de session_state (el radio se dibuja más abajo).
-        salida_modo = "senal" if str(_sv(_k_sal)).startswith("Cuando") else "rr"
-        SL_EMA = SL_EMA_PRECIO if modo_senal == "precio" else SL_EMA_CRUCE        # el nombre depende de la señal
-        _ayuda_sl = (f"{SL_EMA}: el SL queda fijo en el nivel "
-                                    + ("de la media" if modo_senal == "precio" else "del cruce de las dos medias (el punto medio entre ambas en la vela de la señal)")
-                                    + " más o menos una distancia en pips o en dólares de precio. Los otros modos miden el SL desde el precio de entrada.")
-        st.markdown("**Stop Loss (SL)**", help=_ayuda_sl)
-        _acc_cab("sl", _acc_lista, "sg")
-        with st.container(key="acc_sl"):
-            sl_modo = _W(st).radio("Stop Loss (SL) en", [SL_ATR, SL_PCT, SL_USD, SL_EMA], label_visibility="collapsed")
-            sl_ema_ref, sl_ema_unidad = ("larga" if modo_senal == "precio" else "cruce"), "precio"   # en modo precio hay una sola media
-            sl_usd = tp_usd = 0.0
-            tp_modo = TP_RR
-            if sl_modo == SL_EMA:
-                if modo_senal == "precio":
-                    st.caption(f"Media de referencia: la {MEDIA} de {int(media_unica)} períodos.")
+        if ES_RUP:
+            # ---- Ruptura del rango de apertura de Nueva York (todos los horarios se guardan en hora de NY)
+            _hoy_r = date.today()
+            def _art_txt(min_ny):
+                try:
+                    a_ = sesmod.local_a_art(min_ny / 60.0, "America/New_York", _hoy_r)
+                    return f"{int(a_ // 1):02d}:{int(round((a_ % 1) * 60)) % 60:02d}"
+                except Exception:
+                    return "?"
+            def _hm(t_):
+                return t_.hour * 60 + t_.minute
+            st.markdown("**Rango de apertura**", help="El rango es el máximo y el mínimo de las velas que abren entre el inicio y el fin del rango "
+                        "(hora de Nueva York). Con velas M5 y 15 minutos se arma con las velas de las 9:30, 9:35 y 9:40. Si falta alguna de esas "
+                        "velas (feriado, cierre anticipado, hueco en los datos), ese día no se opera y queda contado en el embudo.")
+            _c1, _c2 = st.columns(2)
+            rup_ap = _hm(_W(_c1).time_input("Inicio (hora de NY)", _hora(9, 30), step=300, key="rup_apertura"))
+            rup_dur = int(_W(_c2).selectbox("Duración (min)", [5, 10, 15, 30, 45, 60], index=2, key="rup_duracion"))
+            st.caption(f"Rango {rup_mod.hhmm(rup_ap)} a {rup_mod.hhmm(rup_ap + rup_dur)} de Nueva York = {_art_txt(rup_ap)} a {_art_txt(rup_ap + rup_dur)} "
+                       "hora Argentina hoy. Se corre solo con el horario de verano.")
+            rup_offset = float(_W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="rup_offset",
+                                                   help="Medilo con el mercado abierto (hora de «Observación de mercado» menos GMT). Con el desfase se ubica "
+                                                        "la apertura de Nueva York en la hora del servidor. En esta página es el único desfase: lo usan también "
+                                                        "el filtro de sesión, las reglas de la cuenta y las noticias."))
+            rup_dst = bool(_W(st).checkbox("El servidor cambia de hora con EE.UU.", True, key="rup_dst"))
+            _sep_filtro()
+            st.markdown("**Entrada**", help="Desde el fin del rango, si una vela CIERRA por encima del máximo se compra y si CIERRA por debajo del mínimo se vende. "
+                        "Se entra al cierre de esa vela. Una ruptura que rechaza un filtro no gasta la entrada del día: se espera a la siguiente vela que cierre "
+                        "fuera del rango y pase los filtros.")
+            rup_ent = int(_W(st).radio("Entradas por día", [1, 2], horizontal=True, key="rup_entradas",
+                                       help="Con 2, la segunda entrada se hace solo hacia el lado contrario de la primera y solo si la primera cerró por su "
+                                            "stop loss original (no por breakeven, hora, tiempo, parcial u orden límite)."))
+            _sep_filtro()
+            st.markdown("**Stop Loss (SL)**", help="Se mide desde el precio de entrada. Mitad del rango: SL en el punto medio del rango. Lado opuesto: SL en el "
+                        "otro extremo del rango. Múltiplo de ATR: distancia de ATR por el múltiplo (el período es el de más abajo).")
+            _RUP_SL = {"Mitad del rango": "mitad", "Lado opuesto del rango": "opuesto", "Múltiplo de ATR": "atr"}
+            rup_sl = _RUP_SL[_W(st).radio("SL en", list(_RUP_SL), label_visibility="collapsed", key="rup_sl")]
+            rup_sl_atr = 1.0
+            if rup_sl == "atr":
+                rup_sl_atr = float(_W(st).number_input("Múltiplo de ATR", 0.1, 50.0, 1.0, 0.1, key="rup_sl_atr"))
+            _sep_filtro()
+            st.markdown("**Take Profit (TP)**", help="Objetivo fijo: RR sobre la distancia real al SL de esa operación (con SL a la mitad del rango, el TP queda "
+                        "a RR veces esa distancia).")
+            rr = float(_W(st).number_input("RR (1:x)", 0.1, 50.0, 2.0, 0.5, key="rup_rr"))
+            _sep_filtro()
+            st.markdown("**Horario (hora de Nueva York)**", help="La última entrada se mide por el CIERRE de la vela de la señal (esa vela tiene que cerrar "
+                        "a la hora indicada o antes). A la hora del cierre forzado se cierra todo a mercado. Se guardan en hora de NY.")
+            _c1, _c2 = st.columns(2)
+            rup_ult = _hm(_W(_c1).time_input("Última entrada", _hora(12, 0), step=300, key="rup_ultima"))
+            rup_cie = _hm(_W(_c2).time_input("Cierre forzado", _hora(12, 30), step=300, key="rup_cierre"))
+            st.caption(f"Última entrada {_art_txt(rup_ult)} y cierre forzado {_art_txt(rup_cie)} hora Argentina hoy.")
+            if not rup_ap + rup_dur <= rup_ult:
+                st.error("La última entrada tiene que ser posterior al fin del rango.")
+            elif not rup_ult < rup_cie:
+                st.error("El cierre forzado tiene que ser posterior a la última entrada.")
+            _sep_filtro()
+            st.markdown("**Filtro de tamaño del rango (opcional)**", help="Opera solo si el rango mide entre X e Y veces el promedio de los rangos de apertura de "
+                        "los últimos N días válidos. Usa solo días anteriores. Si todavía no hay N días de historia, ese día se descarta y se cuenta aparte.")
+            rup_tam_on = bool(_W(st).checkbox("Activar el filtro de tamaño", key="rup_tam_on"))
+            rup_tam_min, rup_tam_max, rup_tam_n = 0.5, 1.5, 20
+            if rup_tam_on:
+                _c1, _c2, _c3 = st.columns(3)
+                rup_tam_min = float(_W(_c1).number_input("Mínimo (×)", 0.0, 50.0, 0.5, 0.1, key="rup_tam_min"))
+                rup_tam_max = float(_W(_c2).number_input("Máximo (×)", 0.1, 50.0, 1.5, 0.1, key="rup_tam_max"))
+                rup_tam_n = int(_W(_c3).number_input("Días", 1, 500, 20, 1, key="rup_tam_n"))
+                if not rup_tam_max > rup_tam_min:
+                    st.error("El máximo tiene que ser mayor que el mínimo.")
+            _sep_filtro()
+            modo_senal, media_unica, ema_c, ema_l = "cruce", 50, 20, 50
+            salida_modo, tp_modo, sl_usd, tp_usd = "rr", TP_RR, 0.0, 0.0
+            sl_modo, sl_valor = (SL_ATR if rup_sl == "atr" else SL_PCT), 1.0
+            sl_ema_ref, sl_ema_unidad = "cruce", "precio"
+            st.caption("En esta página no se usan el pullback, la reentrada por tendencia, la salida por cruce contrario ni el SL anclado a una media: "
+                       "no tienen sentido con la ruptura.")
+        else:
+            _sal_cruce = modo_senal == "cruce"
+            _op_sal = "Cuando las medias se cruzan en sentido contrario" if _sal_cruce else "Cuando el precio cambia de lado de la media"
+            _k_sal = f"salida_tp_{modo_senal}"
+            # Primero va el Stop Loss y después el Take Profit; la salida elegida se lee de session_state (el radio se dibuja más abajo).
+            salida_modo = "senal" if str(_sv(_k_sal)).startswith("Cuando") else "rr"
+            SL_EMA = SL_EMA_PRECIO if modo_senal == "precio" else SL_EMA_CRUCE        # el nombre depende de la señal
+            _ayuda_sl = (f"{SL_EMA}: el SL queda fijo en el nivel "
+                                        + ("de la media" if modo_senal == "precio" else "del cruce de las dos medias (el punto medio entre ambas en la vela de la señal)")
+                                        + " más o menos una distancia en pips o en dólares de precio. Los otros modos miden el SL desde el precio de entrada.")
+            st.markdown("**Stop Loss (SL)**", help=_ayuda_sl)
+            _acc_cab("sl", _acc_lista, "sg")
+            with st.container(key="acc_sl"):
+                sl_modo = _W(st).radio("Stop Loss (SL) en", [SL_ATR, SL_PCT, SL_USD, SL_EMA], label_visibility="collapsed")
+                sl_ema_ref, sl_ema_unidad = ("larga" if modo_senal == "precio" else "cruce"), "precio"   # en modo precio hay una sola media
+                sl_usd = tp_usd = 0.0
+                tp_modo = TP_RR
+                if sl_modo == SL_EMA:
+                    if modo_senal == "precio":
+                        st.caption(f"Media de referencia: la {MEDIA} de {int(media_unica)} períodos.")
+                    else:
+                        st.caption(f"Referencia: el cruce de las {MEDIA} {int(ema_c)}/{int(ema_l)} (punto medio de las dos en la vela de la señal).")
+                    sl_ema_unidad = {"Pips": "pips", "Dólares (precio)": "precio", "% del precio": "pct"}[_W(st).radio(
+                        "Distancia en", ["Pips", "Dólares (precio)", "% del precio"], horizontal=True,
+                        help="Pips: 1 pip = 10 puntos = 10 × tick_size del símbolo (en el oro 0,10; en EURUSD 0,0001). "
+                             "Dólares (precio): la distancia en el precio del activo (en el oro, 3 = el precio se mueve 3,00). "
+                             "% del precio: un porcentaje del nivel de referencia (0,15 % de 2.350 son 3,53).")]
+                    if sl_ema_unidad == "pct":
+                        sl_valor = _W(st).number_input("Distancia a la media (% del precio)", 0.0, 100.0, 0.15, 0.05, format="%.3f")
+                    else:
+                        sl_valor = _W(st).number_input("Distancia a la media (pips)" if sl_ema_unidad == "pips" else "Distancia a la media (dólares de precio)",
+                                                       0.0, 1_000_000.0, 30.0 if sl_ema_unidad == "pips" else 3.0, 1.0 if sl_ema_unidad == "pips" else 0.5)
+                    st.caption(("El SL queda fijo en el nivel del cruce" if modo_senal == "cruce" else "El SL queda fijo en la media")
+                               + " menos la distancia (compras) o más la distancia (ventas), tomado en la vela de la señal. "
+                               "Si al entrar ese nivel quedó del lado equivocado del precio, la señal no se opera.")
+                elif sl_modo == SL_USD:
+                    sl_usd = _W(st).number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
+                    sl_valor = sl_usd
                 else:
-                    st.caption(f"Referencia: el cruce de las {MEDIA} {int(ema_c)}/{int(ema_l)} (punto medio de las dos en la vela de la señal).")
-                sl_ema_unidad = {"Pips": "pips", "Dólares (precio)": "precio", "% del precio": "pct"}[_W(st).radio(
-                    "Distancia en", ["Pips", "Dólares (precio)", "% del precio"], horizontal=True,
-                    help="Pips: 1 pip = 10 puntos = 10 × tick_size del símbolo (en el oro 0,10; en EURUSD 0,0001). "
-                         "Dólares (precio): la distancia en el precio del activo (en el oro, 3 = el precio se mueve 3,00). "
-                         "% del precio: un porcentaje del nivel de referencia (0,15 % de 2.350 son 3,53).")]
-                if sl_ema_unidad == "pct":
-                    sl_valor = _W(st).number_input("Distancia a la media (% del precio)", 0.0, 100.0, 0.15, 0.05, format="%.3f")
-                else:
-                    sl_valor = _W(st).number_input("Distancia a la media (pips)" if sl_ema_unidad == "pips" else "Distancia a la media (dólares de precio)",
-                                                   0.0, 1_000_000.0, 30.0 if sl_ema_unidad == "pips" else 3.0, 1.0 if sl_ema_unidad == "pips" else 0.5)
-                st.caption(("El SL queda fijo en el nivel del cruce" if modo_senal == "cruce" else "El SL queda fijo en la media")
-                           + " menos la distancia (compras) o más la distancia (ventas), tomado en la vela de la señal. "
-                           "Si al entrar ese nivel quedó del lado equivocado del precio, la señal no se opera.")
-            elif sl_modo == SL_USD:
-                sl_usd = _W(st).number_input("Stop Loss (US$ por operación)", 1.0, 10_000_000.0, 100.0, 10.0)
-                sl_valor = sl_usd
-            else:
-                sl_valor = _W(st).number_input("Valor del SL", 0.01, 100.0, 1.5 if sl_modo == SL_ATR else 0.5, 0.1)
+                    sl_valor = _W(st).number_input("Valor del SL", 0.01, 100.0, 1.5 if sl_modo == SL_ATR else 0.5, 0.1)
 
-        _sep_filtro()
-        _OP_RR, _OP_USD = "Objetivo fijo: RR (1:x)", "Objetivo fijo: US$ por operación"
-        _opciones = [_OP_RR] + ([_OP_USD] if sl_modo == SL_USD else []) + [_op_sal]   # el TP en US$ pide el SL en dólares fijos
-        if st.session_state.get(_wk(_k_sal)) not in _opciones:
-            st.session_state.pop(_wk(_k_sal), None)
-        _ayuda_tp = ("Objetivo fijo: TP a una distancia fija del SL (en múltiplos del riesgo, RR, o en US$ por operación; el de US$ "
-                 "necesita el SL en dólares fijos). " + (
-                f"Cruce contrario: no hay TP; la operación se cierra al cierre de la primera vela en que la {MEDIA} corta queda del "
-                f"otro lado de la larga (un largo sale cuando la corta pasa por debajo de la larga, un corto cuando pasa por "
-                f"encima). " if _sal_cruce else
-                "Cambio de lado: no hay TP; se cierra al cierre de la primera vela que queda del otro lado de la media (un largo "
-                "sale cuando una vela cierra por debajo, un corto cuando cierra por encima). ")
-            + "El SL sigue activo y se revisa antes en cada vela.")
-        st.markdown("**Take Profit (TP)**", help=_ayuda_tp)
-        _acc_cab("tp", _acc_lista, "sg")
-        with st.container(key="acc_tp"):
-            salida_txt = _W(st).radio("Take Profit (TP) en", _opciones, key=_k_sal, label_visibility="collapsed")
-            salida_modo = "senal" if salida_txt == _op_sal else "rr"
-            if salida_modo == "senal":
-                rr = 2.0                                  # el RR no interviene
-                st.caption("Sin TP fijo: la operación dura hasta que las medias se cruzan al revés o toca el SL." if _sal_cruce else
-                           "Sin TP fijo: la operación dura hasta que una vela cierra del otro lado de la media o toca el SL.")
-            elif salida_txt == _OP_USD:
-                tp_modo = TP_USD
-                tp_usd = _W(st).number_input("Take Profit (US$ por operación)", 1.0, 10_000_000.0, 200.0, 10.0)
-                rr = tp_usd / sl_usd
-                st.caption(f"Relación TP/SL: {rr:.2f}")
-            else:
-                rr = _W(st).number_input("RR (1:x)", 0.1 if sl_modo == SL_EMA else 1.0, 50.0 if sl_modo == SL_EMA else 10.0, 2.0, 0.5)
-                if sl_modo != SL_USD:
-                    st.caption("El TP en US$ por operación está disponible con el SL en dólares fijos.")
+            _sep_filtro()
+            _OP_RR, _OP_USD = "Objetivo fijo: RR (1:x)", "Objetivo fijo: US$ por operación"
+            _opciones = [_OP_RR] + ([_OP_USD] if sl_modo == SL_USD else []) + [_op_sal]   # el TP en US$ pide el SL en dólares fijos
+            if st.session_state.get(_wk(_k_sal)) not in _opciones:
+                st.session_state.pop(_wk(_k_sal), None)
+            _ayuda_tp = ("Objetivo fijo: TP a una distancia fija del SL (en múltiplos del riesgo, RR, o en US$ por operación; el de US$ "
+                     "necesita el SL en dólares fijos). " + (
+                    f"Cruce contrario: no hay TP; la operación se cierra al cierre de la primera vela en que la {MEDIA} corta queda del "
+                    f"otro lado de la larga (un largo sale cuando la corta pasa por debajo de la larga, un corto cuando pasa por "
+                    f"encima). " if _sal_cruce else
+                    "Cambio de lado: no hay TP; se cierra al cierre de la primera vela que queda del otro lado de la media (un largo "
+                    "sale cuando una vela cierra por debajo, un corto cuando cierra por encima). ")
+                + "El SL sigue activo y se revisa antes en cada vela.")
+            st.markdown("**Take Profit (TP)**", help=_ayuda_tp)
+            _acc_cab("tp", _acc_lista, "sg")
+            with st.container(key="acc_tp"):
+                salida_txt = _W(st).radio("Take Profit (TP) en", _opciones, key=_k_sal, label_visibility="collapsed")
+                salida_modo = "senal" if salida_txt == _op_sal else "rr"
+                if salida_modo == "senal":
+                    rr = 2.0                                  # el RR no interviene
+                    st.caption("Sin TP fijo: la operación dura hasta que las medias se cruzan al revés o toca el SL." if _sal_cruce else
+                               "Sin TP fijo: la operación dura hasta que una vela cierra del otro lado de la media o toca el SL.")
+                elif salida_txt == _OP_USD:
+                    tp_modo = TP_USD
+                    tp_usd = _W(st).number_input("Take Profit (US$ por operación)", 1.0, 10_000_000.0, 200.0, 10.0)
+                    rr = tp_usd / sl_usd
+                    st.caption(f"Relación TP/SL: {rr:.2f}")
+                else:
+                    rr = _W(st).number_input("RR (1:x)", 0.1 if sl_modo == SL_EMA else 1.0, 50.0 if sl_modo == SL_EMA else 10.0, 2.0, 0.5)
+                    if sl_modo != SL_USD:
+                        st.caption("El TP en US$ por operación está disponible con el SL en dólares fijos.")
         _sep_filtro()
         st.markdown("**Cierre parcial (opcional)**",
                     help="Una sola vez por operación, cuando el precio a favor llega al nivel que elijas, se cierra una parte "
                          "de la posición y el resto sigue hasta el TP o el SL. Opcionalmente, al cobrar el parcial el SL del "
                          "resto sube a la entrada más un nivel. Convive con el breakeven (queda el SL más favorable). "
                          "Si en la misma vela el precio toca el SL y el nivel del parcial, cuenta primero el SL.")
-        parcial_on = _W(st).checkbox("Activar el cierre parcial", key="cierre_parcial")
+        _acc_cab_opc("parcial", _acc_lista, "sg")
         _PAR_NIV = {"Múltiplos de R": "r", "% del camino al TP": "pct_tp"}
         parcial_modo, parcial_valor, parcial_pct, parcial_mover, parcial_sl = "r", 1.5, 50.0, True, 0.05
-        if parcial_on:
-            _acc_activos.add("parcial")
-            _acc_cab("parcial", _acc_lista, "sg")
-            with st.container(key="acc_parcial"):
+        with st.container(key="acc_parcial"):
+            parcial_on = _W(st).checkbox("Activar el cierre parcial", key="cierre_parcial")
+            _acc_estado("parcial", parcial_on)
+            if parcial_on:
                 _ops_par = [k_ for k_, v_ in _PAR_NIV.items() if v_ != "pct_tp" or salida_modo == "rr"]     # sin TP no hay % del camino al TP
                 if st.session_state.get(_wk("parcial_nivel_modo")) not in _ops_par:
                     st.session_state.pop(_wk("parcial_nivel_modo"), None)
@@ -584,14 +688,14 @@ with st.sidebar:
                          "entrada más el nivel que elijas (0 = justo en la entrada; nunca menos que 0). Si el precio vuelve, "
                          "la operación cierra ahí. Ese cierre no cuenta como ganada ni perdida, no corta rachas ni dispara las "
                          "pausas, pero su resultado en R y en dinero sí entra a la expectativa y al balance.")
-        be_on = _W(st).checkbox("Activar el breakeven", key=cio.slug("Mover el SL a breakeven (opcional)"))
+        _acc_cab_opc("be", _acc_lista, "sg")
         _BE_ACT = {"Múltiplos de R": "r", "US$ fijos": "usd", "% del camino al TP": "pct_tp"}
         _BE_NIV = {"Múltiplos de R sobre la entrada": "r", "US$ fijos sobre la entrada": "usd"}
         be_act_modo, be_act_valor, be_niv_modo, be_niv_valor = "r", 1.0, "r", 0.0
-        if be_on:
-            _acc_activos.add("be")
-            _acc_cab("be", _acc_lista, "sg")
-            with st.container(key="acc_be"):
+        with st.container(key="acc_be"):
+            be_on = _W(st).checkbox("Activar el breakeven", key=cio.slug("Mover el SL a breakeven (opcional)"))
+            _acc_estado("be", be_on)
+            if be_on:
                 _ops_be = [k_ for k_, v_ in _BE_ACT.items() if v_ != "pct_tp" or salida_modo == "rr"]     # sin TP no hay % del camino al TP
                 if st.session_state.get(_wk("be_act_modo")) not in _ops_be:
                     st.session_state.pop(_wk("be_act_modo"), None)
@@ -623,86 +727,94 @@ with st.sidebar:
                          "una sola vez por operación. Si dentro de esa vela se toca el SL o el TP, mandan ellos. Si el breakeven ya se "
                          "activó, no se aplica. Con cierre parcial, se aplica al resto. Las velas son las reales del archivo: los fines de "
                          "semana y los huecos no cuentan. Cuenta como una operación cerrada normal (ganada o perdida según su resultado).")
-        tstop_on = _W(st).checkbox("Cerrar si no arranca (cierre por tiempo)", key="tstop_on")
+        _acc_cab_opc("ts", _acc_lista, "sg")
         tstop_velas, tstop_r = 24, -0.25
-        if tstop_on:
-            _TFMIN_ = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
-            tstop_velas = int(_W(st).number_input("Velas después de la entrada", 1, 5000, 24, 1, key="tstop_velas"))
-            _tf_ = globals().get("tf") or ""                       # la temporalidad solo se elige con MT5 directo; con CSV se detecta de los datos
-            _min_ = tstop_velas * _TFMIN_.get(_tf_, 0)
-            if _min_:
-                st.caption(f"{tstop_velas} velas {_tf_} = " + (f"{_min_ // 60} h" + (f" {_min_ % 60} min" if _min_ % 60 else "") if _min_ >= 60 else f"{_min_} min") + ".")
-            tstop_r = float(_W(st).number_input("Cerrar si va en (R) o peor", -50.0, 50.0, -0.25, 0.05, key="tstop_r",
-                                                help="Negativo: va perdiendo ese R o más (−0,25 = un cuarto del riesgo). 0: cerrar si no está en "
-                                                     "ganancia. Positivo: cerrar si todavía no ganó ese R."))
-            st.caption("Se evalúa una sola vez, al cierre de esa vela; la operación se cierra a mercado con su spread. "
-                       "No se aplica si el breakeven ya se activó.")
-        _sep_filtro()
-        st.markdown("**Reentrada (opcional)**",
-                    help="En una tendencia fuerte el siguiente cruce tarda y se pierde gran parte del movimiento. Con la reentrada, "
-                         "después de una operación de esa tendencia que cerró en ganancia (R mayor que 0) se vuelve a entrar cuando "
-                         "el precio retrocede a la media. La tendencia dura hasta el cruce contrario. Se repite la misma entrada: "
-                         "mismo SL, TP, breakeven, cierre parcial y filtros (salvo que le pongas SL, TP o lotaje propios). Una sola posición a la vez. La reentrada exige además "
-                         "una confirmación de ADX (más abajo).")
-        reent_on = _W(st).checkbox("Activar la reentrada", key="reentrada_on")
+        with st.container(key="acc_ts"):
+            tstop_on = _W(st).checkbox("Activar el cierre por tiempo", key="tstop_on")
+            _acc_estado("ts", tstop_on)
+            if tstop_on:
+                _TFMIN_ = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+                tstop_velas = int(_W(st).number_input("Velas después de la entrada", 1, 5000, 24, 1, key="tstop_velas"))
+                _tf_ = globals().get("tf") or ""                       # la temporalidad solo se elige con MT5 directo; con CSV se detecta de los datos
+                _min_ = tstop_velas * _TFMIN_.get(_tf_, 0)
+                if _min_:
+                    st.caption(f"{tstop_velas} velas {_tf_} = " + (f"{_min_ // 60} h" + (f" {_min_ % 60} min" if _min_ % 60 else "") if _min_ >= 60 else f"{_min_} min") + ".")
+                tstop_r = float(_W(st).number_input("Cerrar si va en (R) o peor", -50.0, 50.0, -0.25, 0.05, key="tstop_r",
+                                                    help="Negativo: va perdiendo ese R o más (−0,25 = un cuarto del riesgo). 0: cerrar si no está en "
+                                                         "ganancia. Positivo: cerrar si todavía no ganó ese R."))
+                st.caption("Se evalúa una sola vez, al cierre de esa vela; la operación se cierra a mercado con su spread. "
+                           "No se aplica si el breakeven ya se activó.")
         re_nivel, re_modo, re_max, re_velas = "larga", "confirmacion", 1, 60
         re_adx_on, re_adx_min, re_di, re_cre_on, re_cre_n = True, 25.0, True, False, 3
         re_sl_ui, re_sl_val, re_rr_on, re_rr_val, re_lote_on, re_lote_val = "igual", 0.0, False, 1.0, True, 1.0
-        if reent_on:
-            _acc_activos.add("re")
-            _acc_cab("re", _acc_lista, "sg")
+        reent_on = False
+        if not ES_RUP:
+            _sep_filtro()
+            st.markdown("**Reentrada (opcional)**",
+                        help="En una tendencia fuerte el siguiente cruce tarda y se pierde gran parte del movimiento. Con la reentrada, "
+                             "después de una operación de esa tendencia que cerró en ganancia (R mayor que 0) se vuelve a entrar cuando "
+                             "el precio retrocede a la media. La tendencia dura hasta el cruce contrario. Se repite la misma entrada: "
+                             "mismo SL, TP, breakeven, cierre parcial y filtros (salvo que le pongas SL, TP o lotaje propios). Una sola posición a la vez. La reentrada exige además "
+                             "una confirmación de ADX (más abajo).")
+            _acc_cab_opc("re", _acc_lista, "sg")
+            re_nivel, re_modo, re_max, re_velas = "larga", "confirmacion", 1, 60
+            re_adx_on, re_adx_min, re_di, re_cre_on, re_cre_n = True, 25.0, True, False, 3
+            re_sl_ui, re_sl_val, re_rr_on, re_rr_val, re_lote_on, re_lote_val = "igual", 0.0, False, 1.0, True, 1.0
             with st.container(key="acc_re"):
-                if modo_senal == "cruce":
-                    re_nivel = {f"{MEDIA} larga": "larga", f"{MEDIA} corta": "corta"}[_W(st).radio(
-                        "Retroceso hasta la", [f"{MEDIA} larga", f"{MEDIA} corta"], key="re_nivel", horizontal=True)]
-                else:
-                    st.caption("Retroceso hasta la media del modo «precio» (hay una sola).")
-                _RE_MODOS = {"Confirmación: toca la media y cierra a favor": "confirmacion", "Orden límite en la media": "limite"}
-                re_modo = _RE_MODOS[_W(st).radio("Cómo entrar", list(_RE_MODOS), key="re_modo",
-                                                 help="Confirmación: la vela toca la media y cierra del lado de la tendencia; se entra al cierre. "
-                                                      "Orden límite: se entra en la media, con el valor que tenía al cierre de la vela anterior "
-                                                      "(más barato, pero entra también en retrocesos que siguen de largo).")]
-                re_max = int(_W(st).radio("Reentradas por tendencia", [1, 2], key="re_max", horizontal=True,
-                                          help="Con 2, la segunda se hace solo si la primera también cerró en ganancia."))
-                re_velas = _W(st).number_input("Caducidad (velas desde el cruce)", 1, 5000, 60, 10, key="re_velas",
-                                               help="Pasadas estas velas desde el cruce ya no se reentra, aunque la tendencia siga.")
-                st.markdown("**SL y TP de la reentrada**")
-                _RE_SL = {"Igual que la entrada": "igual", "Múltiplo de ATR": "atr", "Dólares fijos": "usd"}
-                re_sl_ui = _RE_SL[_W(st).radio("SL de la reentrada", list(_RE_SL), key="re_sl_modo",
-                                               help="Con un SL propio la reentrada puede ser una operación más corta. El lotaje se recalcula "
-                                                    "solo para arriesgar los mismos US$ que la entrada por cruce (un SL más corto = más lotes; "
-                                                    "uno más largo = menos). Nunca arriesga más que la entrada.")]
-                if re_sl_ui == "atr":
-                    re_sl_val = _W(st).number_input("SL de la reentrada (múltiplo de ATR)", 0.1, 20.0, 1.0, 0.1, key="re_sl_atr")
-                elif re_sl_ui == "usd":
-                    re_sl_val = _W(st).number_input("SL de la reentrada (US$ con el lote de la entrada)", 1.0, 10_000_000.0, 50.0, 10.0,
-                                                    key="re_sl_usd")
-                re_rr_on = _W(st).checkbox("TP propio (R:R)", key="re_rr_on",
-                                           help="Apagado: el mismo R:R que la entrada. Prendido: un objetivo propio, por ejemplo 1:1 "
-                                                "para una operación más corta. No se usa si la salida es por señal.")
-                if re_rr_on:
-                    re_rr_val = _W(st).number_input("R:R de la reentrada", 0.1, 50.0, 1.0, 0.1, key="re_rr")
-                if re_sl_ui != "igual":
-                    re_lote_on = _W(st).checkbox("Limitar el lotaje de la reentrada", value=True, key="re_lote_on",
-                                                 help="Con un SL corto el lote recalculado puede ser muy grande: el spread pesa más, el "
-                                                      "deslizamiento se multiplica y puede chocar con el máximo de la cuenta. Si el lote "
-                                                      "calculado supera el tope, esa reentrada NO se hace.")
-                    re_lote_val = _W(st).number_input("Lotaje máximo de la reentrada", 0.01, 1000.0, 1.0, 0.1, key="re_lote_max",
-                                                      disabled=not re_lote_on)
-                    st.caption("El lote se redondea hacia abajo al paso del símbolo; si queda por debajo del mínimo, no se reentra.")
-                st.markdown("**Confirmación de ADX**")
-                re_adx_on = _W(st).checkbox("ADX mínimo", value=True, key="re_adx_on")
-                re_adx_min = _W(st).number_input("ADX mínimo para reentrar", 1.0, 100.0, 25.0, 1.0, key="re_adx_min", disabled=not re_adx_on)
-                re_di = _W(st).checkbox("DI a favor de la operación", value=True, key="re_di",
-                                        help="Para una compra, +DI por encima de −DI; para una venta, al revés. El ADX solo mide la fuerza, "
-                                             "no la dirección.")
-                re_cre_on = _W(st).checkbox("ADX creciente", key="re_cre_on",
-                                            help="El ADX tiene que ser mayor que el de hace N velas. En un retroceso el ADX suele aflojar: "
-                                                 "exigirlo puede dejar afuera buenas reentradas.")
-                re_cre_n = _W(st).number_input("Velas para comparar el ADX", 1, 50, 3, 1, key="re_cre_n", disabled=not re_cre_on)
-                st.caption("Los filtros del cruce (sesión, SMA, ADX general, etc.) se vuelven a evaluar en cada reentrada. "
-                           "Solo se reentra después de una operación cerrada con R mayor que 0.")
-        _acc_css(_acc_lista, _acc_activos, "sg", ("pb", "parcial", "be", "re"))
+                reent_on = _W(st).checkbox("Activar la reentrada", key="reentrada_on")
+                _acc_estado("re", reent_on)
+                if reent_on:
+                    if modo_senal == "cruce":
+                        re_nivel = {f"{MEDIA} larga": "larga", f"{MEDIA} corta": "corta"}[_W(st).radio(
+                            "Retroceso hasta la", [f"{MEDIA} larga", f"{MEDIA} corta"], key="re_nivel", horizontal=True)]
+                    else:
+                        st.caption("Retroceso hasta la media del modo «precio» (hay una sola).")
+                    _RE_MODOS = {"Confirmación: toca la media y cierra a favor": "confirmacion", "Orden límite en la media": "limite"}
+                    re_modo = _RE_MODOS[_W(st).radio("Cómo entrar", list(_RE_MODOS), key="re_modo",
+                                                     help="Confirmación: la vela toca la media y cierra del lado de la tendencia; se entra al cierre. "
+                                                          "Orden límite: se entra en la media, con el valor que tenía al cierre de la vela anterior "
+                                                          "(más barato, pero entra también en retrocesos que siguen de largo).")]
+                    re_max = int(_W(st).radio("Reentradas por tendencia", [1, 2], key="re_max", horizontal=True,
+                                              help="Con 2, la segunda se hace solo si la primera también cerró en ganancia."))
+                    re_velas = _W(st).number_input("Caducidad (velas desde el cruce)", 1, 5000, 60, 10, key="re_velas",
+                                                   help="Pasadas estas velas desde el cruce ya no se reentra, aunque la tendencia siga.")
+                    st.markdown("**SL y TP de la reentrada**")
+                    _RE_SL = {"Igual que la entrada": "igual", "Múltiplo de ATR": "atr", "Dólares fijos": "usd"}
+                    re_sl_ui = _RE_SL[_W(st).radio("SL de la reentrada", list(_RE_SL), key="re_sl_modo",
+                                                   help="Con un SL propio la reentrada puede ser una operación más corta. El lotaje se recalcula "
+                                                        "solo para arriesgar los mismos US$ que la entrada por cruce (un SL más corto = más lotes; "
+                                                        "uno más largo = menos). Nunca arriesga más que la entrada.")]
+                    if re_sl_ui == "atr":
+                        re_sl_val = _W(st).number_input("SL de la reentrada (múltiplo de ATR)", 0.1, 20.0, 1.0, 0.1, key="re_sl_atr")
+                    elif re_sl_ui == "usd":
+                        re_sl_val = _W(st).number_input("SL de la reentrada (US$ con el lote de la entrada)", 1.0, 10_000_000.0, 50.0, 10.0,
+                                                        key="re_sl_usd")
+                    re_rr_on = _W(st).checkbox("TP propio (R:R)", key="re_rr_on",
+                                               help="Apagado: el mismo R:R que la entrada. Prendido: un objetivo propio, por ejemplo 1:1 "
+                                                    "para una operación más corta. No se usa si la salida es por señal.")
+                    if re_rr_on:
+                        re_rr_val = _W(st).number_input("R:R de la reentrada", 0.1, 50.0, 1.0, 0.1, key="re_rr")
+                    if re_sl_ui != "igual":
+                        re_lote_on = _W(st).checkbox("Limitar el lotaje de la reentrada", value=True, key="re_lote_on",
+                                                     help="Con un SL corto el lote recalculado puede ser muy grande: el spread pesa más, el "
+                                                          "deslizamiento se multiplica y puede chocar con el máximo de la cuenta. Si el lote "
+                                                          "calculado supera el tope, esa reentrada NO se hace.")
+                        re_lote_val = _W(st).number_input("Lotaje máximo de la reentrada", 0.01, 1000.0, 1.0, 0.1, key="re_lote_max",
+                                                          disabled=not re_lote_on)
+                        st.caption("El lote se redondea hacia abajo al paso del símbolo; si queda por debajo del mínimo, no se reentra.")
+                    st.markdown("**Confirmación de ADX**")
+                    re_adx_on = _W(st).checkbox("ADX mínimo", value=True, key="re_adx_on")
+                    re_adx_min = _W(st).number_input("ADX mínimo para reentrar", 1.0, 100.0, 25.0, 1.0, key="re_adx_min", disabled=not re_adx_on)
+                    re_di = _W(st).checkbox("DI a favor de la operación", value=True, key="re_di",
+                                            help="Para una compra, +DI por encima de −DI; para una venta, al revés. El ADX solo mide la fuerza, "
+                                                 "no la dirección.")
+                    re_cre_on = _W(st).checkbox("ADX creciente", key="re_cre_on",
+                                                help="El ADX tiene que ser mayor que el de hace N velas. En un retroceso el ADX suele aflojar: "
+                                                     "exigirlo puede dejar afuera buenas reentradas.")
+                    re_cre_n = _W(st).number_input("Velas para comparar el ADX", 1, 50, 3, 1, key="re_cre_n", disabled=not re_cre_on)
+                    st.caption("Los filtros del cruce (sesión, SMA, ADX general, etc.) se vuelven a evaluar en cada reentrada. "
+                               "Solo se reentra después de una operación cerrada con R mayor que 0.")
+        _acc_css(_acc_lista, _acc_activos, "sg", ("pb",))
         _sep_filtro()
         # El ATR solo interviene si el SL va en múltiplos de ATR o si algún filtro lo usa (los filtros se definen más abajo:
         # sus valores ya están en session_state al comienzo de cada ejecución).
@@ -929,8 +1041,12 @@ with st.sidebar:
                 cortes_ses = sesmod.cortes_con_rangos(_cortes, _hoy) if _cortes else None
             except ValueError as e:
                 st.error(str(e))
-            offset = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)
-            dst = _W(st).checkbox("El servidor cambia de hora con EE.UU.", True)
+            if ES_RUP:
+                offset, dst = rup_offset, rup_dst
+                st.caption("El desfase del servidor es el del menú 3 (el mismo para toda la página).")
+            else:
+                offset = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0)
+                dst = _W(st).checkbox("El servidor cambia de hora con EE.UU.", True)
             st.caption("Confirmá el desfase midiéndolo con el mercado abierto. Los horarios de "
                        "las sesiones se mueven con el horario de verano de cada plaza. En BTC el "
                        "filtro se desactiva solo (opera 24/7).")
@@ -1014,9 +1130,13 @@ with st.sidebar:
                                                 "0 = sin regla. Necesita «Retirar al llegar al objetivo» (menú 7). Solo en el backtest. Más abajo, en los resultados, hay un botón que sugiere lotaje y RR.")
         if not retiro_on:
             st.caption("La consistencia actúa sobre los retiros: tildá «Retirar al llegar al objetivo» en el menú 7 para usarla.")
-        offset_dia = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="offset_dia")
-        st.caption("Medilo con el mercado abierto (hora de «Observación de mercado» menos GMT); es el mismo dato del filtro de sesión. "
-                   "Con el corte «Europa Central» sirve para cortar el día a medianoche CE(S)T.")
+        if ES_RUP:
+            offset_dia = rup_offset
+            st.caption("El desfase del servidor es el del menú 3 (el mismo para toda la página).")
+        else:
+            offset_dia = _W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="offset_dia")
+            st.caption("Medilo con el mercado abierto (hora de «Observación de mercado» menos GMT); es el mismo dato del filtro de sesión. "
+                       "Con el corte «Europa Central» sirve para cortar el día a medianoche CE(S)T.")
         _CORTES = {"Medianoche de Europa Central (CE(S)T)": "europa", "Medianoche del servidor (hora de la plataforma)": "servidor"}
         corte_dia = _CORTES[_W(st).radio("Corte del día (límite diario, mejor día, consistencia)", list(_CORTES), key="corte_dia",
                                          help="A qué hora se reinicia el límite diario: depende de la prop firm. Algunas lo reinician a la "
@@ -1049,6 +1169,58 @@ with st.sidebar:
                            f"a las 16:59 de Nueva York ({_fm(_cierre_art)} hora Argentina hoy).")
             else:
                 st.caption(f"El viernes se cierra todo a las 16:59 de Nueva York ({_fm(_cierre_art)} hora Argentina hoy).")
+        _sep_filtro()
+        st.markdown("**Trading de noticias (opcional)**",
+                    help="Protege la cuenta del slippage de las noticias de alto impacto de EEUU (empleo, IPC, FOMC...). Regla 1: no se abre "
+                         "ninguna operación (tampoco reentradas ni órdenes límite) desde N minutos antes hasta N minutos después de la noticia; "
+                         "las órdenes pendientes se cancelan al empezar esa ventana. Regla 2 (opcional): antes de la noticia, si la operación "
+                         "abierta va en el R indicado o peor, se cierra a mercado; si va mejor o ya activó el breakeven, sigue. Solo actúa sobre "
+                         "operaciones ABIERTAS cerca de la noticia: una operación abierta desde antes que sigue en ganancia atraviesa la noticia.")
+        _acc_lista_nt, noti_activos = [], set()
+        _acc_cab_opc("nt", _acc_lista_nt, "nt")
+        noti_min, noti_cerrar_r, noti_csv = 6.0, -0.5, False
+        noti_rango_atr, noti_rango_min, noti_eventos = 4.0, 6.0, ()
+        with st.container(key="acc_nt"):
+            noti_on = _W(st).checkbox("Activar el trading de noticias", key="noti_on")
+            _acc_estado("nt", noti_on)
+            if noti_on:
+                noti_min = float(_W(st).number_input("Minutos antes y después sin abrir", 1.0, 120.0, 6.0, 1.0, key="noti_min",
+                                                     help="Ventana de la regla 1, y también cuánto antes de la noticia se evalúa el cierre de la regla 2 "
+                                                          "(con velas de 5 min se cierra entre N y N+5 min antes). Para garantizar el cierre antes de la noticia "
+                                                          "usá un valor mayor que la temporalidad."))
+                noti_cerrar_on = _W(st).checkbox("Cerrar antes de la noticia si va perdiendo", value=True, key="noti_cerrar_on")
+                if noti_cerrar_on:
+                    noti_cerrar_r = float(_W(st).number_input("Antes de la noticia, cerrar si va en (R) o peor", -50.0, 50.0, -0.5, 0.1, key="noti_cerrar_r",
+                                                              help="−0,5 = cerrar si va perdiendo medio riesgo o más. 0 = cerrar si no está en ganancia. "
+                                                                   "No se aplica si el breakeven ya se activó."))
+                else:
+                    noti_cerrar_r = None
+                _NF = ["Detectar en las velas", "CSV de calendario"]
+                noti_csv = _W(st).radio("Cómo detectar las noticias", _NF, key="noti_fuente",
+                                        help="Velas: una vela que empieza a las 8:30, 10:00, 14:00 o 14:30 de Nueva York (lunes a viernes) y es muy grande "
+                                             "respecto del ATR cuenta como noticia. Solo anda con velas de 30 minutos o menos y detecta a posteriori "
+                                             "(solo las noticias que movieron el precio): el backtest es algo optimista frente al calendario real. "
+                                             "CSV: un calendario con columnas fecha_hora_utc, moneda, impacto (se usan las de USD con impacto alto).") == _NF[1]
+                if noti_csv:
+                    _up_n = st.file_uploader("Calendario de noticias (CSV)", type=["csv", "txt"], key="noti_csv_up")
+                    if _up_n is not None:
+                        try:
+                            noti_eventos, _info_n = noticias_mod.leer_csv(_up_n.getvalue())
+                            st.caption(f"{_info_n['usd_alto']} noticias de USD con impacto alto, del {_info_n['desde']:%d/%m/%Y} al {_info_n['hasta']:%d/%m/%Y}.")
+                        except ValueError as e_:
+                            st.error(str(e_))
+                    else:
+                        st.caption("Cargá el CSV del calendario.")
+                else:
+                    noti_rango_atr = float(_W(st).number_input("Vela de noticia: rango mínimo (veces el ATR)", 1.0, 50.0, 4.0, 0.5, key="noti_rango_atr"))
+                    noti_rango_min = float(_W(st).number_input("Vela de noticia: rango mínimo (en precio)", 0.0, 10000.0, 6.0, 0.5, key="noti_rango_min",
+                                                               help="Para el oro, en dólares por onza: filtra velas grandes que no son una noticia."))
+                    st.caption("ATR de 14 velas anteriores. Al correr el backtest se informa cuántas noticias se detectaron por año.")
+                st.caption("Regla 1: ninguna entrada dentro de la ventana. Regla 2: cierre a mercado antes de la ventana (con el spread).")
+                _tf_n = globals().get("tf") or ""
+                if not noti_csv and _tf_n in ("H1", "H4", "D1"):
+                    st.warning("Con velas de más de 30 minutos no se pueden detectar las noticias en las velas: usá M30 o menos, o el CSV.")
+        _acc_css(_acc_lista_nt, noti_activos, "nt", ())
         limite_pct = perd_tot
 
     with st.expander("9. Gestión de riesgo", expanded=False):
@@ -1082,12 +1254,175 @@ with st.sidebar:
         pausa_gan_vence_h = _W(st).number_input("Horas de vigencia del retroceso", 0.5, 10_000.0, 24.0, 1.0,
                                                 disabled=not (retro_on and pausa_gan_vence == "horas"))
 
-    with st.expander("10. Costos", expanded=False):
+    with (st.container() if ES_RUP else st.expander("10. Combinar con una estrategia de reversión", expanded=False)):   # la ruptura no combina con reversión: menú oculto
+        rv_on = False if ES_RUP else _W(st).checkbox("Combinar con una estrategia de reversión a la media", key="rv_activo",
+                                help="Suma una segunda estrategia que opera en contra de los extremos, pensada para los mercados laterales donde el "
+                                     "cruce pierde. Usa los mismos datos, spread, reglas de la cuenta, noticias y fin de semana; tiene su propio "
+                                     "horario, cierre por tiempo y breakeven. Apagada, todo el análisis queda igual que sin este menú.")
+        _rv_lista, _rv_def = [], rev_mod.ConfigRev()
+        _rv_offset_comun = bool(ses_on or reglas_on or vp_on or noti_on or (finde_vie_on and not finde_mant))
+        rv_var, rv_bb_n, rv_bb_k, rv_b_velas = _rv_def.variante, _rv_def.bb_n, _rv_def.bb_k, _rv_def.b_velas
+        rv_adx_per, rv_adx_max, rv_adx_b = _rv_def.adx_periodo, _rv_def.adx_max, False
+        rv_sl_modo, rv_sl_atr_x, rv_sl_precio, rv_atr_per = _rv_def.sl_modo, _rv_def.sl_atr_x, _rv_def.sl_precio, _rv_def.atr_periodo
+        rv_tp_modo, rv_rr, rv_riesgo = _rv_def.tp_modo, _rv_def.rr, _rv_def.riesgo_usd
+        rv_ts_on, rv_ts_velas, rv_ts_r = False, _rv_def.tstop_velas, _rv_def.tstop_r
+        rv_be_on, rv_be_act, rv_be_niv = False, _rv_def.be_act_valor, _rv_def.be_nivel_valor
+        rv_ses_on, rv_sesiones, rv_horarios, rv_cortes, rv_sin_pausa, rv_offset = False, tuple(SESIONES), None, None, [], None
+        rv_prior, rv_magic = _rv_def.prioridad, _rv_def.magic
+        rv_val_on, rv_aj, rv_ve = False, (date(2020, 1, 1), date(2023, 12, 31)), (date(2024, 1, 1), date.today())
+        if not rv_on:
+            if not ES_RUP:
+                st.caption("Sin marcar: el análisis es solo el de arriba, sin reversión.")
+        else:
+            _sep_filtro()
+            st.markdown("**Señal de entrada**", help="A: una vela cierra fuera de la banda de Bollinger y la siguiente cierra de vuelta adentro; se opera "
+                        "hacia la media. B: el precio supera el máximo (o mínimo) de AYER y dentro de las próximas K velas vuelve a cerrar adentro; "
+                        "se opera en contra de esa ruptura falsa. Se entra al cierre de la vela de confirmación.")
+            _acc_cab_opc("rv_se", _rv_lista, "rv")
+            with st.container(key="acc_rv_se"):
+                _RV_VAR = {"A · Extremos de un rango (Bollinger)": "A", "B · Ruptura falsa del máximo / mínimo de ayer": "B"}
+                rv_var = _RV_VAR[_W(st).radio("Variante", list(_RV_VAR), key="rv_variante")]
+                if rv_var == "A":
+                    rv_bb_n = int(_W(st).number_input("Media de Bollinger (velas)", 2, 500, 20, 1, key="rv_bb_n"))
+                    rv_bb_k = float(_W(st).number_input("Desvíos de la banda", 0.1, 10.0, 2.0, 0.1, key="rv_bb_k"))
+                    st.caption("Venta: una vela cierra sobre la banda superior y la siguiente cierra de vuelta adentro. Compra: al revés.")
+                else:
+                    rv_b_velas = int(_W(st).number_input("Velas para volver a cerrar adentro (K)", 0, 500, 6, 1, key="rv_b_velas",
+                                                         help="Se cuentan desde la vela que rompe (incluida). El día se corta a la medianoche del servidor."))
+                    st.caption("Una señal por lado por día. Si el día anterior es el último con datos (fin de semana), se usa ese.")
+            _sep_filtro()
+            st.markdown("**ADX máximo**", help="Solo se opera cuando el mercado está lateral: ADX menor al máximo. Obligatorio en la variante A; opcional en la B.")
+            _acc_cab_opc("rv_adx", _rv_lista, "rv")
+            with st.container(key="acc_rv_adx"):
+                rv_adx_per = int(_W(st).number_input("Período del ADX", 2, 200, 14, 1, key="rv_adx_per"))
+                if rv_var == "B":
+                    rv_adx_b = _W(st).checkbox("Usar el filtro de ADX máximo", key="rv_adx_b")
+                rv_adx_max = float(_W(st).number_input("ADX máximo", 1.0, 100.0, 20.0, 1.0, key="rv_adx_max", disabled=(rv_var == "B" and not rv_adx_b)))
+            _sep_filtro()
+            st.markdown("**Stop Loss**", help="Más allá del extremo de la señal (las dos velas en A; el nuevo máximo/mínimo en B) más un múltiplo de ATR, o una distancia fija.")
+            _acc_cab_opc("rv_sl", _rv_lista, "rv")
+            with st.container(key="acc_rv_sl"):
+                _RV_SL = {"Extremo de la señal + ATR": "atr", "Distancia fija (unid. de precio)": "precio"}
+                rv_sl_modo = _RV_SL[_W(st).radio("SL de la reversión", list(_RV_SL), key="rv_sl_modo")]
+                if rv_sl_modo == "atr":
+                    rv_sl_atr_x = float(_W(st).number_input("Múltiplo de ATR de margen", 0.0, 20.0, 0.5, 0.1, key="rv_sl_atr_x"))
+                    rv_atr_per = int(_W(st).number_input("Período del ATR", 2, 200, 14, 1, key="rv_atr_per"))
+                else:
+                    rv_sl_precio = float(_W(st).number_input("Distancia del SL", 0.01, 100000.0, 3.0, 0.1, key="rv_sl_precio"))
+            _sep_filtro()
+            st.markdown("**Take Profit**", help="En la media de Bollinger (A) o en el punto medio del rango de ayer (B), o un R:R fijo. "
+                        "Con el TP en la media, el R:R cambia en cada operación.")
+            _acc_cab_opc("rv_tp", _rv_lista, "rv")
+            with st.container(key="acc_rv_tp"):
+                _RV_TP = {"A: la media · B: punto medio de ayer": "media", "R:R fijo": "rr"}
+                rv_tp_modo = _RV_TP[_W(st).radio("TP de la reversión", list(_RV_TP), key="rv_tp_modo")]
+                if rv_tp_modo == "rr":
+                    rv_rr = float(_W(st).number_input("R:R", 0.1, 50.0, 1.0, 0.1, key="rv_rr"))
+                else:
+                    st.caption("Si el precio de entrada ya pasó el objetivo, la señal se descarta (se cuenta como «tp»).")
+            _sep_filtro()
+            st.markdown("**Riesgo por operación (US$)**", help="Riesgo fijo: el lote se calcula con la distancia del SL y el tamaño del contrato, redondeado "
+                        "hacia abajo al paso del símbolo. Si da menos que el lote mínimo, la señal se salta (se cuenta como «lote»).")
+            _acc_cab_opc("rv_ri", _rv_lista, "rv")
+            with st.container(key="acc_rv_ri"):
+                rv_riesgo = float(_W(st).number_input("Riesgo por operación (US$)", 1.0, 10_000_000.0, 50.0, 10.0, key="rv_riesgo"))
+                st.caption("Es independiente del lote de arriba (que es el de la EMA).")
+            _sep_filtro()
+            st.markdown("**Cierre por tiempo (opcional)**", help="Igual que el de la EMA, pero propio de la reversión.")
+            _acc_cab_opc("rv_ts", _rv_lista, "rv")
+            with st.container(key="acc_rv_ts"):
+                rv_ts_on = _W(st).checkbox("Activar el cierre por tiempo", key="rv_ts_on")
+                _acc_estado("rv_ts", rv_ts_on)
+                if rv_ts_on:
+                    rv_ts_velas = int(_W(st).number_input("Velas después de la entrada", 1, 5000, 12, 1, key="rv_ts_velas"))
+                    rv_ts_r = float(_W(st).number_input("Cerrar si va en (R) o peor", -50.0, 50.0, -0.25, 0.05, key="rv_ts_r"))
+            _sep_filtro()
+            st.markdown("**Breakeven (opcional)**", help="Igual que el de la EMA, pero propio de la reversión (en múltiplos de R).")
+            _acc_cab_opc("rv_be", _rv_lista, "rv")
+            with st.container(key="acc_rv_be"):
+                rv_be_on = _W(st).checkbox("Activar el breakeven", key="rv_be_on")
+                _acc_estado("rv_be", rv_be_on)
+                if rv_be_on:
+                    rv_be_act = float(_W(st).number_input("Activación (múltiplos de R)", 0.1, 50.0, 0.8, 0.1, key="rv_be_act"))
+                    rv_be_niv = float(_W(st).number_input("Nivel del SL (R sobre la entrada)", 0.0, 50.0, 0.0, 0.1, key="rv_be_niv"))
+                    if rv_be_niv >= rv_be_act:
+                        st.error("El nivel del SL tiene que ser menor que la activación.")
+            _sep_filtro()
+            st.markdown("**Horario propio**", help="Igual que el filtro de sesión de la EMA, pero solo para la reversión.")
+            _acc_cab_opc("rv_ho", _rv_lista, "rv")
+            _rv_hoy = date.today()
+            _rv_rangos, _rv_cortes_art, _rv_sp = {}, {}, []
+            with st.container(key="acc_rv_ho"):
+                rv_ses_on = _W(st).checkbox("Filtro de sesión y horario de la reversión", key="rv_sesion_on")
+                _acc_estado("rv_ho", rv_ses_on)
+                if rv_ses_on:
+                    rv_sesiones = []
+                    for _nom in SESIONES:
+                        _id = "rv_" + cio.slug(_nom)
+                        if not _W(st).checkbox(_nom, value=True, key=f"{_id}_on"):
+                            continue
+                        rv_sesiones.append(_nom)
+                        _ini_a, _fin_a = sesmod.ventana_art(_nom, _rv_hoy)
+                        if _W(st).checkbox(f"Limitar horario de {_nom} (hora Argentina)", key=f"{_id}_lim"):
+                            _c1, _c2 = st.columns(2)
+                            _d = _W(_c1).time_input("Desde", _hora(int(_ini_a), int(round((_ini_a % 1) * 60))), step=900, key=f"{_id}_desde")
+                            _h = _W(_c2).time_input("Hasta", _hora(int(_fin_a), int(round((_fin_a % 1) * 60))), step=900, key=f"{_id}_hasta")
+                            _rv_rangos[_nom] = (_d.hour + _d.minute / 60.0, _h.hour + _h.minute / 60.0)
+                        if _W(st).checkbox(f"Excluir pausa de mediodía de {_nom}", key=f"{_id}_pausa"):
+                            rv_sin_pausa.append(_nom)
+                        if _W(st).checkbox(f"Recortar un horario de {_nom} (hora Argentina)", key=f"{_id}_rec"):
+                            _fx = lambda x: _hora(int(x % 24), int(round((x % 1) * 60)))
+                            _k1, _k2 = st.columns(2)
+                            _cd = _W(_k1).time_input("Desde", _fx(_fin_a - 1.0), step=900, key=f"{_id}_rec_desde")
+                            _ch = _W(_k2).time_input("Hasta", _fx(_fin_a), step=900, key=f"{_id}_rec_hasta")
+                            _rv_cortes_art[_nom] = (_cd.hour + _cd.minute / 60.0, _ch.hour + _ch.minute / 60.0)
+                    rv_sesiones = tuple(rv_sesiones)
+                    try:
+                        rv_horarios = sesmod.horarios_con_rangos(_rv_rangos, _rv_hoy) if _rv_rangos else None
+                        rv_cortes = sesmod.cortes_con_rangos(_rv_cortes_art, _rv_hoy) if _rv_cortes_art else None
+                    except ValueError as e:
+                        st.error(str(e))
+                    if not _rv_offset_comun:
+                        rv_offset = float(_W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="rv_offset"))
+                        st.caption("Confirmalo midiéndolo con el mercado abierto. El servidor cambia de hora con EE.UU.")
+                    else:
+                        st.caption("Usa el mismo desfase del servidor que el resto del análisis.")
+            _sep_filtro()
+            st.markdown("**Prioridad y bots**", help="Qué pasa cuando las dos estrategias chocan. Se aplica en la simulación de cartera.")
+            _acc_cab_opc("rv_pr", _rv_lista, "rv")
+            with st.container(key="acc_rv_pr"):
+                _RV_PR = {"Gana el primero en abrir": "primero", "La EMA manda": "ema"}
+                rv_prior = _RV_PR[_W(st).radio("Prioridad", list(_RV_PR), key="rv_prioridad",
+                                               help="Gana el primero en abrir: si hay una posición abierta de la otra estrategia en sentido contrario, la señal "
+                                                    "nueva se descarta. La EMA manda: si la EMA da señal y hay una reversión abierta en contra, la reversión se cierra a "
+                                                    "mercado y entra la EMA; una señal de reversión en contra de una EMA abierta siempre se descarta.")]
+                rv_magic = int(_W(st).number_input("Magic number de la reversión", 1, 2_000_000_000, 2, 1, key="rv_magic"))
+                st.caption("La cartera se simula en la fase siguiente; por ahora esto solo se guarda.")
+            _sep_filtro()
+            st.markdown("**Ajuste y verificación**", help="Se ajusta con un tramo y se verifica con otro que no se tocó. Los números de abajo son para "
+                        "no olvidarse de cuántas combinaciones se probaron.")
+            _acc_cab_opc("rv_aj", _rv_lista, "rv")
+            with st.container(key="acc_rv_aj"):
+                rv_val_on = _W(st).checkbox("Dividir por fechas", key="rv_val_on")
+                _acc_estado("rv_aj", rv_val_on)
+                if rv_val_on:
+                    _c1, _c2 = st.columns(2)
+                    _a0 = _W(_c1).date_input("Ajuste desde", date(2020, 1, 1), key="rv_aj_desde")
+                    _a1 = _W(_c2).date_input("Ajuste hasta", date(2023, 12, 31), key="rv_aj_hasta")
+                    _c3, _c4 = st.columns(2)
+                    _v0 = _W(_c3).date_input("Verificación desde", date(2024, 1, 1), key="rv_ve_desde")
+                    _v1 = _W(_c4).date_input("Verificación hasta", date.today(), key="rv_ve_hasta")
+                    rv_aj, rv_ve = (_a0, _a1), (_v0, _v1)
+                else:
+                    st.caption("Sin fechas: Ajuste = primer 70 % de las velas, Verificación = último 30 % (el out-of-sample del menú 12).")
+            _acc_css(_rv_lista, set(), "rv", ())
+
+    with st.expander(f"{10 if ES_RUP else 11}. Costos", expanded=False):
         spread = SPREADS[_W(st).selectbox("Spread", list(SPREADS))]
         spread_fijo = _W(st).number_input("Spread fijo (unid. de precio)", 0.0, value=0.3) if spread == "fijo" else 0.0
         costo_extra = _W(st).number_input("Costo extra por operación (unid. de precio)", 0.0, value=0.0)
 
-    with st.expander("11. Control de sobreajuste", expanded=False):
+    with st.expander(f"{11 if ES_RUP else 12}. Control de sobreajuste", expanded=False):
         oos = _W(st).slider("Out-of-sample reservado (%)", 10, 50, 30)
         azar_n = _W(st).number_input("Repeticiones del azar", 20, 500, 100, 20)
 
@@ -1095,7 +1430,7 @@ with st.sidebar:
     # ---- guardar y cargar la configuración
     st.markdown('<div class="fte">Configuración</div>', unsafe_allow_html=True)
     estado.cfg_wk = dict(_WK)
-    _nombre_auto = (f"ACPTester_config_{MEDIA}_{int(ema_c)}-{int(ema_l)}" if modo_senal == "cruce"
+    _nombre_auto = ("ACPTester_config_RUPTURA" if ES_RUP else f"ACPTester_config_{MEDIA}_{int(ema_c)}-{int(ema_l)}" if modo_senal == "cruce"
                     else f"ACPTester_config_{MEDIA}_{int(media_unica)}") + ".json"
     _cfg_bytes = cio.a_bytes(TIPO, {**_REG, "_ref_fecha": date.today().isoformat()})
     # Guarda todos los campos de la barra lateral (fuente, símbolos, período, señal, SL, TP, dinero, costos, filtros y
@@ -1132,7 +1467,9 @@ def construir_config(simbolo: str = None) -> eng.Config:
         met.validar_lotaje(lotes, *p["vol"])
     except ValueError as e:
         raise ValueError(f"{simbolo}: {e}")
-    if sl_modo == SL_USD:
+    if ES_RUP:
+        modo, valor = "precio", 1.0              # el SL real de cada señal lo calcula ruptura.py (la distancia va por señal)
+    elif sl_modo == SL_USD:
         # dólares -> distancia de precio: US$ / (US$ por cada 1,00 de precio con este lote)
         vpu = met.valor_por_unidad(p["tick_size"], p["tick_value"], lotes)
         modo, valor = "precio", float(sl_usd) / vpu
@@ -1143,7 +1480,7 @@ def construir_config(simbolo: str = None) -> eng.Config:
         modo, valor = ("pct" if sl_modo == SL_PCT else "atr"), float(sl_valor)
     return eng.Config(
         ema_corta=int(ema_c), ema_larga=int(ema_l), rr=float(rr), salida_modo=salida_modo,
-        media_tipo=TIPO, modo_senal=modo_senal, media_unica=int(media_unica),
+        media_tipo=("ema" if ES_RUP else TIPO), modo_senal=modo_senal, media_unica=int(media_unica),
         sl_modo=modo, sl_valor=valor, sl_ema_ref=sl_ema_ref, sl_ema_pct=(sl_modo == SL_EMA and sl_ema_unidad == "pct"), atr_periodo=int(atr_per),
         pullback_activo=bool(pb_on), pullback_pct=float(pb_pct), pullback_ema=pb_ema, pullback_velas=int(pb_velas),
         direccion=direccion, spread=spread, spread_fijo=float(spread_fijo), costo_extra=float(costo_extra),
@@ -1159,7 +1496,8 @@ def construir_config(simbolo: str = None) -> eng.Config:
         atr_rel_n=int(rel_n), atr_rel_min=float(rel_min) or None, atr_rel_max=float(rel_max) or None,
         sesion_activo=ses_on, sesiones=tuple(sesiones), horarios=(horarios_ses if ses_on else None),
         sin_pausa=(tuple(_sin_pausa) if ses_on else ()), cortes=(cortes_ses if ses_on else None),
-        servidor_offset_horas=offset if ses_on else (offset_dia if (reglas_on or vp_on or (finde_vie_on and not finde_mant)) else None), servidor_dst_eeuu=dst,
+        servidor_offset_horas=(rup_offset if ES_RUP else offset if ses_on else (offset_dia if (reglas_on or vp_on or noti_on or (finde_vie_on and not finde_mant)) else None)),
+        servidor_dst_eeuu=(rup_dst if ES_RUP else dst),
         finde_mantener=bool(finde_mant), finde_no_abrir_desde=(finde_vie_ny if (not finde_mant and finde_vie_on) else None),
         reglas_activas=bool(reglas_on), capital=float(capital),
         usd_por_unidad=float(met.valor_por_unidad(p["tick_size"], p["tick_value"], lotes)),
@@ -1177,6 +1515,9 @@ def construir_config(simbolo: str = None) -> eng.Config:
         parcial_pct=float(parcial_pct), parcial_mover_sl=bool(parcial_mover), parcial_sl_nivel=float(parcial_sl),
         lotes=float(lotes), lote_paso=float(p["vol"][2]), lote_min=float(p["vol"][0]), corte_dia=corte_dia,
         tstop_activo=bool(tstop_on), tstop_velas=int(tstop_velas), tstop_r=float(tstop_r),
+        noticias_activo=bool(noti_on), noticias_min=float(noti_min), noticias_cerrar_r=noti_cerrar_r,
+        noticias_fuente="csv" if noti_csv else "velas", noticias_rango_atr=float(noti_rango_atr), noticias_rango_min=float(noti_rango_min),
+        noticias_eventos=tuple(noti_eventos),
         reentrada_activa=bool(reent_on), reentrada_nivel=re_nivel, reentrada_modo=re_modo, reentrada_max=int(re_max),
         reentrada_velas=int(re_velas), re_adx_min=float(re_adx_min) if re_adx_on else None, re_di_favor=bool(re_di),
         re_adx_creciente_n=int(re_cre_n) if re_cre_on else 0,
@@ -1184,7 +1525,30 @@ def construir_config(simbolo: str = None) -> eng.Config:
         re_sl_valor=(float(re_sl_val) / met.valor_por_unidad(p["tick_size"], p["tick_value"], lotes) if re_sl_ui == "usd"
                      else float(re_sl_val)) if reent_on else 0.0,
         re_rr=float(re_rr_val) if (reent_on and re_rr_on) else None,
-        re_lote_max=float(re_lote_val) if (reent_on and re_sl_ui != "igual" and re_lote_on) else None)
+        re_lote_max=float(re_lote_val) if (reent_on and re_sl_ui != "igual" and re_lote_on) else None,
+        ruptura=(rup_mod.ConfigRup(
+            apertura_min=int(rup_ap), rango_min=int(rup_dur), sl_modo=rup_sl, sl_atr_x=float(rup_sl_atr), entradas_dia=int(rup_ent),
+            ultima_min=int(rup_ult), cierre_min=int(rup_cie), tam_activo=bool(rup_tam_on), tam_min=float(rup_tam_min),
+            tam_max=float(rup_tam_max), tam_n=int(rup_tam_n)) if ES_RUP else None))
+
+
+def construir_rev(cfg: eng.Config):
+    """(ConfigRev, Config para la reversión). Si la reversión tiene horario propio y el resto del análisis no necesita el desfase del
+    servidor, se lo agrega a la copia de la Config (la de la EMA no se toca)."""
+    cfg_rv = cfg
+    if rv_on and rv_ses_on and cfg.servidor_offset_horas is None:
+        cfg_rv = replace_cfg(cfg, servidor_offset_horas=float(rv_offset), servidor_dst_eeuu=True)
+    rv = rev_mod.ConfigRev(
+        activo=bool(rv_on), variante=rv_var, bb_n=int(rv_bb_n), bb_k=float(rv_bb_k), adx_periodo=int(rv_adx_per), adx_max=float(rv_adx_max),
+        adx_activo_b=bool(rv_adx_b), b_velas=int(rv_b_velas), sl_modo=rv_sl_modo, sl_atr_x=float(rv_sl_atr_x), sl_precio=float(rv_sl_precio),
+        atr_periodo=int(rv_atr_per), tp_modo=rv_tp_modo, rr=float(rv_rr), riesgo_usd=float(rv_riesgo),
+        sesion_activo=bool(rv_ses_on), sesiones=tuple(rv_sesiones), horarios=rv_horarios, cortes=rv_cortes, sin_pausa=tuple(rv_sin_pausa),
+        tstop_activo=bool(rv_ts_on), tstop_velas=int(rv_ts_velas), tstop_r=float(rv_ts_r),
+        be_activo=bool(rv_be_on), be_act_modo="r", be_act_valor=float(rv_be_act), be_nivel_modo="r", be_nivel_valor=float(rv_be_niv),
+        val_activa=bool(rv_val_on), ajuste_desde=rv_aj[0].isoformat() if rv_val_on else None, ajuste_hasta=rv_aj[1].isoformat() if rv_val_on else None,
+        verif_desde=rv_ve[0].isoformat() if rv_val_on else None, verif_hasta=rv_ve[1].isoformat() if rv_val_on else None,
+        prioridad=rv_prior, magic=int(rv_magic))
+    return rv, cfg_rv
 
 
 # ------------------------------------------------------------------ cuerpo
@@ -1283,7 +1647,7 @@ def _boton_descarga():
     r_, cfg_, act_, pdin_, vered_, relato_, meta_, obj_ = paq
     try:
         md, ops, res_csv = xia.informe(r_, cfg_, act_, pdin_, meta_, vered_, relato_, obj_,
-                                       estado.get("abl"), estado.get("comp"), nombre_app="ACPTester")
+                                       estado.get("abl"), estado.get("comp"), nombre_app="ACPTester", rev=estado.get("rev"))
         zbytes = xia.zip_informe(md, ops, res_csv)
     except Exception as e:      # el informe nunca debe tirar la página
         slot_descarga.button("Descargar análisis (IA)", disabled=True, use_container_width=True,
@@ -1303,6 +1667,13 @@ if correr:
                                                 estado.contador), cfg, activo,
                                     {"lotes": float(lotes), "comision": float(comision), "capital": float(capital),
                                      "limite_pct": float(limite_pct), **params_dinero(activo)})
+        estado.rev = None                                   # la reversión se calcula aparte: sin tildar el menú 10 no se toca nada
+        _rv, _cfg_rv = construir_rev(cfg)
+        if _rv.activo:
+            with ui.cargando("Calculando la reversión..."):
+                _ev = rev_mod.evaluar_rev(df, _cfg_rv, _rv, oos / 100, estado.contador)
+                _ab = rev_mod.ablacion_rev(df, _cfg_rv, _rv)
+            estado.rev = (_ev, _cfg_rv, _rv, _ab, activo)
     except (ValueError, data.ErrorDatos) as e:
         st.error(str(e))
 
@@ -1310,37 +1681,40 @@ if correr:
 _REGLA_TF = {"15min": "M15", "30min": "M30", "1h": "H1", "4h": "H4", "1D": "D1"}
 with st.sidebar:
     st.markdown('<div class="fte">Bot para MT5</div>', unsafe_allow_html=True)
-    try:
-        _cfg_bot = construir_config()
-        _tf_bot = _REGLA_TF.get(regla, "") if regla != "No" else (globals().get("tf") or "")
-        _nom_bot = _W(st).text_input("Nombre del bot", "", key="nombre_del_bot", max_chars=40,
-                                     placeholder=gb.nombre_archivo(activo, _tf_bot)[:-4],
-                                     help="Es el nombre del archivo .mq5 y el comentario de las órdenes en MT5 (hasta 18 caracteres). "
-                                          "Letras, números, guion y guion bajo. Vacío: se usa el nombre automático. No cambia cómo opera.")
-        _vd_bot = None
-        _g = estado.get("veredicto_bot")      # (config, veredicto, símbolo, lotes, temporalidad)
-        if _g and _g[0] == _cfg_bot and _g[2] == activo and _g[3] == float(lotes) and _g[4] == _tf_bot:
-            _vd_bot = _g[1]
-        _motivo = ("Con datos sintéticos no se genera bot." if fuente == ETQ_SINT
-                   else gb.motivo_rechazo(_vd_bot, _tf_bot))
-        if _motivo:
-            with st.container(key="bot_gen"):
-                st.button("⚙️ Generar bot (.mq5)", disabled=True, use_container_width=True)
-            st.caption(_motivo)
-        else:
-            _mq5 = gb.generar_mq5(_cfg_bot, activo, _tf_bot, float(lotes),
-                                  float(sl_usd) if sl_modo == SL_USD else None, _vd_bot,
-                                  capital=float(capital), limite_pct=float(limite_pct), nombre=_nom_bot,
-                                  usd_por_unidad_forzado=float(vpu_forzado) if vpu_forzar else 0.0)
-            with st.container(key="bot_gen"):
-                st.download_button("⚙️ Generar bot (.mq5)", _mq5.encode("utf-8"),
-                                   file_name=gb.nombre_archivo(activo, _tf_bot, _nom_bot), mime="text/plain",
-                                   use_container_width=True)
-            st.caption("Veredicto del backtest: " + _vd_bot["titulo"] + ". El bot opera solo y con parámetros fijos: "
-                       "se niega a arrancar si el símbolo, la temporalidad, el lote o el horario del servidor no coinciden. "
-                       "Compilalo en MetaEditor (F7) y probalo en demo.")
-    except (ValueError, RuntimeError, OSError) as e:
-        st.caption("No se puede generar el bot: " + str(e))
+    if ES_RUP:
+        st.caption("El bot de la ruptura todavía no está disponible: se entrega en un segundo tramo, con la misma lógica que este backtest.")
+    else:
+        try:
+            _cfg_bot = construir_config()
+            _tf_bot = _REGLA_TF.get(regla, "") if regla != "No" else (globals().get("tf") or "")
+            _nom_bot = _W(st).text_input("Nombre del bot", "", key="nombre_del_bot", max_chars=40,
+                                         placeholder=gb.nombre_archivo(activo, _tf_bot)[:-4],
+                                         help="Es el nombre del archivo .mq5 y el comentario de las órdenes en MT5 (hasta 18 caracteres). "
+                                              "Letras, números, guion y guion bajo. Vacío: se usa el nombre automático. No cambia cómo opera.")
+            _vd_bot = None
+            _g = estado.get("veredicto_bot")      # (config, veredicto, símbolo, lotes, temporalidad)
+            if _g and _g[0] == _cfg_bot and _g[2] == activo and _g[3] == float(lotes) and _g[4] == _tf_bot:
+                _vd_bot = _g[1]
+            _motivo = ("Con datos sintéticos no se genera bot." if fuente == ETQ_SINT
+                       else gb.motivo_rechazo(_vd_bot, _tf_bot))
+            if _motivo:
+                with st.container(key="bot_gen"):
+                    st.button("⚙️ Generar bot (.mq5)", disabled=True, use_container_width=True)
+                st.caption(_motivo)
+            else:
+                _mq5 = gb.generar_mq5(_cfg_bot, activo, _tf_bot, float(lotes),
+                                      float(sl_usd) if sl_modo == SL_USD else None, _vd_bot,
+                                      capital=float(capital), limite_pct=float(limite_pct), nombre=_nom_bot,
+                                      usd_por_unidad_forzado=float(vpu_forzado) if vpu_forzar else 0.0)
+                with st.container(key="bot_gen"):
+                    st.download_button("⚙️ Generar bot (.mq5)", _mq5.encode("utf-8"),
+                                       file_name=gb.nombre_archivo(activo, _tf_bot, _nom_bot), mime="text/plain",
+                                       use_container_width=True)
+                st.caption("Veredicto del backtest: " + _vd_bot["titulo"] + ". El bot opera solo y con parámetros fijos: "
+                           "se niega a arrancar si el símbolo, la temporalidad, el lote o el horario del servidor no coinciden. "
+                           "Compilalo en MetaEditor (F7) y probalo en demo.")
+        except (ValueError, RuntimeError, OSError) as e:
+            st.caption("No se puede generar el bot: " + str(e))
     _sep_filtro()
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "guia_campos.md"), encoding="utf-8") as f_:
@@ -1671,12 +2045,13 @@ if len(res):
         else:
             _pasos += [("Operaciones tomadas", tt["resueltas"] + tt["abiertas"])]
         cuerpo = vis.embudo(_pasos + [("Llegaron a TP", tt["TP"])])
-        _nombres = {"sma": "SMA", "adx": "ADX", "rango": "Rango", "atr": "ATR", "sesion": "Sesión", "tm1": "Tendencia mayor 1", "tm2": "Tendencia mayor 2", "vp": "Volume Profile", "viernes": "Viernes tarde"}
+        _nombres = {"sma": "SMA", "adx": "ADX", "rango": "Rango", "atr": "ATR", "sesion": "Sesión", "tm1": "Tendencia mayor 1", "tm2": "Tendencia mayor 2", "vp": "Volume Profile", "viernes": "Viernes tarde", "noticias": "Noticias"}
         _txt = []
         if r["descartes"]:
             _txt.append("Descartadas por filtro: " + " · ".join(f"{_nombres.get(k, k)} {int(v_)}" for k, v_ in r["descartes"].items()) + ".")
         if _pb and _pb["ordenes"]:
-            _txt.append(f"Sin ejecutar: caducaron {_pb['caducadas']}, cruce contrario {_pb['cruce_contrario']}.")
+            _txt.append(f"Sin ejecutar: caducaron {_pb['caducadas']}, cruce contrario {_pb['cruce_contrario']}"
+                        + (f", canceladas por noticia {_pb['noticias']}" if _pb.get("noticias") else "") + ".")
         _si = int(r["trades"].attrs.get("sl_invalido", 0) or 0)
         if _si:
             _txt.append(f"{_si} señales sin operar: la media quedó del lado equivocado del precio (el SL habría quedado al revés).")
@@ -1896,6 +2271,38 @@ if getattr(cfg_usada, "tstop_activo", False) and len(tr):
     st.caption("Se evalúa una sola vez por operación, al cierre de la vela N desde la entrada, y solo si sigue abierta y el breakeven no se "
                "activó. Si en esa vela se toca el SL o el TP, manda el SL o el TP. Se cierra al precio de cierre y paga el spread; cuenta "
                "como ganada o perdida según su resultado. El % de equilibrio no tiene en cuenta estos cierres.")
+
+# ------------------------------------------------------------- trading de noticias
+if getattr(cfg_usada, "noticias_activo", False):
+    _N_ = r["P"].noti or {}
+    _nt_ = tr[tr["motivo"] == "noticia"] if len(tr) else tr
+    _n_nt, _n_ops_nt = len(_nt_), int(tr["res"].isin(["TP", "SL", "BE", "PARC_SL"]).sum()) if len(tr) else 0
+    _desc_nt = int((r.get("descartes") or {}).get("noticias", 0)) + int(((tt["pb"] if isinstance(tt["pb"], dict) else {}) or {}).get("noticias", 0))
+    st.write("")
+    html(vis.titulo_seccion("Trading de noticias", f"Qué hizo el filtro de noticias (ventana de ±{vis.n(float(cfg_usada.noticias_min), 0)} min, tramo «Todo»)"))
+    n1, n2, n3, n4 = st.columns(4)
+    with n1:
+        _ev_n = _N_.get("eventos", [])
+        _por_año = _N_.get("años") or {}
+        html(vis.kpi("Noticias en el período", vis.n(int(len(_ev_n)), 0),
+                     ("detectadas en las velas: " + " · ".join(f"{a} {c}" for a, c in sorted(_por_año.items()))) if _por_año
+                     else ("del calendario cargado" if cfg_usada.noticias_fuente == "csv" else "ninguna detectada"), vis.AZUL, 165))
+    with n2:
+        html(vis.kpi("Señales descartadas", vis.n(_desc_nt, 0), "dentro de la ventana de una noticia (entradas, reentradas y órdenes)", vis.INDIGO, 165))
+    with n3:
+        if cfg_usada.noticias_cerrar_r is None:
+            html(vis.kpi("Cierres antes de la noticia", "—", "regla 2 apagada", vis.ORQ, 165))
+        else:
+            html(vis.kpi("Cierres antes de la noticia", vis.n(_n_nt, 0),
+                         f"{vis.n(100 * _n_nt / max(_n_ops_nt, 1), 1)} % de las operaciones · {vis.n(float(_nt_['R'].sum()) if _n_nt else 0.0, 2, True)} R en total", vis.ORQ, 165))
+    with n4:
+        html(vis.kpi("R promedio de esos cierres", vis.n(float(_nt_["R"].mean()) if _n_nt else 0.0, 2, True),
+                     (f"si iban en {vis.n(float(cfg_usada.noticias_cerrar_r), 2, True)} R o peor" if cfg_usada.noticias_cerrar_r is not None else "sin cierre previo"), vis.AZUL, 165))
+    for _av in _N_.get("avisos", []):
+        st.warning(_av)
+    st.caption("Las noticias detectadas en las velas se conocen a posteriori (solo las que movieron el precio): el backtest puede salir algo mejor que con el "
+               "calendario real. Solo se cubren las operaciones ABIERTAS cerca de la noticia: una operación abierta desde antes que sigue en ganancia "
+               "atraviesa la noticia. Las que se cierran en una noticia (R pagado por el spread) cuentan como cualquier otro cierre.")
 
 # ------------------------------------------------------------- retiros de la cuenta (simulados) u objetivo y retiros (teorico)
 _retiro_sim = bool(cfg_usada.reglas_activas and cfg_usada.retiro_activo and r.get("cuenta"))
@@ -2117,7 +2524,7 @@ usd_R = dinero["riesgo_medio_por_operacion"] if dinero else None
 veredicto = vd.evaluar_veredicto(r, cfg_usada, meses_datos, usd_R, pdin.get("capital", 0.0),
                                  pdin.get("limite_pct", 10.0), estado.contador.n)
 sl_usd_u = tp_usd_u = 0.0
-if cfg_usada.sl_modo == "precio":
+if cfg_usada.sl_modo == "precio" and cfg_usada.ruptura is None:
     sl_usd_u = cfg_usada.sl_valor * met.valor_por_unidad(pdin["tick_size"], pdin["tick_value"], pdin["lotes"])
     tp_usd_u = 0.0 if cfg_usada.salida_modo == "senal" else sl_usd_u * cfg_usada.rr
 _tf = globals().get("tf")
@@ -2215,6 +2622,107 @@ with st.expander("Supuestos y limitaciones"):
         "ticks reales es la validación final.\n"
         "- En índices hay gaps de apertura y pausas diarias que el backtest no modela.\n"
         "- Resultados pasados no garantizan resultados futuros.")
+
+# ------------------------------------------------------------- ruptura: rango de apertura
+if getattr(cfg_usada, "ruptura", None) is not None and r["P"].rup is not None:
+    _P_r = r["P"]
+    _n_r, _co_r = len(_P_r.c), int(r["corte"])
+    _ramos = [("Todo", 0, _n_r), ("In-sample", 0, _co_r), ("Out-of-sample", _co_r, _n_r)]
+    _rp = cfg_usada.ruptura
+    st.write("")
+    html(vis.titulo_seccion("Rango de apertura",
+                            f"Rango {rup_mod.hhmm(_rp.apertura_min)} a {rup_mod.hhmm(_rp.apertura_min + _rp.rango_min)} de Nueva York · "
+                            f"última entrada {rup_mod.hhmm(_rp.ultima_min)} · cierre forzado {rup_mod.hhmm(_rp.cierre_min)} (hora de NY) · "
+                            f"{_rp.entradas_dia} entrada{'s' if _rp.entradas_dia > 1 else ''} por día"))
+    _emb = {nom_: rup_mod.embudo(_P_r, tr, _P_r.cruces, lo_, hi_) for nom_, lo_, hi_ in _ramos}
+    _est = {nom_: rup_mod.estadisticas(_P_r, tr, lo_, hi_) for nom_, lo_, hi_ in _ramos}
+    _k = st.columns(3)
+    for _col, (nom_, _, _) in zip(_k, _ramos):
+        with _col:
+            _e = _emb[nom_]
+            html(vis.kpi(f"Días operados · {nom_}", f"{_e['operados']} de {_e['validos']}",
+                         f"{_e['dias']} días de mercado · {_e['sin_vela']} sin vela de apertura · {_est[nom_]['n']} operaciones",
+                         vis.AZUL, 120))
+    _FILAS = [("Días de mercado con datos", "dias"), ("Descartados: falta una vela del rango", "sin_vela"),
+              ("Con rango válido", "validos"), ("Descartados por tamaño del rango", "tamano"),
+              ("Descartados: sin historial para el filtro de tamaño", "historial"),
+              ("Sin ninguna ruptura en el horario", "sin_ruptura"), ("Rupturas solo fuera del horario de entrada", "fuera_horario"),
+              ("Rupturas rechazadas por los filtros", "filtros"), ("Rupturas rechazadas por noticias", "noticias"),
+              ("Pasaron los filtros pero no se tomaron (cuenta, posición abierta, entradas del día)", "otros"),
+              ("Días con operación", "operados")]
+    st.dataframe(pd.DataFrame({nom_: [int(_emb[nom_][k_]) for _, k_ in _FILAS] for nom_, _, _ in _ramos},
+                              index=[t_ for t_, _ in _FILAS]), use_container_width=True)
+    st.caption("Cada día cae en una sola fila. Los días con rango válido se reparten entre descartados por tamaño o historial, sin ruptura, "
+               "fuera de horario, rechazados por filtros o noticias, no tomados y operados.")
+    _SAL = {"tp": "Rupturas que llegaron al TP", "sl": "Falsas rupturas (SL)", "hora": "Cierres por hora", "be": "Breakeven",
+            "tiempo": "Cierre por tiempo", "parcial": "Cierre parcial total", "parc_sl": "SL después del parcial", "finde": "Fin de semana",
+            "noticia": "Noticias"}
+    _mot = [m_ for m_ in _SAL if any(m_ in _est[n_]["salidas"] for n_, _, _ in _ramos)] + \
+           sorted({m_ for n_, _, _ in _ramos for m_ in _est[n_]["salidas"]} - set(_SAL))
+    if _mot:
+        _fs = {}
+        for m_ in _mot:
+            _fs[_SAL.get(m_, m_)] = [(f"{_est[n_]['salidas'][m_]['n']} · {vis.n(_est[n_]['salidas'][m_]['R_medio'], 2, True)} R"
+                                      if m_ in _est[n_]["salidas"] else "0") for n_, _, _ in _ramos]
+        st.dataframe(pd.DataFrame(_fs, index=[n_ for n_, _, _ in _ramos]).T, use_container_width=True)
+        st.caption("Cada celda: cantidad de operaciones · R medio de esas operaciones.")
+        _ls = {"Largos": [], "Cortos": []}
+        for n_, _, _ in _ramos:
+            for lado_, nom_l in (("largos", "Largos"), ("cortos", "Cortos")):
+                _x = _est[n_]["lados"].get(lado_)
+                _ls[nom_l].append(f"{_x['n']} op. · {vis.n(_x['ganadoras_%'], 1)} % ganadoras · {vis.n(_x['R_total'], 1, True)} R" if _x else "0 op.")
+        st.dataframe(pd.DataFrame(_ls, index=[n_ for n_, _, _ in _ramos]).T, use_container_width=True)
+        _tm = {}
+        for nom_t in ("ganadoras", "perdedoras"):
+            _tm[f"Rango medio en {nom_t}"] = []
+            for n_, _, _ in _ramos:
+                _x = _est[n_]["tam"].get(nom_t, {"n": 0, "rango_medio": float("nan"), "ratio_medio": float("nan")})
+                _tm[f"Rango medio en {nom_t}"].append(
+                    "sin operaciones" if not _x["n"] else f"{vis.n(_x['rango_medio'], 2)} ({_x['n']} op.)"
+                    + (f" · {vis.n(_x['ratio_medio'], 2)}× el promedio" if _x["ratio_medio"] == _x["ratio_medio"] else ""))
+        st.dataframe(pd.DataFrame(_tm, index=[n_ for n_, _, _ in _ramos]).T, use_container_width=True)
+        st.caption("Rango medio en unidades de precio del símbolo. «× el promedio» aparece cuando hay historial para compararlo (filtro de tamaño activo "
+                   "o suficientes días anteriores).")
+    if _est["Out-of-sample"]["n"] < 30:
+        st.warning(f"En el tramo out-of-sample hay solo {_est['Out-of-sample']['n']} operaciones: los porcentajes de ese tramo son una muestra débil.")
+    st.caption("La comparación contra el azar no se calcula en la ruptura (las señales dependen del horario, no hay un «azar» comparable): "
+               "mirá la ablación y el tramo out-of-sample.")
+
+# ------------------------------------------------------------- reversión a la media (sola)
+_rev = estado.get("rev")
+if _rev is not None and _rev[4] == activo:
+    _ev_r, _cfg_r, _rv_r, _ab_r = _rev[0], _rev[1], _rev[2], _rev[3]
+    st.write("")
+    html(vis.titulo_seccion("Reversión a la media (sola)",
+                            f"Variante {_rv_r.variante} · riesgo fijo US${vis.n(_rv_r.riesgo_usd, 0)} por operación · sin la EMA: la cartera se simula en la fase siguiente"))
+    _tab = _ev_r["tabla"]
+    _cols = st.columns(len(_tab))
+    for _col, (_nom_t, _f) in zip(_cols, _tab.iterrows()):
+        with _col:
+            html(vis.kpi(f"Expectativa · {_nom_t}", vis.n(_f["exp_R"], 2, True) + " R",
+                         f"{vis.n(_f['resueltas'], 0)} operaciones · {vis.n(_f['WR_resultado'], 1)} % ganadoras · {vis.n(_f['R_total'], 1, True)} R · caída máx. {vis.n(_f['maxDD_R'], 1)} R",
+                         vis.AZUL, 165))
+    if len(_ev_r["trades"]):
+        _rr_med = rev_mod.rr_equilibrio(_ev_r["trades"])
+        _lt = _ev_r["trades"]["lotes"]
+        st.caption(f"R:R medio observado {vis.n(_rr_med, 2)} (el TP cambia en cada operación) · lote medio {vis.n(float(_lt.mean()), 2)} "
+                   f"(entre {vis.n(float(_lt.min()), 2)} y {vis.n(float(_lt.max()), 2)}) · {vis.n(_ev_r['senales_crudas'], 0)} señales crudas.")
+    _desc_r = _ev_r["descartes"]
+    if _desc_r:
+        st.caption("Señales descartadas: " + " · ".join(f"{k} {v}" for k, v in sorted(_desc_r.items())) + ".")
+    for _av in _ev_r["avisos"]:
+        st.warning(_av)
+    if len(_ev_r["por_anio"]):
+        st.dataframe(_ev_r["por_anio"].rename(columns={"operaciones": "Operaciones", "WR_resultado": "% ganadoras", "R_total": "R total"}),
+                     use_container_width=True)
+        with st.expander("Ver resultado por mes (R)"):
+            st.dataframe(_ev_r["por_mes"].rename("R").to_frame().rename_axis("Mes").astype(float).round(2), use_container_width=True)
+    with st.expander("Ver la ablación de la reversión"):
+        st.dataframe(_ab_r.round(2), use_container_width=True)
+        st.caption("Parte de la señal sola y suma, una por una, las piezas activas. Si una pieza no mejora la expectativa, sobra.")
+    if _ev_r["prueba"]:
+        st.caption(f"Prueba n.º {_ev_r['prueba']} de la sesión: cada combinación que probás suma una oportunidad de encontrar un resultado bueno por azar. "
+                   "Mirá siempre la verificación, no solo el ajuste.")
 
 # ------------------------------------------------------------- descarga para IA
 estado.paquete_ia = (r, cfg_usada, act_res, pdin, veredicto, relato,
