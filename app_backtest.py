@@ -25,6 +25,7 @@ import engine as eng
 import config_io as cio
 import exportar_ia as xia
 import generar_bot as gb
+import generar_bot_ruptura as gbr
 import metrics as met
 import noticias as noticias_mod
 import retiros as ret
@@ -499,27 +500,38 @@ with st.sidebar:
                     st.caption("Con pullback, el filtro de sesión se evalúa cuando se ejecuta la entrada.")
         _sep_filtro()
         if ES_RUP:
-            # ---- Ruptura del rango de apertura de Nueva York (todos los horarios se guardan en hora de NY)
+            # ---- Ruptura del rango de apertura de una bolsa (NY, Londres o Tokio): los horarios se guardan en hora local de la bolsa
             _hoy_r = date.today()
-            def _art_txt(min_ny):
+            st.markdown("**Bolsa**", help="Elige en qué plaza se mide el rango de apertura. Cada una usa su hora local y su propio horario de verano "
+                        "(Nueva York y Londres cambian de hora en fechas distintas; Tokio no cambia). Al cambiar de bolsa se cargan sus horarios por "
+                        "defecto, que podés editar. La bolsa no se asocia sola al símbolo: elegí la que corresponda al instrumento.")
+            _BOL_ETQ = {"Nueva York (NASDAQ, S&P, Dow)": "ny", "Londres (GER40, FTSE)": "londres", "Tokio (Nikkei 225)": "tokio"}
+            rup_bolsa = _BOL_ETQ[_W(st).radio("Bolsa", list(_BOL_ETQ), label_visibility="collapsed", key="rup_bolsa")]
+            _bo = rup_mod.BOLSAS[rup_bolsa]
+            _zona_b, _nom_b = _bo["zona"], _bo["nombre"]
+            def _art_txt(min_loc):
                 try:
-                    a_ = sesmod.local_a_art(min_ny / 60.0, "America/New_York", _hoy_r)
-                    return f"{int(a_ // 1):02d}:{int(round((a_ % 1) * 60)) % 60:02d}"
+                    from datetime import datetime
+                    from zoneinfo import ZoneInfo
+                    _z_ar = ZoneInfo(sesmod.ZONA_AR)
+                    _dt = datetime(_hoy_r.year, _hoy_r.month, _hoy_r.day, int(min_loc) // 60 % 24, int(min_loc) % 60, tzinfo=ZoneInfo(_zona_b)).astimezone(_z_ar)
+                    _dia = "" if _dt.date() == _hoy_r else (" (día anterior)" if _dt.date() < _hoy_r else " (día siguiente)")
+                    return f"{_dt:%H:%M}{_dia}"
                 except Exception:
                     return "?"
             def _hm(t_):
                 return t_.hour * 60 + t_.minute
             st.markdown("**Rango de apertura**", help="El rango es el máximo y el mínimo de las velas que abren entre el inicio y el fin del rango "
-                        "(hora de Nueva York). Con velas M5 y 15 minutos se arma con las velas de las 9:30, 9:35 y 9:40. Si falta alguna de esas "
+                        "(hora local de la bolsa elegida). Con velas M5 y 15 minutos desde las 9:30 se arma con las velas de las 9:30, 9:35 y 9:40. Si falta alguna de esas "
                         "velas (feriado, cierre anticipado, hueco en los datos), ese día no se opera y queda contado en el embudo.")
             _c1, _c2 = st.columns(2)
-            rup_ap = _hm(_W(_c1).time_input("Inicio (hora de NY)", _hora(9, 30), step=300, key="rup_apertura"))
+            rup_ap = _hm(_W(_c1).time_input(f"Inicio (hora de {_bo['corto']})", _hora(_bo["apertura"] // 60, _bo["apertura"] % 60), step=300, key=("rup_apertura" if rup_bolsa == "ny" else f"rup_apertura_{rup_bolsa}")))
             rup_dur = int(_W(_c2).selectbox("Duración (min)", [5, 10, 15, 30, 45, 60], index=2, key="rup_duracion"))
-            st.caption(f"Rango {rup_mod.hhmm(rup_ap)} a {rup_mod.hhmm(rup_ap + rup_dur)} de Nueva York = {_art_txt(rup_ap)} a {_art_txt(rup_ap + rup_dur)} "
-                       "hora Argentina hoy. Se corre solo con el horario de verano.")
+            st.caption(f"Rango {rup_mod.hhmm(rup_ap)} a {rup_mod.hhmm(rup_ap + rup_dur)} de {_nom_b} = {_art_txt(rup_ap)} a {_art_txt(rup_ap + rup_dur)} "
+                       "hora Argentina hoy. Se corre solo con el horario de verano de cada plaza: la diferencia con Argentina cambia unas semanas al año.")
             rup_offset = float(_W(st).number_input("Desfase del servidor en invierno (GMT+2 → 2)", -12.0, 14.0, 2.0, 1.0, key="rup_offset",
                                                    help="Medilo con el mercado abierto (hora de «Observación de mercado» menos GMT). Con el desfase se ubica "
-                                                        "la apertura de Nueva York en la hora del servidor. En esta página es el único desfase: lo usan también "
+                                                        "la apertura de la bolsa elegida en la hora del servidor. En esta página es el único desfase: lo usan también "
                                                         "el filtro de sesión, las reglas de la cuenta y las noticias."))
             rup_dst = bool(_W(st).checkbox("El servidor cambia de hora con EE.UU.", True, key="rup_dst"))
             _sep_filtro()
@@ -542,12 +554,12 @@ with st.sidebar:
                         "a RR veces esa distancia).")
             rr = float(_W(st).number_input("RR (1:x)", 0.1, 50.0, 2.0, 0.5, key="rup_rr"))
             _sep_filtro()
-            st.markdown("**Horario (hora de Nueva York)**", help="La última entrada se mide por el CIERRE de la vela de la señal (esa vela tiene que cerrar "
-                        "a la hora indicada o antes). A la hora del cierre forzado se cierra todo a mercado. Se guardan en hora de NY.")
+            st.markdown(f"**Horario (hora de {_nom_b})**", help="La última entrada se mide por el CIERRE de la vela de la señal (esa vela tiene que cerrar "
+                        "a la hora indicada o antes). A la hora del cierre forzado se cierra todo a mercado. Se guardan en la hora local de la bolsa.")
             _c1, _c2 = st.columns(2)
-            rup_ult = _hm(_W(_c1).time_input("Última entrada", _hora(12, 0), step=300, key="rup_ultima"))
-            rup_cie = _hm(_W(_c2).time_input("Cierre forzado", _hora(12, 30), step=300, key="rup_cierre"))
-            st.caption(f"Última entrada {_art_txt(rup_ult)} y cierre forzado {_art_txt(rup_cie)} hora Argentina hoy.")
+            rup_ult = _hm(_W(_c1).time_input("Última entrada", _hora(_bo["ultima"] // 60, _bo["ultima"] % 60), step=300, key=("rup_ultima" if rup_bolsa == "ny" else f"rup_ultima_{rup_bolsa}")))
+            rup_cie = _hm(_W(_c2).time_input("Cierre forzado", _hora(_bo["cierre"] // 60, _bo["cierre"] % 60), step=300, key=("rup_cierre" if rup_bolsa == "ny" else f"rup_cierre_{rup_bolsa}")))
+            st.caption(f"Última entrada {rup_mod.hhmm(rup_ult)} de {_nom_b} = {_art_txt(rup_ult)} y cierre forzado {rup_mod.hhmm(rup_cie)} = {_art_txt(rup_cie)} hora Argentina hoy.")
             if not rup_ap + rup_dur <= rup_ult:
                 st.error("La última entrada tiene que ser posterior al fin del rango.")
             elif not rup_ult < rup_cie:
@@ -1527,7 +1539,7 @@ def construir_config(simbolo: str = None) -> eng.Config:
         re_rr=float(re_rr_val) if (reent_on and re_rr_on) else None,
         re_lote_max=float(re_lote_val) if (reent_on and re_sl_ui != "igual" and re_lote_on) else None,
         ruptura=(rup_mod.ConfigRup(
-            apertura_min=int(rup_ap), rango_min=int(rup_dur), sl_modo=rup_sl, sl_atr_x=float(rup_sl_atr), entradas_dia=int(rup_ent),
+            bolsa=rup_bolsa, apertura_min=int(rup_ap), rango_min=int(rup_dur), sl_modo=rup_sl, sl_atr_x=float(rup_sl_atr), entradas_dia=int(rup_ent),
             ultima_min=int(rup_ult), cierre_min=int(rup_cie), tam_activo=bool(rup_tam_on), tam_min=float(rup_tam_min),
             tam_max=float(rup_tam_max), tam_n=int(rup_tam_n)) if ES_RUP else None))
 
@@ -1681,40 +1693,44 @@ if correr:
 _REGLA_TF = {"15min": "M15", "30min": "M30", "1h": "H1", "4h": "H4", "1D": "D1"}
 with st.sidebar:
     st.markdown('<div class="fte">Bot para MT5</div>', unsafe_allow_html=True)
-    if ES_RUP:
-        st.caption("El bot de la ruptura todavía no está disponible: se entrega en un segundo tramo, con la misma lógica que este backtest.")
-    else:
-        try:
-            _cfg_bot = construir_config()
-            _tf_bot = _REGLA_TF.get(regla, "") if regla != "No" else (globals().get("tf") or "")
-            _nom_bot = _W(st).text_input("Nombre del bot", "", key="nombre_del_bot", max_chars=40,
-                                         placeholder=gb.nombre_archivo(activo, _tf_bot)[:-4],
-                                         help="Es el nombre del archivo .mq5 y el comentario de las órdenes en MT5 (hasta 18 caracteres). "
-                                              "Letras, números, guion y guion bajo. Vacío: se usa el nombre automático. No cambia cómo opera.")
-            _vd_bot = None
-            _g = estado.get("veredicto_bot")      # (config, veredicto, símbolo, lotes, temporalidad)
-            if _g and _g[0] == _cfg_bot and _g[2] == activo and _g[3] == float(lotes) and _g[4] == _tf_bot:
-                _vd_bot = _g[1]
-            _motivo = ("Con datos sintéticos no se genera bot." if fuente == ETQ_SINT
-                       else gb.motivo_rechazo(_vd_bot, _tf_bot))
-            if _motivo:
-                with st.container(key="bot_gen"):
-                    st.button("⚙️ Generar bot (.mq5)", disabled=True, use_container_width=True)
-                st.caption(_motivo)
+    try:
+        _cfg_bot = construir_config()
+        _tf_bot = _REGLA_TF.get(regla, "") if regla != "No" else (globals().get("tf") or "")
+        _nom_bot = _W(st).text_input("Nombre del bot", "", key="nombre_del_bot", max_chars=40,
+                                     placeholder=gb.nombre_archivo(activo, _tf_bot)[:-4],
+                                     help="Es el nombre del archivo .mq5 y el comentario de las órdenes en MT5 (hasta 18 caracteres). "
+                                          "Letras, números, guion y guion bajo. Vacío: se usa el nombre automático. No cambia cómo opera.")
+        _vd_bot = None
+        _g = estado.get("veredicto_bot")      # (config, veredicto, símbolo, lotes, temporalidad)
+        if _g and _g[0] == _cfg_bot and _g[2] == activo and _g[3] == float(lotes) and _g[4] == _tf_bot:
+            _vd_bot = _g[1]
+        _motivo = ("Con datos sintéticos no se genera bot." if fuente == ETQ_SINT
+                   else gb.motivo_rechazo(_vd_bot, _tf_bot))
+        if _motivo:
+            with st.container(key="bot_gen"):
+                st.button("⚙️ Generar bot (.mq5)", disabled=True, use_container_width=True)
+            st.caption(_motivo)
+        else:
+            if ES_RUP:                              # la ruptura tiene su propio generador (parte del mismo bot, con su lógica de rango y horario)
+                _mq5 = gbr.generar_mq5_ruptura(_cfg_bot, activo, _tf_bot, float(lotes), _vd_bot,
+                                               capital=float(capital), limite_pct=float(limite_pct), nombre=_nom_bot,
+                                               usd_por_unidad_forzado=float(vpu_forzado) if vpu_forzar else 0.0)
             else:
                 _mq5 = gb.generar_mq5(_cfg_bot, activo, _tf_bot, float(lotes),
                                       float(sl_usd) if sl_modo == SL_USD else None, _vd_bot,
                                       capital=float(capital), limite_pct=float(limite_pct), nombre=_nom_bot,
                                       usd_por_unidad_forzado=float(vpu_forzado) if vpu_forzar else 0.0)
-                with st.container(key="bot_gen"):
-                    st.download_button("⚙️ Generar bot (.mq5)", _mq5.encode("utf-8"),
-                                       file_name=gb.nombre_archivo(activo, _tf_bot, _nom_bot), mime="text/plain",
-                                       use_container_width=True)
-                st.caption("Veredicto del backtest: " + _vd_bot["titulo"] + ". El bot opera solo y con parámetros fijos: "
-                           "se niega a arrancar si el símbolo, la temporalidad, el lote o el horario del servidor no coinciden. "
-                           "Compilalo en MetaEditor (F7) y probalo en demo.")
-        except (ValueError, RuntimeError, OSError) as e:
-            st.caption("No se puede generar el bot: " + str(e))
+            with st.container(key="bot_gen"):
+                st.download_button("⚙️ Generar bot (.mq5)", _mq5.encode("utf-8"),
+                                   file_name=gb.nombre_archivo(activo, _tf_bot, _nom_bot), mime="text/plain",
+                                   use_container_width=True)
+            st.caption("Veredicto del backtest: " + _vd_bot["titulo"] + ". El bot opera solo y con parámetros fijos: "
+                       "se niega a arrancar si el símbolo, la temporalidad, el lote o el horario del servidor no coinciden. "
+                       "Compilalo en MetaEditor (F7) y probalo en demo."
+                       + (" Todos los mensajes del registro de MT5 (rango del día, señales, descartes, entradas, cierre por hora) llegan también al celular: "
+                          "activá las notificaciones push en MT5 (Herramientas > Opciones > Notificaciones)." if ES_RUP else ""))
+    except (ValueError, RuntimeError, OSError) as e:
+        st.caption("No se puede generar el bot: " + str(e))
     _sep_filtro()
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "guia_campos.md"), encoding="utf-8") as f_:
@@ -2631,8 +2647,8 @@ if getattr(cfg_usada, "ruptura", None) is not None and r["P"].rup is not None:
     _rp = cfg_usada.ruptura
     st.write("")
     html(vis.titulo_seccion("Rango de apertura",
-                            f"Rango {rup_mod.hhmm(_rp.apertura_min)} a {rup_mod.hhmm(_rp.apertura_min + _rp.rango_min)} de Nueva York · "
-                            f"última entrada {rup_mod.hhmm(_rp.ultima_min)} · cierre forzado {rup_mod.hhmm(_rp.cierre_min)} (hora de NY) · "
+                            f"Rango {rup_mod.hhmm(_rp.apertura_min)} a {rup_mod.hhmm(_rp.apertura_min + _rp.rango_min)} de {rup_mod.BOLSAS[_rp.bolsa]['nombre']} · "
+                            f"última entrada {rup_mod.hhmm(_rp.ultima_min)} · cierre forzado {rup_mod.hhmm(_rp.cierre_min)} (hora de {rup_mod.BOLSAS[_rp.bolsa]['corto']}) · "
                             f"{_rp.entradas_dia} entrada{'s' if _rp.entradas_dia > 1 else ''} por día"))
     _emb = {nom_: rup_mod.embudo(_P_r, tr, _P_r.cruces, lo_, hi_) for nom_, lo_, hi_ in _ramos}
     _est = {nom_: rup_mod.estadisticas(_P_r, tr, lo_, hi_) for nom_, lo_, hi_ in _ramos}

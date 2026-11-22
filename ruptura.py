@@ -1,9 +1,9 @@
-"""Estrategia de ruptura del rango de apertura de Nueva York.
+"""Estrategia de ruptura del rango de apertura de una bolsa (Nueva York, Londres o Tokio).
 
-Rango: maximo y minimo de las velas que abren entre `apertura_min` y `apertura_min + rango_min` (hora de NY; 9:30 a 9:45 por defecto).
+Rango: maximo y minimo de las velas que abren entre `apertura_min` y `apertura_min + rango_min` (hora local de la bolsa; Nueva York 9:30 a 9:45 por defecto).
 Entrada: desde el fin del rango, una vela que CIERRA fuera del rango da la señal (compra sobre el maximo, venta bajo el minimo) y se entra a su cierre.
 SL: mitad del rango, lado opuesto del rango o multiplo de ATR, medido desde el precio de entrada. TP: RR sobre esa distancia real.
-Horario: la ultima entrada y el cierre forzado se miden en hora de NY (se corren solos con el horario de verano).
+Horario: la ultima entrada y el cierre forzado se miden en hora local de la bolsa (se corren solos con el horario de verano).
 Entradas por dia: 1, o 2 (la segunda solo hacia el lado contrario y solo si la primera salio por su SL original).
 
 Este modulo NO simula: genera las señales (como "cruces" del motor), la distancia del SL de cada una y las mascaras de horario. La simulacion es la
@@ -29,21 +29,33 @@ def hhmm(minutos: int) -> str:
     return f"{int(minutos) // 60:02d}:{int(minutos) % 60:02d}"
 
 
+# Bolsas disponibles: zona horaria de la plaza, nombre, abreviatura y horarios por defecto (minutos desde la medianoche, hora local de la bolsa).
+# Cada una se corre sola con el horario de verano de su plaza (Nueva York y Londres cambian en fechas distintas; Tokio no cambia).
+BOLSAS = {
+    "ny":      {"zona": "America/New_York", "nombre": "Nueva York", "corto": "NY",     "apertura": 9 * 60 + 30, "ultima": 12 * 60,      "cierre": 12 * 60 + 30, "bot": 0},
+    "londres": {"zona": "Europe/London",    "nombre": "Londres",    "corto": "Londres", "apertura": 8 * 60,      "ultima": 10 * 60 + 30, "cierre": 11 * 60,      "bot": 1},
+    "tokio":   {"zona": "Asia/Tokyo",       "nombre": "Tokio",      "corto": "Tokio",   "apertura": 9 * 60,      "ultima": 11 * 60 + 30, "cierre": 12 * 60,      "bot": 2},
+}
+
+
 @dataclass
 class ConfigRup:
-    apertura_min: int = 9 * 60 + 30          # inicio del rango, hora de NY (minutos desde la medianoche)
+    bolsa: str = "ny"                        # "ny" | "londres" | "tokio": en que hora local se miden el rango y los horarios de abajo
+    apertura_min: int = 9 * 60 + 30          # inicio del rango, hora local de la bolsa (minutos desde la medianoche)
     rango_min: int = 15                      # duracion del rango (minutos)
     sl_modo: str = "mitad"                   # "mitad" | "opuesto" | "atr"
     sl_atr_x: float = 1.0                    # con sl_modo "atr": multiplo del ATR (periodo = Config.atr_periodo)
     entradas_dia: int = 1                    # 1 o 2
-    ultima_min: int = 12 * 60                # ultima entrada (el CIERRE de la vela de la señal tiene que ser <= esta hora), hora de NY
-    cierre_min: int = 12 * 60 + 30           # cierre forzado a mercado, hora de NY
+    ultima_min: int = 12 * 60                # ultima entrada (el CIERRE de la vela de la señal tiene que ser <= esta hora), hora local
+    cierre_min: int = 12 * 60 + 30           # cierre forzado a mercado, hora local
     tam_activo: bool = False                 # filtro de tamaño del rango
     tam_min: float = 0.5                     # el rango tiene que medir entre tam_min y tam_max veces el promedio de los rangos de los ultimos tam_n dias validos
     tam_max: float = 1.5
     tam_n: int = 20
 
     def validar(self, cfg) -> None:
+        if self.bolsa not in BOLSAS:
+            raise ValueError("Ruptura: la bolsa tiene que ser 'ny', 'londres' o 'tokio'.")
         if not 0 <= self.apertura_min < 24 * 60 or not 0 <= self.ultima_min < 24 * 60 or not 0 < self.cierre_min <= 24 * 60:
             raise ValueError("Ruptura: los horarios tienen que estar entre 00:00 y 23:59.")
         if self.rango_min < 1:
@@ -64,7 +76,7 @@ class ConfigRup:
             if self.tam_n < 1:
                 raise ValueError("Ruptura: el filtro de tamaño necesita al menos 1 dia de historia.")
         if cfg.servidor_offset_horas is None:
-            raise ValueError("Ruptura: hace falta el desfase horario del servidor (servidor_offset_horas) para ubicar la apertura de Nueva York.")
+            raise ValueError("Ruptura: hace falta el desfase horario del servidor (servidor_offset_horas) para ubicar la apertura de la bolsa.")
         if cfg.pullback_activo or cfg.reentrada_activa or cfg.salida_modo != "rr" or cfg.sl_modo == "ema":
             raise ValueError("Ruptura: no se combina con pullback, reentrada, salida por cruce ni SL anclado a una media.")
 
@@ -85,7 +97,7 @@ def senales(df, cfg, rp: ConfigRup, sp, atr) -> dict:
     n = len(df)
     h, l, c = (df[k].to_numpy(float) for k in ("High", "Low", "Close"))
     utc = ses.servidor_a_utc(df.index, cfg.servidor_offset_horas, cfg.servidor_dst_eeuu)
-    ny = pd.DatetimeIndex(utc).tz_localize("UTC").tz_convert("America/New_York")
+    ny = pd.DatetimeIndex(utc).tz_localize("UTC").tz_convert(BOLSAS[rp.bolsa]["zona"])
     m = (ny.hour.to_numpy() * 60 + ny.minute.to_numpy()).astype(np.int64)
     fecha = _dia_ny(ny)
     per_s = noti_.periodo_seg(df.index)

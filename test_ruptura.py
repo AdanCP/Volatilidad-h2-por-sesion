@@ -348,3 +348,11 @@ def test_el_rango_tiene_que_ser_multiplo_de_la_vela():
         eng.preparar(d15, _cfg(rp=dict(rango_min=10)))
     P = eng.preparar(d15, _cfg(rp=dict(rango_min=15)))                  # con velas M15 el rango es una sola vela
     assert P.rup["dias"].loc[0, "estado"] == "ok"
+
+
+def test_bolsa_invalida_y_por_defecto_ny():
+    assert rup.ConfigRup().bolsa == "ny"
+    cfg = eng.Config(media_tipo="ema", sl_modo="precio", sl_valor=1.0, salida_modo="rr", servidor_offset_horas=2.0, servidor_dst_eeuu=True,
+                     ruptura=rup.ConfigRup(bolsa="paris"))
+    with pytest.raises(ValueError, match="bolsa"):
+        cfg.ruptura.validar(cfg)

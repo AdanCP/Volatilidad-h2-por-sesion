@@ -91,7 +91,9 @@ def _senal_txt(cfg) -> str:
     rp = getattr(cfg, "ruptura", None)
     if rp is not None:
         _h = lambda m: f"{int(m) // 60:02d}:{int(m) % 60:02d}"
-        return f"la ruptura del rango de apertura de Nueva York (<b>{_h(rp.apertura_min)}-{_h(rp.apertura_min + rp.rango_min)}</b>, hora de NY)"
+        import ruptura as _rup
+        _bo = _rup.BOLSAS[rp.bolsa]
+        return f"la ruptura del rango de apertura de {_bo['nombre']} (<b>{_h(rp.apertura_min)}-{_h(rp.apertura_min + rp.rango_min)}</b>, hora de {_bo['corto']})"
     tipo = getattr(cfg, "media_tipo", "ema").upper()
     if getattr(cfg, "modo_senal", "cruce") == "precio":
         return f"el cruce del precio con la {tipo} <b>{cfg.media_unica}</b>"
@@ -131,7 +133,7 @@ def describir(cfg, simbolo: str, tf: str, ini, fin, meses: float, lotes: float, 
         _sl_r = {"mitad": "SL en la mitad del rango", "opuesto": "SL en el lado opuesto del rango",
                  "atr": f"SL de {n(rp.sl_atr_x, 1)}×ATR({cfg.atr_periodo})"}[rp.sl_modo]
         gestion = (f"{_sl_r}, TP a 1:{n(cfg.rr, 1)}, {rp.entradas_dia} entrada{'s' if rp.entradas_dia > 1 else ''} por día, última entrada "
-                   f"{_h(rp.ultima_min)} y cierre forzado {_h(rp.cierre_min)} (hora de NY)")
+                   f"{_h(rp.ultima_min)} y cierre forzado {_h(rp.cierre_min)} (hora de {__import__('ruptura').BOLSAS[rp.bolsa]['corto']})")
         if rp.tam_activo:
             gestion += f", solo con rango de {n(rp.tam_min, 1)} a {n(rp.tam_max, 1)} veces el promedio de los últimos {rp.tam_n} días"
     elif cfg.salida_modo == "senal":

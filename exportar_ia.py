@@ -105,8 +105,8 @@ def informe(r: dict, cfg, simbolo: str, pdin: dict, meta: dict, veredicto: dict 
         _e = {k: _intentar(_rup.embudo, P, tr, P.cruces, lo, hi) for k, lo, hi in _ram}
         _s = {k: _intentar(_rup.estadisticas, P, tr, lo, hi) for k, lo, hi in _ram}
         L += ["### Rango de apertura (ruptura)", "",
-              f"Rango {_rup.hhmm(cfg.ruptura.apertura_min)}-{_rup.hhmm(cfg.ruptura.apertura_min + cfg.ruptura.rango_min)} de Nueva York; última entrada "
-              f"{_rup.hhmm(cfg.ruptura.ultima_min)}; cierre forzado {_rup.hhmm(cfg.ruptura.cierre_min)} (hora de NY). Cada día cae en una sola fila del embudo.", "",
+              f"Rango {_rup.hhmm(cfg.ruptura.apertura_min)}-{_rup.hhmm(cfg.ruptura.apertura_min + cfg.ruptura.rango_min)} de {_rup.BOLSAS[cfg.ruptura.bolsa]['nombre']}; última entrada "
+              f"{_rup.hhmm(cfg.ruptura.ultima_min)}; cierre forzado {_rup.hhmm(cfg.ruptura.cierre_min)} (hora de {_rup.BOLSAS[cfg.ruptura.bolsa]['corto']}). Cada día cae en una sola fila del embudo.", "",
               "**Embudo de días**", "",
               _tabla(pd.DataFrame({k: v for k, v in _e.items()}), 0, "etapa"), "",
               "**Operaciones por tramo** (cantidad y R medio por tipo de salida)", ""]

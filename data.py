@@ -9,7 +9,7 @@ import pandas as pd
 
 TF_MT5 = {"M1": "TIMEFRAME_M1", "M5": "TIMEFRAME_M5", "M15": "TIMEFRAME_M15",
           "M30": "TIMEFRAME_M30", "H1": "TIMEFRAME_H1", "H4": "TIMEFRAME_H4",
-          "D1": "TIMEFRAME_D1", "W1": "TIMEFRAME_W1"}
+          "D1": "TIMEFRAME_D1", "W1": "TIMEgiFRAME_W1"}
 # Dias por tramo: un pedido unico de todo el rango falla con "Invalid params".
 PASO_DIAS = {"W1": 3650, "D1": 3650, "H4": 1825, "H1": 730, "M30": 365, "M15": 365, "M5": 90, "M1": 30}
 COLUMNAS = ["Open", "High", "Low", "Close", "Volume", "Spread"]
