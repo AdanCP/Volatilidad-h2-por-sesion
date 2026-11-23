@@ -356,3 +356,21 @@ def test_bolsa_invalida_y_por_defecto_ny():
                      ruptura=rup.ConfigRup(bolsa="paris"))
     with pytest.raises(ValueError, match="bolsa"):
         cfg.ruptura.validar(cfg)
+
+
+def test_veredicto_de_la_ruptura_mide_el_spread_y_la_comparacion_con_azar_es_una_reserva_fija():
+    import metrics, veredicto
+    dias = []
+    for k, f in enumerate(pd.bdate_range("2022-01-03", periods=700)):
+        ch = ({"09:50": (100.0, 100.5, 100.0, 100.4), "10:10": (100.4, 102.5, 100.4, 102.4)} if k % 4 != 3 else
+              {"09:50": (100.0, 100.0, 99.5, 99.6), "10:10": (99.6, 99.6, 97.9, 98.0)})
+        dias.append(_dia(f"{f:%Y-%m-%d}", ch))
+    df = _df(*dias)
+    cfg = eng.Config(media_tipo="ema", sl_modo="precio", sl_valor=1.0, salida_modo="rr", servidor_offset_horas=2.0, servidor_dst_eeuu=True,
+                     spread="ninguno", ruptura=rup.ConfigRup())
+    r = metrics.evaluar(df, cfg, 0.3, 20, contador=None)
+    vd = veredicto.evaluar_veredicto(r, cfg, meses_datos=30.0, capital=25000.0)
+    ch = {n: (e, t) for e, n, t in vd["checks"]}
+    assert "No se pudo medir" not in ch["Peso de los costos"][1]
+    assert "no se compara con entradas al azar" in ch["Mejor que el azar"][1]
+    assert ch["Mejor que el azar"][0] != veredicto.BAD

@@ -311,7 +311,10 @@ def evaluar_veredicto(r: dict, cfg, meses_datos: float, usd_por_R: Optional[floa
 
     # D) contra el azar (out-of-sample)
     az = to["mejor_que_%azar"]
-    if az != az or n_oos < 15:
+    if az != az and cfg.ruptura is not None:
+        d = (WARN, "La ruptura no se compara con entradas al azar: sus entradas dependen del rango de cada día y no hay un azar equivalente. "
+                   "Queda como reserva fija; la ventaja se juzga con los demás criterios.")
+    elif az != az or n_oos < 15:
         d = (WARN, "El out-of-sample tiene muy pocas operaciones para compararlo con el azar.")
     elif az >= 90:
         d = (OK, f"Mejor que el {az:.0f}% de las entradas al azar en out-of-sample.")
@@ -336,6 +339,11 @@ def evaluar_veredicto(r: dict, cfg, meses_datos: float, usd_por_R: Optional[floa
     P = r["P"]
     dist_m = float(np.mean(P.dist)) if len(P.dist) else 0.0
     sp_pct = 100 * float(np.mean(P.sp)) / dist_m if dist_m > 0 else float("nan")
+    if cfg.ruptura is not None and len(tr):         # la ruptura tiene SL distinto en cada día y solo en las velas de señal: se mide sobre las operaciones reales
+        _ii = tr["i"].to_numpy().astype(int)
+        _d = tr["dist"].to_numpy().astype(float)
+        _ok = np.isfinite(_d) & (_d > 0)
+        sp_pct = 100 * float(np.mean(np.asarray(P.sp)[_ii][_ok])) / float(np.mean(_d[_ok])) if _ok.any() else float("nan")
     if sp_pct != sp_pct:
         f = (WARN, "No se pudo medir el peso del spread.")
     elif sp_pct <= 20:

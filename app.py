@@ -7,6 +7,7 @@ Render: streamlit run app.py ...
 import streamlit as st
 import streamlit.components.v1 as components
 
+import menu_ancho
 import ui_estilo
 
 st.set_page_config(page_title="ACPTester", page_icon="📈", layout="wide")
@@ -81,6 +82,11 @@ components.html(
     height=0,
 )
 
+# Menús anchos (menu_ancho.py): al abrir un menú de la barra lateral, sus campos se despliegan en un panel ancho a la derecha.
+# Se enciende y apaga con el interruptor del botón de Estilo; apagado, los menús se ven como siempre.
+components.html(menu_ancho.JS, height=0)
+components.html(menu_ancho.js_flag(bool(st.session_state.get("menus_anchos", True))), height=0)
+
 def _cambiar_modo():
     st.session_state["oscuro"] = not st.session_state["oscuro"]
 
@@ -114,6 +120,8 @@ def _controles_superiores():
             with st.popover("Estilo", help="Estilo de colores"):
                 st.radio("Estilo", list(ui_estilo.ESTILOS), format_func=lambda k: ui_estilo.NOMBRES_ESTILO[k], key="estilo",
                          label_visibility="collapsed")
+                st.toggle("Menús anchos", value=True, key="menus_anchos",
+                          help="Al abrir un menú de la barra lateral, los campos se despliegan en un panel ancho hacia la derecha, con menos scroll. Apagado, los menús se abren como siempre.")
         st.button("", icon=":material/light_mode:" if st.session_state["oscuro"] else ":material/dark_mode:", key="ctl_modo",
                   on_click=_cambiar_modo, help="Modo claro" if st.session_state["oscuro"] else "Modo noche")
 

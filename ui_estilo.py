@@ -4,6 +4,7 @@ Todo devuelve texto HTML que se muestra con `st.html(...)`. No importa Streamlit
 puede probar fuera de la app. Paleta: rosa -> violeta -> azul. Positivo = azul/violeta,
 negativo = rosa, siempre acompañado de signo o flecha (no depende solo del color).
 """
+import menu_ancho
 import re
 from html import escape as _e
 
@@ -172,9 +173,15 @@ _CSS_SIDEBAR = """
 [data-testid="stSidebar"] [data-testid="stExpander"]{background:@VEIL@;box-shadow:none;
   border:1px solid @VEILB@;border-radius:14px;}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary{padding:.55rem .8rem;}
+/* la barra clara del menú abierto no puede salirse del botón: todo se recorta con las esquinas redondeadas del menú */
+[data-testid="stSidebar"] [data-testid="stExpander"]{overflow:hidden;}
+[data-testid="stSidebar"] [data-testid="stExpander"] :is(details,summary){border-radius:inherit;}
 /* los menús se levantan un poco al pasar el mouse por el título (sin cambiar color ni líneas) */
 [data-testid="stSidebar"] [data-testid="stExpander"]{transition:transform .15s;}
 [data-testid="stSidebar"] [data-testid="stExpander"]:has(> details > summary:hover){transform:translateY(-2px);}
+/* menús cerrados: al pasar el mouse se aclara el fondo y se marca el borde */
+[data-testid="stSidebar"] [data-testid="stExpander"]:has(> details:not([open]) > summary:hover){background:color-mix(in srgb,@SIDETXT@ 20%,transparent);border-color:@SIDETXT@;box-shadow:0 4px 14px @GLOW@;}
+[data-testid="stSidebar"] [data-testid="stExpander"] details:not([open]) > summary:hover{background:transparent !important;cursor:pointer;}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary :is(p,span){color:@SIDETXT@ !important;font-weight:700;}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary svg{fill:@SIDETXT@;color:@SIDETXT@;}
 /* menú abierto: la barra del título se pone clara y el título blanco no se leía; va en el índigo de la app */
@@ -375,16 +382,27 @@ svg text{font-family:'Inter',system-ui,sans-serif;}
 </style>"""
 
 
+# Fondo del panel de los menús anchos: False = el degradado de la barra lateral (el que se usa); True = color profundo sólido del estilo (PROF), probado y descartado.
+# Con estilos de letra oscura (Pastel claro) el color profundo no se leería: ahí se queda el degradado.
+PANEL_PROFUNDO = False
+
+
+def _luminancia(hexa: str) -> float:
+    h = hexa.lstrip("#")
+    return (0.299 * int(h[0:2], 16) + 0.587 * int(h[2:4], 16) + 0.114 * int(h[4:6], 16)) / 255.0
+
+
 def css() -> str:
     """CSS completo con la paleta del tema actual. Sin líneas en blanco: Markdown corta el bloque HTML en la primera."""
     p = TEMAS[TEMA]
     out = CSS.replace("@NATIVOS@", _CSS_NATIVOS)
     if SIDEBAR_MORADO:
-        out = out.replace("</style>", _CSS_SIDEBAR + "</style>")
+        out = out.replace("</style>", _CSS_SIDEBAR + menu_ancho.CSS + "</style>")
     fichas = {"@BG@": p["BG"], "@CARD@": p["CARD"], "@TXT@": p["TEXTO"], "@MUTED@": p["SUAVE"], "@TRACK@": p["PISTA"],
               "@LINE@": p["LINE"], "@HEAD@": p["HEAD"], "@ND@": p["ND"], "@EJE@": p["EJE"], "@SHADOW@": p["SHADOW"],
               "@SHADOW2@": p["SHADOW2"], "@INBG@": p["INBG"], "@INBD@": p["INBD"], "@ACC@": p["INDIGO"],
               "@NEG@": p["ROSA"], "@VIO@": p["VIOLETA"], "@SIDE@": p["SIDE"], "@AZ@": p["AZUL"], "@SIDETXT@": p["SIDETXT"],
+              "@PANEL@": (p["PROF"] if PANEL_PROFUNDO and p["SIDETXT"].startswith("#") and _luminancia(p["SIDETXT"]) > 0.6 else p["SIDE"]),
               "@VEIL@": p["VEIL"], "@VEILB@": p["VEILB"], "@BTNTXT@": p["BTNTXT"], "@BTNG@": p["BTNG"], "@GLOW@": p["GLOW"]}
     # brillo de la banda del título: igual que siempre en tema claro; en noche, mucho más difuso y con la mitad de intensidad
     if TEMA == "oscuro":

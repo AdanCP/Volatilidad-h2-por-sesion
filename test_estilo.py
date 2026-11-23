@@ -245,3 +245,105 @@ def test_guia_html_autonoma_con_indice_y_listas_balanceadas():
         assert h.count(f"<{t}>") == h.count(f"</{t}>")
     real = g.convertir(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "guia_campos.md"), encoding="utf-8").read())
     assert real.count("<li>") == real.count("</li>") and "**" not in real and real.count("<h2") >= 8
+
+
+def test_menus_anchos_css_js_e_interruptor():
+    import menu_ancho
+    css = ui.css()
+    assert 'details[data-ancho="1"]' in css and "#velo-menu-ancho" in css and "\n\n" not in css and not re.search(r"@[A-Z0-9]+@", css)
+    ui.SIDEBAR_MORADO = False
+    try:
+        assert "data-ancho" not in ui.css()                       # sin barra lateral de estilo no hay panel
+    finally:
+        ui.SIDEBAR_MORADO = True
+    assert menu_ancho.js_flag(True).count("true") == 1 and menu_ancho.js_flag(False).count("false") == 1
+    assert menu_ancho.JS.count("{") == menu_ancho.JS.count("}") and "data-ancho" in menu_ancho.JS and "Escape" in menu_ancho.JS
+    src = open("app.py", encoding="utf-8").read()
+    assert 'key="menus_anchos"' in src and "menu_ancho.JS" in src and "menu_ancho.js_flag" in src
+
+
+def test_submenus_como_tarjetas_en_el_panel_ancho():
+    css = ui.css()
+    assert 'st-key-sub_' in css and ".sep-filtro" in css and "\n\n" not in css
+    src = open("app_backtest.py", encoding="utf-8").read()
+    assert 'def _sub(grupo=""):' in src and src.count("with _sub():") >= 30
+    ast_ok = __import__("ast").parse(src)
+    assert ast_ok
+
+
+def test_grilla_real_en_el_panel_ancho_y_hover_de_menus_cerrados():
+    import menu_ancho
+    css = ui.css()
+    assert "grid-template-columns:repeat(var(--ancho-cols,4)" in css and 'data-tj="1"' in css and "column-width" not in css
+    assert "--ancho-cols" in menu_ancho.JS and "data-celda" in menu_ancho.JS and menu_ancho.JS.count("{") == menu_ancho.JS.count("}")
+    assert "summary:hover" in css and "details:not([open])" in css and "\n\n" not in css and not re.search(r"@[A-Z0-9]+@", css)
+
+
+def test_instrumento_vacio_y_tarjetas_de_los_menus_de_datos():
+    src = open("app_backtest.py", encoding="utf-8").read()
+    assert "multiselect(familia, opciones, [])" in src and 'etiqueta == "oro"' not in src      # el instrumento arranca vacío
+    assert src.count('with _sub("d"):') >= 8                                                   # menús 1 y 2 en tarjetas
+    assert 'key="acc_senal"' in src and 'key="acc_atr"' in src                                 # EMA/dirección y ATR dentro de «Parámetros»
+    assert src.index('_acc_cab_opc("atr"') < src.index('_acc_css(_acc_lista, _acc_activos, "sg", ("pb", "rtam"))')
+
+
+def test_tarjetas_de_los_menus_6_a_9_y_todo_cerrado_al_arrancar():
+    src = open("app_backtest.py", encoding="utf-8").read()
+    assert 'setdefault(_clave_abierto("sg"), None)' in src and 'setdefault(_clave_abierto("sg"), "sl")' not in src      # ninguna tarjeta abierta al arrancar
+    assert 'key="acc_srv"' in src and 'key="acc_pp"' in src and 'key="acc_pg"' in src and 'key="acc_rt"' in src
+    assert src.index('_acc_cab_opc("srv"') < src.index('"ses", tuple(cio.slug(n_) for n_ in SESIONES))')                # el CSS del acordeón va después de la tarjeta
+    assert src.count('_sep_filtro()\n        with _sub():\n            perd_') >= 2 and "st.divider()" not in src.split('8. Reglas de la cuenta')[1].split('Trading de noticias')[0]
+    nota = src.index('st.caption("No detectados automáticamente')
+    assert nota < src.index('elegidos += _W(st).multiselect(familia, opciones, [])')       # la nota ya no va dentro de la tarjeta de Índices
+
+
+def test_panel_ancho_explicaciones_chicas_y_tarjetas_de_la_fila_del_mismo_alto():
+    import menu_ancho
+    css = ui.css()
+    assert "stCaptionContainer" in css and "font-size:.74rem" in css and "\n\n" not in css
+    assert "minHeight" in menu_ancho.JS and "st-key-acc_" in menu_ancho.JS and menu_ancho.JS.count("{") == menu_ancho.JS.count("}")
+
+
+def test_menu_abierto_no_se_sale_del_boton():
+    css = ui.css()
+    assert '[data-testid="stExpander"]{overflow:hidden;}' in css and "border-radius:inherit" in css and "\n\n" not in css
+
+
+def test_hover_de_tarjetas_y_boton_parametros_y_costos_en_tarjetas():
+    css = ui.css()
+    assert ':not([data-vacia="1"]):hover{background:color-mix' in css and ":is(:active,:focus-visible)" in css and "\n\n" not in css
+    assert not re.search(r"@[A-Z0-9]+@", css)
+    src = open("app_backtest.py", encoding="utf-8").read()
+    costos = src.split('. Costos", expanded=False)')[1].split("Control de sobreajuste")[0]
+    assert costos.count("with _sub():") == 2
+
+
+def test_ruptura_todas_las_tarjetas_con_parametros_para_que_midan_igual():
+    src = open("app_backtest.py", encoding="utf-8").read()
+    for c in ("rbol", "rent", "rsl", "rtp", "rhor", "rtam"):
+        assert f'key="acc_{c}"' in src
+    assert '"pb", "rtam"' in src                                  # el filtro de tamaño se abre solo al activarlo, como los otros
+    horario = src.split("**Horario (hora de")[1].split("Filtro de tamaño del rango")[0]
+    assert horario.index('st.error("La última entrada') > horario.index('key="acc_rhor"') and "                if not rup_ap + rup_dur <= rup_ult:" in horario   # las validaciones quedan a la vista
+
+
+def test_fondo_del_panel_ancho_color_profundo_y_vuelta_atras():
+    import re as _re
+    assert "background:@PANEL@" in __import__("menu_ancho").CSS
+    ant, ant_est, ant_tema = ui.PANEL_PROFUNDO, ui.ESTILO, ui.TEMA
+    try:
+        for est in ui.ESTILOS:
+            for tema in ("claro", "oscuro"):
+                ui.set_tema(tema, est)
+                ui.PANEL_PROFUNDO = True
+                css = ui.css()
+                assert not _re.search(r"@[A-Z0-9]+@", css)
+                p = ui.TEMAS[tema]
+                esperado = p["PROF"] if ui._luminancia(p["SIDETXT"]) > 0.6 else p["SIDE"]
+                assert f"background:{esperado};border-left" in css
+        ui.set_tema("claro", "moderno")
+        ui.PANEL_PROFUNDO = False
+        assert f"background:{ui.TEMAS['claro']['SIDE']};border-left" in ui.css()          # apagado: igual que antes
+    finally:
+        ui.PANEL_PROFUNDO = ant
+        ui.set_tema(ant_tema, ant_est)

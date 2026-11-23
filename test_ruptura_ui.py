@@ -21,7 +21,7 @@ def test_app_registra_la_pagina_y_la_portada_la_muestra_en_lugar_del_bot():
 
 def test_la_ruptura_no_preselecciona_simbolo_y_usa_media_ema_en_la_config():
     s = _leer("app_backtest.py")
-    assert 'por_defecto = [] if ES_RUP else' in s
+    assert 'multiselect(familia, opciones, [])' in s and 'etiqueta == "oro"' not in s      # ninguna página preselecciona símbolo
     assert 'media_tipo=("ema" if ES_RUP else TIPO)' in s          # Config.validar solo acepta 'ema' o 'sma'
     assert "ruptura=(rup_mod.ConfigRup(" in s
 
